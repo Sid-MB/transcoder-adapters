@@ -17,6 +17,9 @@ import argparse
 import wandb
 from functools import partial
 
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+
 from training.config import load_config, ExperimentConfig, _finalize_config
 from training.dataset import OpenThoughtsDataset, collate_fn
 from training.forward_utils import forward_mixed, sample_cutoffs
@@ -36,7 +39,7 @@ def move_batch_to(device, batch):
     return out
 
 
-def setup_models_bridging(config: ExperimentConfig):
+def setup_models_bridging(config: ExperimentConfig, device=None):
     """Load transcoder model and frozen reference model (bridging mode).
 
     Model assembly:
@@ -79,6 +82,7 @@ def setup_models_bridging(config: ExperimentConfig):
     # Load transcoder model. from_pretrained loads standard weights from the
     # checkpoint; transcoder_enc/dec are not in the checkpoint and stay at __init__
     # values (dec=zeros → zero initial contribution).
+    device_map_arg = {"": device} if device is not None else "auto"
     if backbone == "target":
         # Target backbone: load reference model (attn/embed/layernorm from reference),
         # then swap in base model's MLP weights. Result: reference attn + base MLP + fresh transcoder.
@@ -87,7 +91,7 @@ def setup_models_bridging(config: ExperimentConfig):
             bridging_config.reference_model_path,
             config=hf_config,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map=device_map_arg,
             trust_remote_code=True,
         )
         print(f"Swapping in base model MLP weights from: {config.model_name}")
@@ -99,10 +103,10 @@ def setup_models_bridging(config: ExperimentConfig):
         )
         for adapter_mlp, base_layer in zip(model._transcoder_mlps(), base_model.model.layers): # pyright: ignore[reportCallIssue]
             base_mlp = base_layer.mlp  # type: ignore[union-attr]
-            device = adapter_mlp.gate_proj.weight.device
-            adapter_mlp.gate_proj.weight.data.copy_(base_mlp.gate_proj.weight.data.to(device))
-            adapter_mlp.up_proj.weight.data.copy_(base_mlp.up_proj.weight.data.to(device))
-            adapter_mlp.down_proj.weight.data.copy_(base_mlp.down_proj.weight.data.to(device))
+            mlp_device = adapter_mlp.gate_proj.weight.device
+            adapter_mlp.gate_proj.weight.data.copy_(base_mlp.gate_proj.weight.data.to(mlp_device))
+            adapter_mlp.up_proj.weight.data.copy_(base_mlp.up_proj.weight.data.to(mlp_device))
+            adapter_mlp.down_proj.weight.data.copy_(base_mlp.down_proj.weight.data.to(mlp_device))
         del base_model
         print("MLP weights swapped")
     else:
@@ -112,7 +116,7 @@ def setup_models_bridging(config: ExperimentConfig):
             config.model_name,
             config=hf_config,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map=device_map_arg,
             trust_remote_code=True,
         )
 
@@ -122,6 +126,12 @@ def setup_models_bridging(config: ExperimentConfig):
     # zero initial transcoder contribution.
     for mlp in model._transcoder_mlps(): # pyright: ignore[reportCallIssue]
         mlp._init_transcoder_weights()
+
+    # Broadcast all parameters from rank 0 to ensure identical starting weights
+    # (transcoder encoder uses nn.init.uniform_ which is random per-process)
+    if dist.is_initialized():
+        for param in model.parameters():
+            dist.broadcast(param.data, src=0)
 
     # Freeze everything except transcoder parameters
     for name, param in model.named_parameters():
@@ -135,7 +145,7 @@ def setup_models_bridging(config: ExperimentConfig):
     ref_model = AutoModelForCausalLM.from_pretrained(
         bridging_config.reference_model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map=device_map_arg,
         trust_remote_code=True,
     )
     ref_model.eval()
@@ -146,7 +156,7 @@ def setup_models_bridging(config: ExperimentConfig):
     return model, ref_model, tokenizer
 
 
-def setup_models_direct(config: ExperimentConfig):
+def setup_models_direct(config: ExperimentConfig, device=None):
     """Load base model with transcoders for direct fine-tuning (no reference model).
 
     Adds special tokens (e.g. <think>, </think>) to the base tokenizer and copies
@@ -176,6 +186,7 @@ def setup_models_direct(config: ExperimentConfig):
         print(f"Added {num_added} special tokens: {direct_config.copied_tokens}")
 
     # Load base model with transcoders
+    device_map_arg = {"": device} if device is not None else "auto"
     hf_config = ConfigWithTranscoder.from_pretrained(
         config.model_name,
         transcoder_n_features=tc_config.n_features,
@@ -186,7 +197,7 @@ def setup_models_direct(config: ExperimentConfig):
         config.model_name,
         config=hf_config,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map=device_map_arg,
         trust_remote_code=True,
     )
 
@@ -233,6 +244,11 @@ def setup_models_direct(config: ExperimentConfig):
     for mlp in model._transcoder_mlps(): # pyright: ignore[reportCallIssue]
         mlp._init_transcoder_weights()
 
+    # Broadcast all parameters from rank 0 to ensure identical starting weights
+    if dist.is_initialized():
+        for param in model.parameters():
+            dist.broadcast(param.data, src=0)
+
     # Freeze everything except transcoder parameters
     for name, param in model.named_parameters():
         param.requires_grad = "transcoder" in name
@@ -243,7 +259,7 @@ def setup_models_direct(config: ExperimentConfig):
     return model, None, tokenizer
 
 
-def setup_data(config: ExperimentConfig, tokenizer):
+def setup_data(config: ExperimentConfig, tokenizer, rank=0, world_size=1):
     """Setup dataset and dataloader."""
     print(f"Loading training dataset from: {config.data_path}")
     print(f"  format={config.data_format}, truncate={config.truncate}, loss_on_prompt={config.loss_on_prompt}")
@@ -258,19 +274,29 @@ def setup_data(config: ExperimentConfig, tokenizer):
     )
 
     collate_with_tokenizer = partial(collate_fn, tokenizer=tokenizer)
+
+    # Use DistributedSampler for multi-GPU training
+    train_sampler = None
+    if world_size > 1:
+        train_sampler = DistributedSampler(
+            train_dataset, num_replicas=world_size, rank=rank,
+            shuffle=True, seed=config.seed,
+        )
+
     generator = torch.Generator()
     generator.manual_seed(config.seed)
 
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=config.micro_batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         collate_fn=collate_with_tokenizer,
         num_workers=0,
-        generator=generator
+        generator=generator if train_sampler is None else None,
     )
 
-    # Optional validation dataset
+    # Optional validation dataset (no sampler — validation runs on rank 0 only)
     val_dataloader = None
     if hasattr(config, 'val_data_path') and config.val_data_path:
         print(f"Loading validation dataset from: {config.val_data_path}")
@@ -290,10 +316,10 @@ def setup_data(config: ExperimentConfig, tokenizer):
             num_workers=0
         )
 
-    return train_dataset, train_dataloader, val_dataloader
+    return train_dataset, train_dataloader, val_dataloader, train_sampler
 
 
-def setup_training(config: ExperimentConfig, model, dataset):
+def setup_training(config: ExperimentConfig, model, dataset, world_size=1):
     """Setup optimizer and scheduler."""
     trainable_params = [p for p in model.parameters() if p.requires_grad]
 
@@ -303,7 +329,7 @@ def setup_training(config: ExperimentConfig, model, dataset):
         weight_decay=0.0
     )
 
-    steps_per_epoch = len(dataset) // config.batch_size
+    steps_per_epoch = len(dataset) // (config.batch_size * world_size)
     total_steps = steps_per_epoch * config.num_epochs
     warmup_steps = int(total_steps * config.warmup_ratio)
 
@@ -514,6 +540,9 @@ def train_epoch(
     total_steps: int,
     total_samples_seen: int,
     val_dataloader=None,
+    rank: int = 0,
+    world_size: int = 1,
+    train_sampler=None,
 ):
     """Train for one epoch."""
     model.train()
@@ -524,10 +553,13 @@ def train_epoch(
     current_metrics = {}
     samples_seen = total_samples_seen
 
+    if train_sampler is not None:
+        train_sampler.set_epoch(epoch)
+
     gradient_accumulation_steps = config.batch_size // config.micro_batch_size
 
     embed_device = model.get_input_embeddings().weight.device
-    epoch_pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.num_epochs}")
+    epoch_pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.num_epochs}", disable=(rank != 0))
 
     for step, batch in enumerate(epoch_pbar):
         batch = move_batch_to(embed_device, batch)
@@ -546,7 +578,7 @@ def train_epoch(
 
         accumulation_step += 1
         current_batch_losses.append(step_metrics.get("train/total_loss", 0.0))
-        samples_seen += config.micro_batch_size
+        samples_seen += config.micro_batch_size * world_size
 
         # Accumulate metrics
         for k, v in step_metrics.items():
@@ -564,6 +596,12 @@ def train_epoch(
 
         # Optimizer step
         if accumulation_step % gradient_accumulation_steps == 0:
+            # All-reduce gradients across processes before clipping/stepping
+            if world_size > 1:
+                for param in model.parameters():
+                    if param.requires_grad and param.grad is not None:
+                        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+
             total_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), max_norm=config.gradient_clip_norm
             )
@@ -589,8 +627,8 @@ def train_epoch(
             for stat_name, stat_value in model.collect_transcoder_stats().items():
                 current_metrics[stat_name] = [stat_value]
 
-            # Log to WandB
-            if config.use_wandb:
+            # Log to WandB (rank 0 only)
+            if config.use_wandb and rank == 0:
                 log_dict = {
                     "train/total_loss": avg_batch_loss,
                     "train/learning_rate": current_lr,
@@ -611,8 +649,8 @@ def train_epoch(
 
             model.clear_cached_stats()
 
-            # Run validation
-            if val_dataloader is not None and global_step % config.val_frequency == 0:
+            # Run validation (rank 0 only)
+            if val_dataloader is not None and global_step % config.val_frequency == 0 and rank == 0:
                 if config.direct:
                     val_metrics = validate_direct(model, val_dataloader, config)
                     val_metrics["val/epoch"] = epoch
@@ -628,21 +666,25 @@ def train_epoch(
                 if config.use_wandb:
                     wandb.log(val_metrics, step=global_step)
 
-            # Run comprehensive layerwise validation (bridging only)
-            if config.bridging and val_dataloader is not None and global_step % config.layerwise_val_frequency == 0:
+            # Run comprehensive layerwise validation (bridging only, rank 0 only)
+            if config.bridging and val_dataloader is not None and global_step % config.layerwise_val_frequency == 0 and rank == 0:
                 print(f"  Running layerwise validation...")
                 layerwise_metrics = validate_layerwise(model, ref_model, val_dataloader, config)
                 if config.use_wandb:
                     wandb.log(layerwise_metrics, step=global_step)
 
-            # Save periodic checkpoint (overwrites previous latest)
+            # Save periodic checkpoint (rank 0 only, with barrier)
             if config.save_checkpoints and global_step > 0 and global_step % config.checkpoint_frequency == 0:
-                print(f"  Saving checkpoint at step {global_step}...")
-                save_latest_checkpoint(model, tokenizer, config.output_dir, global_step)
+                if rank == 0:
+                    print(f"  Saving checkpoint at step {global_step}...")
+                    save_latest_checkpoint(model, tokenizer, config.output_dir, global_step)
+                if world_size > 1:
+                    dist.barrier()
 
             # Debug mode early exit
             if config.debug_mode and global_step >= DEBUG_MODE_EARLY_EXIT_STEPS:
-                print(f"Debug mode: Breaking after {global_step} steps")
+                if rank == 0:
+                    print(f"Debug mode: Breaking after {global_step} steps")
                 break
 
         del batch
@@ -852,6 +894,21 @@ def main():
     parser.add_argument("--debug_mode", nargs="?", const="true", default=None, help="Override debug_mode (--debug_mode, --debug_mode=true, --debug_mode=false). If activating debug mode through this setting, wandb will be disabled.")
     args = parser.parse_args()
 
+    # Initialize distributed training if launched with torchrun
+    is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+    if is_distributed:
+        dist.init_process_group("nccl")
+        rank = dist.get_rank()
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        world_size = dist.get_world_size()
+        torch.cuda.set_device(local_rank)
+        device = f"cuda:{local_rank}"
+    else:
+        rank = 0
+        local_rank = 0
+        world_size = 1
+        device = None  # Use default device_map="auto"
+
     # Load config
     config = load_config(args.config)
 
@@ -866,60 +923,74 @@ def main():
 
     if args.learning_rate is not None:
         config.learning_rate = args.learning_rate
-        print(f"Override learning rate: {args.learning_rate}")
+        if rank == 0:
+            print(f"Override learning rate: {args.learning_rate}")
         config_changed = True
 
     if args.l1_weight is not None and config.transcoder:
         config.transcoder.l1_weight = args.l1_weight
-        print(f"Override L1 weight: {args.l1_weight}")
+        if rank == 0:
+            print(f"Override L1 weight: {args.l1_weight}")
         config_changed = True
 
     if args.debug_mode is not None:
         if args.debug_mode.lower() == "true":
             config.debug_mode = True
             config.use_wandb = False
-            print("Using debug mode through flag: wandb disabled")
+            if rank == 0:
+                print("Using debug mode through flag: wandb disabled")
             if config.run_name_prefix and not config.run_name_prefix.endswith("_debug"):
                 config.run_name_prefix += "_debug"
-                print(f"Using debug mode through flag: added _debug to run_name_prefix, now '{config.run_name_prefix}'")
+                if rank == 0:
+                    print(f"Using debug mode through flag: added _debug to run_name_prefix, now '{config.run_name_prefix}'")
         elif args.debug_mode.lower() == "false":
             config.debug_mode = False
         else:
             parser.error(f"Invalid value for --debug_mode: '{args.debug_mode}'. Must be 'true' or 'false'.")
-        print(f"Override debug_mode: {config.debug_mode}")
+        if rank == 0:
+            print(f"Override debug_mode: {config.debug_mode}")
 
     if config_changed:
         # Update run name and output dir to reflect the overrides
         config.wandb_run_name = None  # Force regeneration
         config.output_dir = None      # Force regeneration
         config = _finalize_config(config)  # Regenerate names with new params
-        print(f"Updated run name: {config.wandb_run_name}")
-        print(f"Updated output dir: {config.output_dir}")
+        if rank == 0:
+            print(f"Updated run name: {config.wandb_run_name}")
+            print(f"Updated output dir: {config.output_dir}")
 
-    # Print mode-specific info
-    if config.direct:
-        print(f"Starting direct fine-tuning")
-        print(f"  Base model: {config.model_name}")
-        print(f"  Copied tokens: {config.direct.copied_tokens}")
-    else:
-        assert config.bridging is not None
-        print(f"Starting bridging training")
-        print(f"  Base model: {config.model_name}")
-        print(f"  Reference model: {config.bridging.reference_model_path}")
-        print(f"  Loss type: {config.bridging.loss_type}")
-        print(f"  N cutoffs: {config.bridging.n_cutoffs}")
+    if rank == 0:
+        # Print mode-specific info
+        if config.direct:
+            print(f"Starting direct fine-tuning")
+            print(f"  Base model: {config.model_name}")
+            print(f"  Copied tokens: {config.direct.copied_tokens}")
+        else:
+            assert config.bridging is not None
+            print(f"Starting bridging training")
+            print(f"  Base model: {config.model_name}")
+            print(f"  Reference model: {config.bridging.reference_model_path}")
+            print(f"  Loss type: {config.bridging.loss_type}")
+            print(f"  N cutoffs: {config.bridging.n_cutoffs}")
+
+        if is_distributed:
+            print(f"Distributed training: {world_size} GPUs")
 
     # Setup models
     if config.direct:
-        model, ref_model, tokenizer = setup_models_direct(config)
+        model, ref_model, tokenizer = setup_models_direct(config, device=device)
     else:
-        model, ref_model, tokenizer = setup_models_bridging(config)
+        model, ref_model, tokenizer = setup_models_bridging(config, device=device)
 
-    train_dataset, train_dataloader, val_dataloader = setup_data(config, tokenizer)
-    optimizer, scheduler, total_steps, warmup_steps = setup_training(config, model, train_dataset)
+    train_dataset, train_dataloader, val_dataloader, train_sampler = setup_data(
+        config, tokenizer, rank=rank, world_size=world_size,
+    )
+    optimizer, scheduler, total_steps, warmup_steps = setup_training(
+        config, model, train_dataset, world_size=world_size,
+    )
 
-    # WandB
-    if config.use_wandb:
+    # WandB (rank 0 only)
+    if config.use_wandb and rank == 0:
         mode_prefix = "direct" if config.direct else "bridging"
         wandb.init(
             project=config.wandb_project,
@@ -927,10 +998,11 @@ def main():
             config=config.__dict__
         )
 
-    print(f"Training setup:")
-    print(f"  - Train dataset size: {len(train_dataset)}")
-    print(f"  - Total steps: {total_steps}")
-    print(f"  - Warmup steps: {warmup_steps}")
+    if rank == 0:
+        print(f"Training setup:")
+        print(f"  - Train dataset size: {len(train_dataset)}")
+        print(f"  - Total steps: {total_steps}")
+        print(f"  - Warmup steps: {warmup_steps}")
 
     # Training loop
     current_step = 0
@@ -942,16 +1014,22 @@ def main():
             config,
             epoch, current_step, total_steps, total_samples_seen,
             val_dataloader=val_dataloader,
+            rank=rank, world_size=world_size, train_sampler=train_sampler,
         )
 
-        # Save checkpoint at end of epoch (overwrites previous latest)
-        if config.save_checkpoints:
+        # Save checkpoint at end of epoch (rank 0 only)
+        if config.save_checkpoints and rank == 0:
             save_latest_checkpoint(model, tokenizer, config.output_dir, current_step)
+        if config.save_checkpoints and world_size > 1:
+            dist.barrier()
 
-    print("Training complete!")
+    if rank == 0:
+        print("Training complete!")
+        # Always save final checkpoint
+        save_checkpoint(model, tokenizer, config.output_dir)
 
-    # Always save final checkpoint
-    save_checkpoint(model, tokenizer, config.output_dir)
+    if is_distributed:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

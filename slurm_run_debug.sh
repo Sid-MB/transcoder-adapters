@@ -38,8 +38,20 @@ uv sync
 
 echo "[Slurm] Running Python..."
 
-# uv run python -m training.train --config training/configs/r1_distil_1.5b_debug.yaml
-uv run python -m training.train --config training/configs/gemma2_2b.yaml
-# uv run python -m training.train --config training/configs/gemma2_2b.yaml
+# Detect GPU count: SLURM env var, nvidia-smi fallback, or default to 1
+GPUS=${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}
+GPUS=${GPUS:-1}
+# Trim whitespace (wc -l may produce leading spaces)
+GPUS=$(echo "$GPUS" | tr -d '[:space:]')
+
+CONFIG="training/configs/gemma2_2b.yaml"
+
+if [ "$GPUS" -gt 1 ]; then
+    echo "[Slurm] Using torchrun with $GPUS GPUs (data parallel)"
+    uv run torchrun --nproc_per_node="$GPUS" -m training.train --config "$CONFIG"
+else
+    echo "[Slurm] Single GPU mode"
+    uv run python -m training.train --config "$CONFIG"
+fi
 
 echo "[Slurm] Job finished!"
