@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --account=nlp
-#SBATCH --gres=gpu:2
-#SBATCH --constraint=80G
+#SBATCH --gres=gpu:4
+#SBATCH --constraint=48G
 #SBATCH --mem=128G
-#SBATCH --partition=sphinx
+#SBATCH --partition=jag-standard
 #SBATCH --job-name=gemma2_2b
-#SBATCH --time=14-00:00:00
+#SBATCH --time=21-00:00:00
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
 
