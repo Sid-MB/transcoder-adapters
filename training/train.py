@@ -6,7 +6,7 @@ that encourage layer-wise compatibility with a reference model.
 """
 
 import os
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
 import torch
 from torch.utils.data import DataLoader
@@ -981,6 +981,14 @@ def main():
         model, ref_model, tokenizer = setup_models_direct(config, device=device)
     else:
         model, ref_model, tokenizer = setup_models_bridging(config, device=device)
+
+    # Gradient checkpointing: trade ~30% more compute for dramatically less activation
+    # memory. Critical for DDP where both models live on one GPU, but also helps
+    # single-GPU with long sequences. use_reentrant=False is required so that
+    # cached_l1 (sparsity loss) retains its gradient connection.
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
 
     train_dataset, train_dataloader, val_dataloader, train_sampler = setup_data(
         config, tokenizer, rank=rank, world_size=world_size,
