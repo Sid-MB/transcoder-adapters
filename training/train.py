@@ -358,16 +358,17 @@ def train_step_direct(
     # Forward pass with feature caching (for L1 loss + stats)
     model.set_cache_features(True)
     logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
-    model.set_cache_features(False)
 
     # Losses
     lm_loss = compute_lm_loss(logits, labels)
     raw_sparsity = model.collect_sparsity_loss()
     weighted_sparsity = l1_weight * raw_sparsity
 
-    # Backward
+    # Backward — disable caching AFTER backward so gradient checkpointing
+    # recomputation sees the same cache_features flag as the original forward
     total_loss = (lm_loss + weighted_sparsity) / gradient_accumulation_steps
     total_loss.backward()
+    model.set_cache_features(False)
 
     metrics = {
         "train/lm_loss": lm_loss.item(),
@@ -406,7 +407,8 @@ def train_step_bridging(
     # 1. Main forward pass with feature caching (for L1 loss + stats)
     model.set_cache_features(True)
     logits_adapt = model(input_ids=input_ids, attention_mask=attention_mask).logits
-    model.set_cache_features(False)
+    # Keep cache_features=True until after backward — gradient checkpointing
+    # recomputation must see the same flag state as the original forward.
 
     # Collect sparsity loss (sum of L1 across layers, must be while graph alive)
     raw_sparsity = model.collect_sparsity_loss()
@@ -447,6 +449,9 @@ def train_step_bridging(
     if first_loss.requires_grad:
         scaled_first = first_loss / gradient_accumulation_steps
         scaled_first.backward()
+
+    # Safe to disable caching now — backward recomputation is done
+    model.set_cache_features(False)
 
     metrics["train/sparsity"] = raw_sparsity.item()
 

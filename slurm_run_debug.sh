@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=nlp
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:3
 #SBATCH --constraint=48G
 #SBATCH --mem=128G
 #SBATCH --partition=jag-standard
