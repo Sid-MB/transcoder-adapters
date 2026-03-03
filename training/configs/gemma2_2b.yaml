@@ -28,7 +28,7 @@ dataset_rows: 10000
 length_excession_behavior: "truncate"
 loss_on_prompt: true
 
-batch_size: 16
+batch_size: 4
 learning_rate: 8e-4
 num_epochs: 1
 warmup_ratio: 0.05
