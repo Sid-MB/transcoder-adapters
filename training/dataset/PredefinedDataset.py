@@ -71,7 +71,7 @@ class PredefinedDataset:
                 g = TorchGenerator().manual_seed(self.dataloader_seed)
                 for split, ds in self._loaded_datasets.items():
                     if len(ds) > self.dataset_rows:
-                        indices = torch.randperm(len(ds), generator=g)[:self.dataset_rows]
+                        indices = torch.randperm(len(ds), generator=g)[:self.dataset_rows].tolist()
                         print(
                             f"dataset_rows={self.dataset_rows}, so randomly subsampling {self.dataset_rows} / {len(ds)} total rows from '{split}'"
                         )
