@@ -35,41 +35,44 @@ class FineWebDataset(Dataset):
             split: Dataset split to load (e.g. "train", "validation").
             text_field: Column containing the document text.
         """
-        self.tokenizer = tokenizer
         self.max_length = max_length
         self.truncate = truncate
-        self.text_field = text_field
 
         print(f"Loading FineWeb data: {data_path} (split={split})")
-        self.ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAttributeAccessIssue]
-        print(f"Loaded {len(self.ds)} examples")
+        ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAssignmentType]
+        print(f"Loaded {len(ds)} examples, pre-tokenizing...")
+
+        self._items: list[DatasetItem] = []
+        for i in range(len(ds)):
+            text = ds[i][text_field]
+            input_ids = tokenizer.encode(text, add_special_tokens=True)
+
+            original_length = len(input_ids)
+            truncated = False
+            if len(input_ids) > max_length:
+                if truncate:
+                    input_ids = input_ids[:max_length]
+                    truncated = True
+                else:
+                    raise ValueError(
+                        f"Sequence length {len(input_ids)} > max_length {max_length}"
+                    )
+
+            self._items.append({
+                "input_ids": input_ids,
+                "labels": input_ids.copy(),
+                "truncated": truncated,
+                "original_length": original_length,
+            })
+
+            if (i + 1) % 50000 == 0:
+                print(f"  Pre-tokenized {i + 1}/{len(ds)}")
+
+        del ds
+        print(f"Pre-tokenization complete ({len(self._items)} examples)")
 
     def __len__(self) -> int:
-        return len(self.ds)
+        return len(self._items)
 
     def __getitem__(self, idx: int) -> DatasetItem:
-        text = self.ds[idx][self.text_field]
-        input_ids = self.tokenizer.encode(text, add_special_tokens=True)
-
-        # Truncate if needed
-        original_length = len(input_ids)
-        truncated = False
-        if len(input_ids) > self.max_length:
-            if self.truncate:
-                input_ids = input_ids[:self.max_length]
-                truncated = True
-            else:
-                raise ValueError(
-                    f"Sequence length {len(input_ids)} > max_length {self.max_length}"
-                )
-
-        # Pretraining: loss on all tokens
-        labels = input_ids.copy()
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": [1] * len(input_ids),
-            "labels": labels,
-            "truncated": truncated,
-            "original_length": original_length,
-        }
+        return self._items[idx]

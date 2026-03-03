@@ -63,7 +63,7 @@ class ExperimentConfig:
     # Training hyperparameters
     learning_rate: float = 8e-4
     batch_size: int = 1
-    micro_batch_size: int | None = None # not really doing gradient accumulation anymore, see note in PredefinedDataset's _make_dataloader function. If None, this will be set to batch_size.
+    micro_batch_size: int | None = None  # If None, defaults to batch_size (no gradient accumulation).
     num_epochs: int = 1
     warmup_ratio: float = 0.05
     gradient_clip_norm: float = 1.0
@@ -169,8 +169,6 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
     # Ensure numeric types are correct (YAML can load as strings)
     config.learning_rate = float(config.learning_rate)
     config.batch_size = int(config.batch_size)
-    # if config.micro_batch_size is None:
-    #     config.micro_batch_size = config.batch_size # int(config.micro_batch_size) # We're not doing gradient accumulation, see note in PredefinedDataset's _make_dataloader function.
 
     if config.transcoder:
         # Convert transcoder weights to float if they exist

@@ -37,83 +37,56 @@ class LMSYSChatDataset(Dataset):
             split: Dataset split to load.
             conversation_field: Column containing the conversation list.
         """
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.truncate = truncate
-        self.loss_on_prompt = loss_on_prompt
-        self.conversation_field = conversation_field
-
         print(f"Loading LMSYS-Chat data: {data_path} (split={split})")
-        self.ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAttributeAccessIssue]. Since we're choosing a split, we know a dict isn't returned, and since streaming is not True, we know it's not an IterableDataset.
-        print(f"Loaded {len(self.ds)} examples")
+        ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAssignmentType]
+        print(f"Loaded {len(ds)} examples, pre-tokenizing...")
+
+        self._items: list[DatasetItem] = []
+        for i in range(len(ds)):
+            conversation = ds[i][conversation_field]
+
+            result = tokenizer.apply_chat_template(
+                conversation,
+                tokenize=True,
+                add_generation_prompt=False,
+                return_dict=True,
+                return_assistant_tokens_mask=True,
+            )
+            input_ids = result["input_ids"]
+            assistant_mask = result["assistant_masks"]
+
+            original_length = len(input_ids)
+            truncated = False
+            if len(input_ids) > max_length:
+                if truncate:
+                    input_ids = input_ids[:max_length]
+                    assistant_mask = assistant_mask[:max_length]
+                    truncated = True
+                else:
+                    raise ValueError(
+                        f"Sequence length {len(input_ids)} > max_length {max_length}"
+                    )
+
+            if loss_on_prompt:
+                labels = list(input_ids)
+            else:
+                labels = [tok if mask else -100 for tok, mask in zip(input_ids, assistant_mask)]
+
+            self._items.append({
+                "input_ids": list(input_ids),
+                "labels": labels,
+                "truncated": truncated,
+                "original_length": original_length,
+            })
+
+            if (i + 1) % 50000 == 0:
+                print(f"  Pre-tokenized {i + 1}/{len(ds)}")
+
+        del ds
+        print(f"Pre-tokenization complete ({len(self._items)} examples)")
 
     def __len__(self) -> int:
-        return len(self.ds)
+        return len(self._items)
 
     def __getitem__(self, idx: int) -> DatasetItem:
-        conversation = self.ds[idx][self.conversation_field]
-
-        # Tokenize full conversation via chat template
-        input_ids = self.tokenizer.apply_chat_template(
-            conversation, tokenize=True, add_generation_prompt=False
-        )
-
-        # Truncate if needed
-        original_length = len(input_ids)
-        truncated = False
-        if len(input_ids) > self.max_length:
-            if self.truncate:
-                input_ids = input_ids[:self.max_length]
-                truncated = True
-            else:
-                raise ValueError(
-                    f"Sequence length {len(input_ids)} > max_length {self.max_length}"
-                )
-
-        # Build labels
-        if self.loss_on_prompt:
-            labels = list(input_ids)
-        else:
-            labels = self._mask_non_assistant(conversation, input_ids)
-
-        return {
-            "input_ids": list(input_ids),
-            "attention_mask": [1] * len(input_ids),
-            "labels": labels,
-            "truncated": truncated,
-            "original_length": original_length,
-        }
-
-    def _mask_non_assistant(
-        self, conversation: list[dict], full_ids: list[int]
-    ) -> list[int]:
-        """Mask all non-assistant tokens with -100.
-
-        For each assistant turn, finds its token span by comparing chat-template
-        tokenizations of the conversation prefix with and without that turn.
-        """
-        labels = [-100] * len(full_ids)
-
-        for i, msg in enumerate(conversation):
-            if msg["role"] not in ("assistant", "model"):
-                continue
-
-            # Tokens up to (not including) this assistant turn, with generation
-            # prompt so we get the assistant turn-start marker included.
-            prefix = conversation[:i]
-            prefix_ids = self.tokenizer.apply_chat_template(
-                prefix, tokenize=True, add_generation_prompt=True
-            )
-            start = len(prefix_ids)
-
-            # Tokens through the end of this assistant turn.
-            through = conversation[: i + 1]
-            through_ids = self.tokenizer.apply_chat_template(
-                through, tokenize=True, add_generation_prompt=False
-            )
-            end = min(len(through_ids), len(full_ids))
-
-            # Unmask the assistant span
-            labels[start:end] = list(full_ids[start:end])
-
-        return labels
+        return self._items[idx]

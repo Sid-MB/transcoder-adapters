@@ -1,3 +1,3 @@
 from typing import Literal
 
-DataFormat = Literal["tokenizer", "deepseek"]
+DataFormat = Literal["tokenizer", "deepseek", "qwen"]

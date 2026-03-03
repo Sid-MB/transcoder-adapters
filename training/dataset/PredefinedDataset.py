@@ -1,14 +1,12 @@
 from enum import Enum
 from functools import partial
 from typing import Literal
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from torch import Generator as TorchGenerator
 
 from .collate import collate_fn
 from .types import DatasetItem, SizedDataset
-
 from .gemma.config import FineWebLMSysMixedConfig
-
 from .datasetspecific_config import DatasetSpecificConfig, DatasetType
 from .openthoughts.config import OpenThoughtsConfig
 
@@ -18,15 +16,13 @@ class LengthExcessionBehavior(Enum):
     ERROR = "error"
 
 
-class PredefinedDataset:
-    """
-    Specifies how a dataset should be loaded and processed for training
-    """
+DatasetSplits = Literal["train", "val"]
+LoadedDatasets = dict[DatasetSplits, SizedDataset[DatasetItem]]
+Dataloaders = dict[DatasetSplits, DataLoader[DatasetItem]]
 
-    # Type for loaded datasets
-    DatasetSplits = Literal["train", "val"]
-    LoadedDatasets = dict[DatasetSplits, SizedDataset[DatasetItem]]
-    Dataloaders = dict[DatasetSplits, DataLoader[DatasetItem]]
+
+class PredefinedDataset:
+    """Loads a dataset and creates DataLoaders for training."""
 
     def __init__(
         self,
@@ -44,57 +40,50 @@ class PredefinedDataset:
         self.length_excession_behavior = length_excession_behavior
         self.loss_on_prompt = loss_on_prompt
         self.dataset_specific_config = dataset_specific_config
+        self.batch_size = batch_size
+        self.dataloader_seed = dataloader_seed
+
         if dataset_specific_config is not None:
             assert dataset_specific_config.dataset_type == dataset_type, (
                 f"Config type mismatch: config is for {dataset_specific_config.dataset_type}, "
                 f"but dataset_type is {dataset_type}"
             )
 
-        self._loaded_datasets: PredefinedDataset.LoadedDatasets | None = None
-        """
-        Cache for loaded datasets. Stores training split in "train" and validation split in "val" (if applicable). Initialized to None, and populated on first call to load_dataset().
-        """
+        self._loaded_datasets: LoadedDatasets | None = None
 
-        self.batch_size = batch_size
-        self.dataloader_seed = dataloader_seed
-
-    def _load_dataset(self):
-        """
-        Loads the dataset according to the type and configuration parameters specified in the constructor. Caches the loaded dataset for future calls; there's no need to call this method more than once per instance.
-        """
+    def load_datasets_and_dataloaders(self) -> tuple[LoadedDatasets, Dataloaders]:
+        """Load the dataset (if not already loaded) and create dataloaders."""
         if self._loaded_datasets is None:
             self._loaded_datasets = self._make_dataset()
-        return self._loaded_datasets
+        return self._loaded_datasets, self._make_dataloaders()
 
     def _make_dataset(self) -> LoadedDatasets:
-        print(f"Loading training dataset of type {self.dataset_type} with config:", self.dataset_specific_config)
+        print(f"Loading dataset: {self.dataset_type} | config: {self.dataset_specific_config}")
+        truncate = self.length_excession_behavior == LengthExcessionBehavior.TRUNCATE
 
         match self.dataset_type:
             case DatasetType.OPEN_THOUGHTS:
-                from training.dataset.openthoughts.open_thoughts import (
-                    OpenThoughtsDataset,
-                )
+                from training.dataset.openthoughts.open_thoughts import OpenThoughtsDataset
 
                 assert isinstance(self.dataset_specific_config, OpenThoughtsConfig)
-                datasets: PredefinedDataset.LoadedDatasets = {
+                cfg = self.dataset_specific_config
+                datasets: LoadedDatasets = {
                     "train": OpenThoughtsDataset(
-                        data_path=self.dataset_specific_config.data_path,
+                        data_path=cfg.data_path,
                         tokenizer=self.tokenizer,
-                        max_length=self.dataset_specific_config.max_seq_length,
-                        format=self.dataset_specific_config.data_format,
-                        truncate=self.length_excession_behavior
-                        == LengthExcessionBehavior.TRUNCATE,
+                        max_length=cfg.max_seq_length,
+                        format=cfg.data_format,
+                        truncate=truncate,
                         loss_on_prompt=self.loss_on_prompt,
                     )
                 }
-                if self.dataset_specific_config.val_data_path is not None:
+                if cfg.val_data_path is not None:
                     datasets["val"] = OpenThoughtsDataset(
-                        data_path=self.dataset_specific_config.val_data_path,
+                        data_path=cfg.val_data_path,
                         tokenizer=self.tokenizer,
-                        max_length=self.dataset_specific_config.max_seq_length,
-                        format=self.dataset_specific_config.data_format,
-                        truncate=self.length_excession_behavior
-                        == LengthExcessionBehavior.TRUNCATE,
+                        max_length=cfg.max_seq_length,
+                        format=cfg.data_format,
+                        truncate=truncate,
                         loss_on_prompt=self.loss_on_prompt,
                     )
                 return datasets
@@ -105,51 +94,49 @@ class PredefinedDataset:
                 from training.dataset.gemma.lmsys_chat import LMSYSChatDataset
 
                 assert isinstance(self.dataset_specific_config, FineWebLMSysMixedConfig)
-                pretraining_dataset = FineWebDataset(
-                    data_path=self.dataset_specific_config.pretraining_datapath,
-                    tokenizer=self.tokenizer,
-                    max_length=self.dataset_specific_config.pretraining_max_seq_length,
-                    truncate=self.length_excession_behavior
-                    == LengthExcessionBehavior.TRUNCATE,
-                )
-                chat_dataset = LMSYSChatDataset(
-                    data_path=self.dataset_specific_config.chat_conversations_datapath,
-                    tokenizer=self.tokenizer,
-                    max_length=self.dataset_specific_config.chat_max_seq_length if self.dataset_specific_config.chat_max_seq_length != "pretraining_max_seq_length" else self.dataset_specific_config.pretraining_max_seq_length,
-                    truncate=self.length_excession_behavior
-                    == LengthExcessionBehavior.TRUNCATE,
-                )
-                mixed = MixedDataset(
-                    datasets=(pretraining_dataset, chat_dataset), weights=(0.5, 0.5)
+                cfg = self.dataset_specific_config
+                chat_max_len = (
+                    cfg.pretraining_max_seq_length
+                    if cfg.chat_max_seq_length == "pretraining_max_seq_length"
+                    else cfg.chat_max_seq_length
                 )
                 return {
-                    "train": mixed,
+                    "train": MixedDataset(
+                        datasets=(
+                            FineWebDataset(
+                                data_path=cfg.pretraining_datapath,
+                                tokenizer=self.tokenizer,
+                                max_length=cfg.pretraining_max_seq_length,
+                                truncate=truncate,
+                            ),
+                            LMSYSChatDataset(
+                                data_path=cfg.chat_conversations_datapath,
+                                tokenizer=self.tokenizer,
+                                max_length=chat_max_len,
+                                truncate=truncate,
+                            ),
+                        ),
+                        weights=(0.5, 0.5),
+                    ),
                 }
+
             case _:
                 raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
 
-    def _make_dataloader(self) -> Dataloaders:
-        """
-        Creates new dataloaders for each split in the dataset.
-        """
-        collate_with_tokenizer = partial(collate_fn, tokenizer=self.tokenizer)
+    def _make_dataloaders(self) -> Dataloaders:
+        assert self._loaded_datasets is not None and "train" in self._loaded_datasets
 
+        collate = partial(collate_fn, pad_token_id=self.tokenizer.pad_token_id)
         generator = TorchGenerator()
         generator.manual_seed(self.dataloader_seed)
 
-        assert self._loaded_datasets is not None, (
-            "Datasets must be loaded before creating dataloaders"
-        )
-        assert "train" in self._loaded_datasets, (
-            "Training split ('train') is required in loaded datasets"
-        )
-        dataloaders: PredefinedDataset.Dataloaders = {
+        dataloaders: Dataloaders = {
             "train": DataLoader(
                 self._loaded_datasets["train"], # pyright: ignore[reportArgumentType]
-                batch_size=self.batch_size,  # used to be micro_batch_size instead of using the normal batch_size: there were two seperate parameters. This was because we were trying gradient accumulation, however we decided it wasn't worth it so in all cases we set micro_batch_size = batch_size. So, I'm removing micro_batch_size and just using batch_size directly.
+                batch_size=self.batch_size,
                 shuffle=True,
-                collate_fn=collate_with_tokenizer,
-                num_workers=4,
+                collate_fn=collate,
+                num_workers=2,
                 pin_memory=True,
                 persistent_workers=True,
                 generator=generator,
@@ -161,21 +148,10 @@ class PredefinedDataset:
                 self._loaded_datasets["val"], # pyright: ignore[reportArgumentType]
                 batch_size=1,
                 shuffle=False,
-                collate_fn=collate_with_tokenizer,
-                num_workers=4,
+                collate_fn=collate,
+                num_workers=2,
                 pin_memory=True,
                 persistent_workers=True,
             )
 
-        assert dataloaders.keys() == self._loaded_datasets.keys(), (
-            "Note: Dataloader did not generate loaders for all dataset splits"
-        )
         return dataloaders
-
-    def load_datasets_and_dataloaders(self) -> tuple[LoadedDatasets, Dataloaders]:
-        """
-        Loads the dataset (if not already loaded) and creates dataloaders for each split. Returns a tuple of (loaded_datasets [all splits of the loaded dataset], dataloaders [one data loader for each split]).
-        """
-        datasets = self._load_dataset()
-        dataloaders = self._make_dataloader()
-        return datasets, dataloaders
