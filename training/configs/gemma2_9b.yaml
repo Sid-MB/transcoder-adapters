@@ -1,0 +1,37 @@
+# Bridging transcoder config for Gemma2 2B
+model_name: "google/gemma-2-9b"
+model_arch: "gemma2"
+run_name_prefix: "gemma2_9b"
+
+transcoder:
+  n_features: 8192
+  dec_bias: true
+  l1_weight: 0.001
+
+bridging:
+  reference_model_path: "google/gemma-2-9b-it"
+  backbone: "target"
+  loss_type: "kl"
+  n_cutoffs: 1
+  sampling: "uniform"
+  always_include_adapt_only: true
+  lambda_bridge: 2.0
+  lambda_nmse: 1
+
+dataset_type: "fineweb_lmysyschat_mixed"
+dataset:
+  pretraining_datapath: "science-of-finetuning/fineweb-1m-sample"
+  chat_conversations_datapath: "lmsys/lmsys-chat-1m"
+  pretraining_max_seq_length: 1000
+  chat_max_seq_length: 1000
+dataset_rows: 10000
+length_excession_behavior: "truncate"
+loss_on_prompt: true
+
+batch_size: 1
+learning_rate: 8e-4
+num_epochs: 1
+warmup_ratio: 0.05
+
+use_wandb: true
+save_checkpoints: true
