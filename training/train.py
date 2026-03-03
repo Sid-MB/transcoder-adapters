@@ -495,9 +495,7 @@ def train_epoch(
 
     micro_batch_size = config.micro_batch_size or config.batch_size
 
-    gradient_accumulation_steps = (
-        config.batch_size // micro_batch_size
-    ) # Note: not rly doing gradient accumulation anymore, see PredefinedDataset._make_dataloader comment.
+    gradient_accumulation_steps = config.batch_size // micro_batch_size
 
     embed_device = model.get_input_embeddings().weight.device
     epoch_pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.num_epochs}")
