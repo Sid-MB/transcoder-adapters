@@ -257,6 +257,10 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
         elif config.direct:
             run_parts.append("direct")
 
+
+        # Add data info
+        run_parts.append(f"dr{config.dataset_rows if config.dataset_rows is not None else 'all'}")
+
         # Add training params
         run_parts.append(f"lr{config.learning_rate:.0e}")
         run_parts.append(f"bs{config.batch_size}")
