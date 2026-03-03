@@ -6,8 +6,6 @@
 #SBATCH --partition=jag-standard
 #SBATCH --job-name=gemma2_2b
 #SBATCH --time=21-00:00:00
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
 
 # ── Usage ────────────────────────────────────────────────────────────
 #   Run ./slurm_batch. Or you can do `sbatch slurm_run_debug.sh`, but
