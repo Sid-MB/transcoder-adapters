@@ -172,6 +172,10 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
     config.batch_size = int(config.batch_size)
     # if config.micro_batch_size is None:
     #     config.micro_batch_size = config.batch_size # int(config.micro_batch_size) # We're not doing gradient accumulation, see note in PredefinedDataset's _make_dataloader function.
+    if config.micro_batch_size is not None:
+        config.micro_batch_size = int(config.micro_batch_size)
+        assert config.micro_batch_size <= config.batch_size, "micro_batch_size cannot be greater than batch_size"
+        assert config.batch_size % config.micro_batch_size == 0, "batch_size must be divisible by micro_batch_size"
 
     config.dataset_rows = int(config.dataset_rows) if config.dataset_rows is not None else None
 
