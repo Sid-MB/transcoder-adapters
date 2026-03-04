@@ -920,6 +920,13 @@ def main():
     # Always save final checkpoint
     save_checkpoint(model, tokenizer, config.output_dir)
 
+    # Push to Hugging Face Hub
+    if config.push_to_hub:
+        from training.hub import push_to_hub, build_hub_repo_id
+        repo_id = build_hub_repo_id(config)
+        print(f"Pushing model to Hub: {repo_id}")
+        push_to_hub(model, config, repo_id)
+
 
 if __name__ == "__main__":
     main()
