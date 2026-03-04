@@ -32,7 +32,7 @@ from huggingface_hub import HfApi
 from .hub import verify_hub_access, _build_model_card
 
 
-HUB_NAME_PREFIX = "2026.sparse-adaptation"
+HUB_NAME_PREFIX = "2026.TA"
 
 
 def find_checkpoints(path: str) -> list[str]:
@@ -71,15 +71,25 @@ def _is_checkpoint_dir(path: str) -> bool:
 def repo_id_from_checkpoint(checkpoint_dir: str, hub_org: str | None = None) -> str:
     """Build HF repo ID from a checkpoint directory name.
 
-    The checkpoint folder name is used directly as the model name, prefixed
-    with the standard project prefix.
+    The checkpoint folder name is used as the model name, prefixed with the
+    standard project prefix. The trailing date/time/slurm suffix
+    (e.g. _2026-03-03_0039_14701501) is stripped since the slurm ID already
+    appears earlier as sl{id}, and HF repo names have a 96-char limit.
 
     Example:
-        gemma2_2b_tc8192_decb_..._sl14701501_2026-03-03_0039_14701501
-        -> nathu0/2026.sparse-adaptation.gemma2_2b_tc8192_decb_..._sl14701501_2026-03-03_0039_14701501
+        gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr10000_lr1e-04_bs4_sl14701501_2026-03-03_0039_14701501
+        -> nathu0/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr10000_lr1e-04_bs4_sl14701501
     """
     folder_name = os.path.basename(os.path.normpath(checkpoint_dir))
+
+    # Strip trailing _YYYY-MM-DD_HHMM_JOBID suffix (added by _finalize_config)
+    folder_name = _strip_checkpoint_suffix(folder_name)
+
     model_name = f"{HUB_NAME_PREFIX}.{folder_name}"
+
+    # HF repo names have a 96-char max; truncate if needed
+    if len(model_name) > 96:
+        model_name = model_name[:96].rstrip("-._")
 
     if hub_org:
         return f"{hub_org}/{model_name}"
@@ -87,6 +97,18 @@ def repo_id_from_checkpoint(checkpoint_dir: str, hub_org: str | None = None) -> 
     api = HfApi()
     user = api.whoami()["name"]
     return f"{user}/{model_name}"
+
+
+def _strip_checkpoint_suffix(name: str) -> str:
+    """Strip the trailing _YYYY-MM-DD_HHMM_JOBID suffix from a checkpoint folder name.
+
+    The output_dir format from _finalize_config is:
+        {wandb_run_name}_{date}_{slurm_job_id}
+    where date is YYYY-MM-DD_HHMM. This strips everything from the date onward.
+    """
+    import re
+    # Match _YYYY-MM-DD_HHMM_SOMETHING at the end
+    return re.sub(r"_\d{4}-\d{2}-\d{2}_\d{4}_\w+$", "", name)
 
 
 def upload_checkpoint(

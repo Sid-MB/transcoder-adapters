@@ -76,12 +76,11 @@ def verify_hub_access(repo_id: str):
 def build_hub_repo_id(config) -> str:
     """Build the Hub repo ID from config.
 
-    Format: {hub_org}/2026.{wandb_project}.{mode_prefix}_{wandb_run_name}
+    Format: {hub_org}/2026.tc-adapt.{wandb_run_name}
 
     Falls back to the authenticated user's namespace if hub_org is not set.
     """
-    mode_prefix = "direct" if config.direct else "bridging"
-    model_name = f"2026.{config.wandb_project}.{mode_prefix}_{config.wandb_run_name}"
+    model_name = f"2026.tc-adapt.{config.wandb_run_name}"
 
     if config.hub_org:
         return f"{config.hub_org}/{model_name}"
