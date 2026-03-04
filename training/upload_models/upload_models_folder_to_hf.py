@@ -165,6 +165,14 @@ def main():
         action="store_true",
         help="Print what would be uploaded without actually uploading",
     )
+    parser.add_argument(
+        "--exists",
+        choices=["skip", "overwrite"],
+        default=None,
+        help="What to do if a repo already exists on the Hub. "
+             "skip: skip it, overwrite: push anyway. "
+             "If not set, error out when a repo already exists.",
+    )
     args = parser.parse_args()
 
     # Find checkpoints
@@ -194,6 +202,30 @@ def main():
         return
 
     verify_hub_access(repo_ids[0])
+
+    # Check for existing repos
+    api = HfApi()
+    existing = [rid for rid in repo_ids if api.repo_exists(rid)]
+    if existing:
+        if args.exists == "skip":
+            print(f"\nSkipping {len(existing)} existing repo(s):")
+            for rid in existing:
+                print(f"  {rid}")
+            # Filter out existing ones
+            pairs = [(cp, rid) for cp, rid in zip(checkpoints, repo_ids) if rid not in existing]
+            checkpoints = [cp for cp, _ in pairs]
+            repo_ids = [rid for _, rid in pairs]
+            if not checkpoints:
+                print("Nothing to upload.")
+                return
+        elif args.exists == "overwrite":
+            print(f"\n{len(existing)} repo(s) already exist and will be overwritten.")
+        else:
+            print(f"\nError: {len(existing)} repo(s) already exist on the Hub:")
+            for rid in existing:
+                print(f"  https://huggingface.co/{rid}")
+            print("Use --exists=skip to skip them or --exists=overwrite to overwrite.")
+            sys.exit(1)
 
     # Launch all uploads concurrently
     print()
