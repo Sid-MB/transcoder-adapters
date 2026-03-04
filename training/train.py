@@ -256,6 +256,7 @@ def setup_data(config: ExperimentConfig, tokenizer) -> tuple[SizedDataset[Datase
         loss_on_prompt=config.loss_on_prompt,
         dataset_specific_config=config.dataset,
         batch_size=config.batch_size,
+        dataset_rows=config.dataset_rows,
     )
     datasets, dataloaders = dataset_loader.load_datasets_and_dataloaders()
 
@@ -824,6 +825,7 @@ def main():
     parser.add_argument("--l1_weight", type=float, help="Override transcoder L1 weight")
     parser.add_argument("--n_features", type=int, help="Override transcoder n_features")
     parser.add_argument("--batch_size", type=int, help="Override batch size")
+    parser.add_argument("--dataset_rows", type=int, help="Override number of dataset rows to use")
     parser.add_argument("--num_epochs", type=int, help="Override number of epochs")
     parser.add_argument("--debug_mode", nargs="?", const="true", default=None, help="Override debug_mode (--debug_mode, --debug_mode=true, --debug_mode=false). If activating debug mode through this setting, wandb will be disabled.")
     args = parser.parse_args()

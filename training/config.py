@@ -70,6 +70,7 @@ class ExperimentConfig:
     seed: int = 42
 
     # Data settings
+    dataset_rows: int | None = None  # If set, randomly subsample each split to at most this many rows
     dataset_type: DatasetType = DatasetType.OPEN_THOUGHTS
     length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.TRUNCATE
     loss_on_prompt: bool = True
@@ -172,6 +173,8 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
     # if config.micro_batch_size is None:
     #     config.micro_batch_size = config.batch_size # int(config.micro_batch_size) # We're not doing gradient accumulation, see note in PredefinedDataset's _make_dataloader function.
 
+    config.dataset_rows = int(config.dataset_rows) if config.dataset_rows is not None else None
+
     if config.transcoder:
         # Convert transcoder weights to float if they exist
         if config.transcoder.l1_weight is not None:
@@ -253,6 +256,10 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
             run_parts.append(f"ln{config.bridging.lambda_nmse}")
         elif config.direct:
             run_parts.append("direct")
+
+
+        # Add data info
+        run_parts.append(f"dr{config.dataset_rows if config.dataset_rows is not None else 'all'}")
 
         # Add training params
         run_parts.append(f"lr{config.learning_rate:.0e}")
