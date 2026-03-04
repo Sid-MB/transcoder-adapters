@@ -73,7 +73,7 @@ class PredefinedDataset:
                     if len(ds) > self.dataset_rows:
                         indices = torch.randperm(len(ds), generator=g)[:self.dataset_rows].tolist()
                         print(
-                            f"dataset_rows={self.dataset_rows}, so randomly subsampling {self.dataset_rows} / {len(ds)} total rows from '{split}'"
+                            f"dataset_rows={self.dataset_rows}, so randomly subsampling {self.dataset_rows} / {len(ds)} total rows from '{split}' (seed={self.dataloader_seed})"
                         )
                         self._loaded_datasets[split] = Subset(ds, indices)  # pyright: ignore[reportArgumentType]
         return self._loaded_datasets
