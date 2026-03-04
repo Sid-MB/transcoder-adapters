@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=nlp
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --constraint=48G
 #SBATCH --mem=128G
 #SBATCH --partition=jag-standard
@@ -40,10 +40,9 @@ uv sync
 
 echo "[Slurm] Running Python..."
 
-# uv run python -m training.train --config training/configs/r1_distil_1.5b_debug.yaml
 set -x
-uv run python -m training.train --config training/configs/gemma2_9b.yaml "$@"
-# uv run python -m training.train --config training/configs/gemma2_2b.yaml
+# uv run python -m training.train --config training/configs/gemma2_9b.yaml "$@"
+uv run python -m training.train --config training/configs/gemma2_2b.yaml "$@"
 set +x
 
 echo "[Slurm] Job finished!"
