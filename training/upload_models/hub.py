@@ -196,8 +196,8 @@ def _build_model_card(config, repo_id: str) -> ModelCard:
 
 def _collect_dataset_ids(config) -> list[str]:
     """Extract HuggingFace dataset identifiers from config."""
-    from .dataset.openthoughts.config import OpenThoughtsConfig
-    from .dataset.gemma.config import FineWebLMSysMixedConfig
+    from ..dataset.openthoughts.config import OpenThoughtsConfig
+    from ..dataset.gemma.config import FineWebLMSysMixedConfig
 
     ids: list[str] = []
     ds = config.dataset

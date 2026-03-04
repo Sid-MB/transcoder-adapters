@@ -886,7 +886,7 @@ def main():
 
     # Verify Hub access before training so we fail fast
     if config.push_to_hub:
-        from training.hub import build_hub_repo_id, verify_hub_access
+        from training.upload_models.hub import build_hub_repo_id, verify_hub_access
         hub_repo_id = build_hub_repo_id(config)
         verify_hub_access(hub_repo_id)
     else:
@@ -929,7 +929,7 @@ def main():
 
     # Push to Hugging Face Hub (hub_repo_id computed and verified before training)
     if hub_repo_id:
-        from training.hub import push_to_hub
+        from training.upload_models.hub import push_to_hub
 
         print(f"Pushing model to Hub: {hub_repo_id}")
         push_to_hub(model, config, hub_repo_id)
