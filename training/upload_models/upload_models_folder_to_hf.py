@@ -26,6 +26,7 @@ Usage:
 import argparse
 import os
 import sys
+from concurrent.futures import Future
 
 from huggingface_hub import HfApi
 
@@ -115,26 +116,32 @@ def upload_checkpoint(
     checkpoint_dir: str,
     repo_id: str,
     config=None,
-):
-    """Upload a single checkpoint directory to HuggingFace Hub."""
+) -> Future | None:
+    """Upload a single checkpoint directory to HuggingFace Hub.
+
+    Returns a Future for the upload_folder call (runs asynchronously).
+    The model card is pushed synchronously since it's small.
+    """
     api = HfApi()
 
     # Create repo
     api.create_repo(repo_id, exist_ok=True)
 
-    # Upload all files in the checkpoint directory
-    api.upload_folder(
-        folder_path=checkpoint_dir,
-        repo_id=repo_id,
-        commit_message=f"Upload checkpoint from {os.path.basename(checkpoint_dir)}",
-    )
-
-    # Add model card if config is available
+    # Add model card first (small, synchronous)
     if config is not None:
         card = _build_model_card(config, repo_id)
         card.push_to_hub(repo_id)
 
-    print(f"  Uploaded to https://huggingface.co/{repo_id}")
+    # Upload all checkpoint files asynchronously
+    future = api.upload_folder(
+        folder_path=checkpoint_dir,
+        repo_id=repo_id,
+        commit_message=f"Upload checkpoint from {os.path.basename(checkpoint_dir)}",
+        run_as_future=True,
+    )
+
+    print(f"  Started upload: {os.path.basename(checkpoint_dir)} -> {repo_id}")
+    return future
 
 
 def main():
@@ -188,13 +195,30 @@ def main():
 
     verify_hub_access(repo_ids[0])
 
-    # Upload
+    # Launch all uploads concurrently
     print()
+    futures: list[tuple[str, Future]] = []
     for cp, repo_id in zip(checkpoints, repo_ids):
-        print(f"Uploading {os.path.basename(cp)} -> {repo_id}")
-        upload_checkpoint(cp, repo_id, config)
+        future = upload_checkpoint(cp, repo_id, config)
+        if future is not None:
+            futures.append((repo_id, future))
 
-    print(f"\nDone! Uploaded {len(checkpoints)} checkpoint(s).")
+    # Wait for all uploads to complete
+    print(f"\nWaiting for {len(futures)} upload(s) to complete...")
+    failed = []
+    for repo_id, future in futures:
+        try:
+            future.result()
+            print(f"  Done: https://huggingface.co/{repo_id}")
+        except Exception as e:
+            print(f"  FAILED: {repo_id}: {e}")
+            failed.append(repo_id)
+
+    if failed:
+        print(f"\n{len(failed)} upload(s) failed: {failed}")
+        sys.exit(1)
+    else:
+        print(f"\nAll {len(futures)} upload(s) completed successfully.")
 
 
 if __name__ == "__main__":
