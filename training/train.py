@@ -884,6 +884,12 @@ def main():
     train_dataset, train_dataloader, val_dataloader = setup_data(config, tokenizer)
     optimizer, scheduler, total_steps, warmup_steps = setup_training(config, model, train_dataset)
 
+    # Verify Hub access before training so we fail fast
+    if config.push_to_hub:
+        from training.hub import build_hub_repo_id, verify_hub_access
+        hub_repo_id = build_hub_repo_id(config)
+        verify_hub_access(hub_repo_id)
+
     # WandB
     if config.use_wandb:
         mode_prefix = "direct" if config.direct else "bridging"
@@ -920,12 +926,11 @@ def main():
     # Always save final checkpoint
     save_checkpoint(model, tokenizer, config.output_dir)
 
-    # Push to Hugging Face Hub
+    # Push to Hugging Face Hub (hub_repo_id computed and verified before training)
     if config.push_to_hub:
-        from training.hub import push_to_hub, build_hub_repo_id
-        repo_id = build_hub_repo_id(config)
-        print(f"Pushing model to Hub: {repo_id}")
-        push_to_hub(model, config, repo_id)
+        from training.hub import push_to_hub
+        print(f"Pushing model to Hub: {hub_repo_id}")
+        push_to_hub(model, config, hub_repo_id)
 
 
 if __name__ == "__main__":

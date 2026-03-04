@@ -33,6 +33,46 @@ def push_to_hub(
     print(f"Model pushed to https://huggingface.co/{repo_id}")
 
 
+def verify_hub_access(repo_id: str):
+    """Verify the user has write access to the target Hub namespace.
+
+    Call this before training starts so we fail fast rather than after
+    hours of GPU time.
+    """
+    api = HfApi()
+    try:
+        user_info = api.whoami()
+    except Exception as e:
+        raise RuntimeError(
+            "No valid Hugging Face token found. "
+            "Run `huggingface-cli login` or set the HF_TOKEN environment variable."
+        ) from e
+
+    # Check that the token has write permission
+    auth = user_info.get("auth", {})
+    access_token = auth.get("accessToken", {})
+    role = access_token.get("role", None)
+    if role == "read":
+        raise RuntimeError(
+            "Your Hugging Face token has read-only access. "
+            "Use a token with write permissions."
+        )
+
+    # Check namespace access: either user's own namespace or an org they belong to
+    target_namespace = repo_id.split("/")[0]
+    username = user_info["name"]
+    orgs = [org["name"] for org in user_info.get("orgs", [])]
+
+    if target_namespace != username and target_namespace not in orgs:
+        raise RuntimeError(
+            f"Cannot push to '{target_namespace}/' — you are logged in as '{username}' "
+            f"and belong to orgs: {orgs}. "
+            f"Set hub_org to your username or one of your orgs."
+        )
+
+    print(f"Hub access verified: pushing to {repo_id}")
+
+
 def build_hub_repo_id(config) -> str:
     """Build the Hub repo ID from config.
 
