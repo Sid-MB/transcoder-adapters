@@ -1,9 +1,12 @@
-import random
+from typing import TypeVar
 
+import torch
 from torch.utils.data import Dataset
-from training.dataset.types import DatasetItem, SizedDataset
+from training.dataset.types import SizedDataset
 
-class MixedDataset(Dataset):
+DatasetRow = TypeVar("DatasetRow")
+
+class MixedDataset(Dataset[DatasetRow]):
     """Randomly interleaves multiple datasets according to specified weights.
 
     On each access, picks a source dataset with probability proportional to the
@@ -13,7 +16,7 @@ class MixedDataset(Dataset):
 
     def __init__(
         self,
-        datasets: tuple[SizedDataset, ...],
+        datasets: tuple[SizedDataset[DatasetRow], ...],
         weights: tuple[float, ...],
         *,
         seed: int = 80,
@@ -36,15 +39,15 @@ class MixedDataset(Dataset):
 
         # Pre-compute assignments for deterministic, shuffle-safe indexing.
         # Each global index maps to (dataset_index, local_index).
-        rng = random.Random(seed)
+        gen = torch.Generator().manual_seed(seed)
         total = sum(len(d) for d in datasets)
-        ds_indices = rng.choices(range(len(datasets)), weights=self.weights, k=total)
+        weight_tensor = torch.tensor(self.weights)
+        ds_indices = torch.multinomial(weight_tensor, total, replacement=True, generator=gen).tolist()
 
         # Track per-dataset cursors so each dataset is sampled uniformly.
         local_pools: list[list[int]] = []
         for ds in datasets:
-            pool = list(range(len(ds)))
-            rng.shuffle(pool)
+            pool = torch.randperm(len(ds), generator=gen).tolist()
             local_pools.append(pool)
         cursors = [0] * len(datasets)
 
@@ -58,6 +61,6 @@ class MixedDataset(Dataset):
     def __len__(self) -> int:
         return len(self._map)
 
-    def __getitem__(self, idx: int) -> DatasetItem:
+    def __getitem__(self, idx: int) -> DatasetRow:
         ds_idx, local_idx = self._map[idx]
         return self.datasets[ds_idx][local_idx]

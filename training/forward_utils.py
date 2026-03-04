@@ -1,14 +1,17 @@
 """Forward pass utilities for bridging experiments."""
 
+from typing import TYPE_CHECKING
+
 import torch
 import random
 
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
-
+if TYPE_CHECKING:
+    from transformers import PreTrainedModel
 
 def forward_mixed(
-    model1,
-    model2,
+    model1: PreTrainedModel,
+    model2: PreTrainedModel,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     switch_layer: int,
