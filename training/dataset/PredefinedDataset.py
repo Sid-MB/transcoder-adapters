@@ -155,6 +155,7 @@ class PredefinedDataset:
         assert "train" in self._loaded_datasets, (
             "Training split ('train') is required in loaded datasets"
         )
+        print(f"Loading dataset for {self.dataset_type}, shuffling (seed={self.dataloader_seed})")
         dataloaders: PredefinedDataset.Dataloaders = {
             "train": DataLoader(
                 self._loaded_datasets["train"], # pyright: ignore[reportArgumentType]

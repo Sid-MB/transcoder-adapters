@@ -45,6 +45,7 @@ class MixedDataset(Dataset[DatasetRow]):
         ds_indices = torch.multinomial(weight_tensor, total, replacement=True, generator=gen).tolist()
 
         # Track per-dataset cursors so each dataset is sampled uniformly.
+        print("Interleaving with MixedDataset, lengths =", [len(d) for d in datasets], "weights=", self.weights, "seed", seed)
         local_pools: list[list[int]] = []
         for ds in datasets:
             pool = torch.randperm(len(ds), generator=gen).tolist()
