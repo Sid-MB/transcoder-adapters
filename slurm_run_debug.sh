@@ -1,13 +1,11 @@
 #!/bin/bash
 #SBATCH --account=nlp
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --constraint=48G
 #SBATCH --mem=128G
-#SBATCH --partition=jag-hi
+#SBATCH --partition=jag-standard
 #SBATCH --job-name=gemma2_2b
 #SBATCH --time=21-00:00:00
-#SBATCH --output=logs/%j.out
-#SBATCH --error=logs/%j.err
 
 # ── Usage ────────────────────────────────────────────────────────────
 #   Run ./slurm_batch. Or you can do `sbatch slurm_run_debug.sh`, but
@@ -17,14 +15,14 @@
 # ── Logs & Outputs ──────────────────────────────────────────────────
 #
 # SLURM stdout/stderr:
-#   logs/<job_id>.out   and   logs/<job_id>.err
+#   logs/<job_id>_<timestamp>.out   and   logs/<job_id>_<timestamp>.err
 #   (location from repo root)
 #
 #   To find your job ID after submitting:
 #     squeue --me
 #
 #   To tail logs of a running job:
-#     tail -f logs/<job_id>.out
+#     tail -f logs/<job_id>_*.out
 #
 # Training checkpoints & wandb artifacts:
 #   Written to the output directory configured in the YAML config
@@ -32,6 +30,9 @@
 # ─────────────────────────────────────────────────────────────────────
 
 mkdir -p logs
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOGFILE="logs/${SLURM_JOB_ID}_${TIMESTAMP}"
+exec > "${LOGFILE}.out" 2> "${LOGFILE}.err"
 
 echo "[Slurm] Setting up (uv sync)..."
 
@@ -39,8 +40,9 @@ uv sync
 
 echo "[Slurm] Running Python..."
 
-# uv run python -m training.train --config training/configs/r1_distil_1.5b_debug.yaml
-uv run python -m training.train --config training/configs/gemma2_2b.yaml
-# uv run python -m training.train --config training/configs/gemma2_2b.yaml
+set -x
+# uv run python -m training.train --config training/configs/gemma2_9b.yaml "$@"
+uv run python -m training.train --config training/configs/gemma2_2b.yaml "$@"
+set +x
 
 echo "[Slurm] Job finished!"

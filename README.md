@@ -40,7 +40,7 @@ python -m training.train --config training/configs/r1_distil_7b.yaml
 
 Override hyperparameters from the command line:
 ```bash
-python -m training.train --config training/configs/r1_distil_7b.yaml --learning_rate 1e-3 --l1_weight 0.01
+python -m training.train --config training/configs/r1_distil_7b.yaml --learning_rate 1e-3 --l1_weight 0.01 --batch_size 8
 ```
 
 ## How It Works

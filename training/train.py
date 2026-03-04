@@ -6,19 +6,22 @@ that encourage layer-wise compatibility with a reference model.
 """
 
 import os
+
+from torch.utils.data.dataloader import DataLoader
+
+from training.dataset.types import DatasetItem, SizedDataset
 os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
 
 import torch
-from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from transformers import AutoTokenizer, AutoModelForCausalLM, get_cosine_schedule_with_warmup
 from tqdm import tqdm
 import argparse
 import wandb
-from functools import partial
 
-from training.config import load_config, ExperimentConfig, _finalize_config
-from training.dataset import OpenThoughtsDataset, collate_fn
+from typing import Any
+from training.config import load_config, ExperimentConfig
+from training.dataset.PredefinedDataset import PredefinedDataset
 from training.forward_utils import forward_mixed, sample_cutoffs
 from training.losses import compute_kl_loss, compute_lm_loss, compute_nmse_loss
 from models import get_transcoder_classes
@@ -141,7 +144,7 @@ def setup_models_bridging(config: ExperimentConfig):
     ref_model.eval()
     for param in ref_model.parameters():
         param.requires_grad = False
-    print(f"Reference model loaded and frozen")
+    print("Reference model loaded and frozen")
 
     return model, ref_model, tokenizer
 
@@ -243,54 +246,21 @@ def setup_models_direct(config: ExperimentConfig):
     return model, None, tokenizer
 
 
-def setup_data(config: ExperimentConfig, tokenizer):
+def setup_data(config: ExperimentConfig, tokenizer) -> tuple[SizedDataset[DatasetItem], DataLoader[DatasetItem], DataLoader[DatasetItem] | None]:
     """Setup dataset and dataloader."""
-    print(f"Loading training dataset from: {config.data_path}")
-    print(f"  format={config.data_format}, truncate={config.truncate}, loss_on_prompt={config.loss_on_prompt}")
 
-    train_dataset = OpenThoughtsDataset(
-        data_path=config.data_path,
+    dataset_loader = PredefinedDataset(
+        dataset_type=config.dataset_type,
         tokenizer=tokenizer,
-        max_length=config.max_seq_length,
-        format=config.data_format,
-        truncate=config.truncate,
+        length_excession_behavior=config.length_excession_behavior,
         loss_on_prompt=config.loss_on_prompt,
+        dataset_specific_config=config.dataset,
+        batch_size=config.batch_size,
+        dataset_rows=config.dataset_rows,
     )
+    datasets, dataloaders = dataset_loader.load_datasets_and_dataloaders()
 
-    collate_with_tokenizer = partial(collate_fn, tokenizer=tokenizer)
-    generator = torch.Generator()
-    generator.manual_seed(config.seed)
-
-    train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=config.micro_batch_size,
-        shuffle=True,
-        collate_fn=collate_with_tokenizer,
-        num_workers=0,
-        generator=generator
-    )
-
-    # Optional validation dataset
-    val_dataloader = None
-    if hasattr(config, 'val_data_path') and config.val_data_path:
-        print(f"Loading validation dataset from: {config.val_data_path}")
-        val_dataset = OpenThoughtsDataset(
-            data_path=config.val_data_path,
-            tokenizer=tokenizer,
-            max_length=config.max_seq_length,
-            format=config.data_format,
-            truncate=config.truncate,
-            loss_on_prompt=config.loss_on_prompt,
-        )
-        val_dataloader = DataLoader(
-            val_dataset,
-            batch_size=1,
-            shuffle=False,
-            collate_fn=collate_with_tokenizer,
-            num_workers=0
-        )
-
-    return train_dataset, train_dataloader, val_dataloader
+    return datasets["train"], dataloaders["train"], dataloaders.get("val", None)
 
 
 def setup_training(config: ExperimentConfig, model, dataset):
@@ -524,7 +494,11 @@ def train_epoch(
     current_metrics = {}
     samples_seen = total_samples_seen
 
-    gradient_accumulation_steps = config.batch_size // config.micro_batch_size
+    micro_batch_size = config.micro_batch_size or config.batch_size
+
+    gradient_accumulation_steps = (
+        config.batch_size // micro_batch_size
+    ) # Note: not rly doing gradient accumulation anymore, see PredefinedDataset._make_dataloader comment.
 
     embed_device = model.get_input_embeddings().weight.device
     epoch_pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.num_epochs}")
@@ -546,7 +520,7 @@ def train_epoch(
 
         accumulation_step += 1
         current_batch_losses.append(step_metrics.get("train/total_loss", 0.0))
-        samples_seen += config.micro_batch_size
+        samples_seen += micro_batch_size
 
         # Accumulate metrics
         for k, v in step_metrics.items():
@@ -630,7 +604,7 @@ def train_epoch(
 
             # Run comprehensive layerwise validation (bridging only)
             if config.bridging and val_dataloader is not None and global_step % config.layerwise_val_frequency == 0:
-                print(f"  Running layerwise validation...")
+                print("  Running layerwise validation...")
                 layerwise_metrics = validate_layerwise(model, ref_model, val_dataloader, config)
                 if config.use_wandb:
                     wandb.log(layerwise_metrics, step=global_step)
@@ -848,12 +822,31 @@ def main():
     parser = argparse.ArgumentParser(description="Train with bridging loss")
     parser.add_argument("--config", required=True, help="Path to experiment config YAML")
     parser.add_argument("--learning_rate", "-lr", type=float, help="Override learning rate")
-    parser.add_argument("--l1_weight", type=float, help="Override L1 weight")
+    parser.add_argument("--l1_weight", type=float, help="Override transcoder L1 weight")
+    parser.add_argument("--n_features", type=int, help="Override transcoder n_features")
+    parser.add_argument("--batch_size", type=int, help="Override batch size")
+    parser.add_argument("--dataset_rows", type=int, help="Override number of dataset rows to use")
+    parser.add_argument("--num_epochs", type=int, help="Override number of epochs")
     parser.add_argument("--debug_mode", nargs="?", const="true", default=None, help="Override debug_mode (--debug_mode, --debug_mode=true, --debug_mode=false). If activating debug mode through this setting, wandb will be disabled.")
     args = parser.parse_args()
 
-    # Load config
-    config = load_config(args.config)
+    # Build overrides dict from CLI args (all non-None args except "config")
+    overrides: dict[str, Any] = {
+        k: v for k, v in vars(args).items()
+        if k != "config" and v is not None
+    }
+
+    # debug_mode comes in as a string from argparse, convert to bool
+    if "debug_mode" in overrides:
+        if overrides["debug_mode"].lower() == "true":
+            overrides["debug_mode"] = True
+        elif overrides["debug_mode"].lower() == "false":
+            overrides["debug_mode"] = False
+        else:
+            parser.error(f"Invalid value for --debug_mode: '{overrides['debug_mode']}'. Must be 'true' or 'false'.")
+
+    # Load config with overrides
+    config = load_config(args.config, overrides=overrides)
 
     # Validate exactly one training mode is set
     has_bridging = config.bridging is not None
@@ -861,49 +854,14 @@ def main():
     if has_bridging == has_direct:
         raise ValueError("Config must specify exactly one of 'bridging' or 'direct' section.")
 
-    # Apply overrides
-    config_changed = False
-
-    if args.learning_rate is not None:
-        config.learning_rate = args.learning_rate
-        print(f"Override learning rate: {args.learning_rate}")
-        config_changed = True
-
-    if args.l1_weight is not None and config.transcoder:
-        config.transcoder.l1_weight = args.l1_weight
-        print(f"Override L1 weight: {args.l1_weight}")
-        config_changed = True
-
-    if args.debug_mode is not None:
-        if args.debug_mode.lower() == "true":
-            config.debug_mode = True
-            config.use_wandb = False
-            print("Using debug mode through flag: wandb disabled")
-            if config.run_name_prefix and not config.run_name_prefix.endswith("_debug"):
-                config.run_name_prefix += "_debug"
-                print(f"Using debug mode through flag: added _debug to run_name_prefix, now '{config.run_name_prefix}'")
-        elif args.debug_mode.lower() == "false":
-            config.debug_mode = False
-        else:
-            parser.error(f"Invalid value for --debug_mode: '{args.debug_mode}'. Must be 'true' or 'false'.")
-        print(f"Override debug_mode: {config.debug_mode}")
-
-    if config_changed:
-        # Update run name and output dir to reflect the overrides
-        config.wandb_run_name = None  # Force regeneration
-        config.output_dir = None      # Force regeneration
-        config = _finalize_config(config)  # Regenerate names with new params
-        print(f"Updated run name: {config.wandb_run_name}")
-        print(f"Updated output dir: {config.output_dir}")
-
     # Print mode-specific info
     if config.direct:
-        print(f"Starting direct fine-tuning")
+        print("Starting direct fine-tuning")
         print(f"  Base model: {config.model_name}")
         print(f"  Copied tokens: {config.direct.copied_tokens}")
     else:
         assert config.bridging is not None
-        print(f"Starting bridging training")
+        print("Starting bridging training")
         print(f"  Base model: {config.model_name}")
         print(f"  Reference model: {config.bridging.reference_model_path}")
         print(f"  Loss type: {config.bridging.loss_type}")
@@ -914,6 +872,14 @@ def main():
         model, ref_model, tokenizer = setup_models_direct(config)
     else:
         model, ref_model, tokenizer = setup_models_bridging(config)
+
+    # Compile models for faster standard forward passes.
+    # forward_mixed / compute_nmse_loss use manual layer loops and remain uncompiled.
+    if False:
+        print("Compiling models...")
+        model = torch.compile(model)
+        if ref_model is not None:
+            ref_model = torch.compile(ref_model)
 
     train_dataset, train_dataloader, val_dataloader = setup_data(config, tokenizer)
     optimizer, scheduler, total_steps, warmup_steps = setup_training(config, model, train_dataset)
@@ -927,7 +893,7 @@ def main():
             config=config.__dict__
         )
 
-    print(f"Training setup:")
+    print("Training setup:")
     print(f"  - Train dataset size: {len(train_dataset)}")
     print(f"  - Total steps: {total_steps}")
     print(f"  - Warmup steps: {warmup_steps}")
@@ -946,6 +912,7 @@ def main():
 
         # Save checkpoint at end of epoch (overwrites previous latest)
         if config.save_checkpoints:
+            print(f"  Saving checkpoint at end of epoch {epoch}...")
             save_latest_checkpoint(model, tokenizer, config.output_dir, current_step)
 
     print("Training complete!")

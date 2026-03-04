@@ -1,7 +1,9 @@
 from torch.utils.data import Dataset
-from typing import Any, Literal
+from typing import Any
 import json
-import torch
+
+from training.dataset.types import DatasetItem
+from training.dataset.openthoughts.types import DataFormat
 
 
 # DeepSeek R1 Distill format tokens
@@ -25,7 +27,7 @@ class OpenThoughtsDataset(Dataset):
         tokenizer,
         max_length: int = 8192,
         # Format
-        format: Literal["tokenizer", "deepseek"] = "tokenizer",
+        format: DataFormat = "tokenizer",
         # Truncation
         truncate: bool = False,
         # Labels
@@ -108,7 +110,7 @@ class OpenThoughtsDataset(Dataset):
         """Return the number of examples."""
         return len(self.examples)
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
+    def __getitem__(self, idx: int) -> DatasetItem:
         """Get a single example."""
         example = self.examples[idx]
         conversations = example['conversations']
@@ -193,33 +195,3 @@ class OpenThoughtsDataset(Dataset):
             add_generation_prompt=False
         )
         return formatted
-
-
-def collate_fn(examples, tokenizer):
-    """Simple collate function for batching examples."""
-    # Extract sequences
-    input_ids = [ex["input_ids"] for ex in examples]
-    labels = [ex["labels"] for ex in examples]
-
-    # Pad input_ids and attention_mask
-    batch = tokenizer.pad(
-        {"input_ids": input_ids},
-        padding=True,
-        return_tensors="pt"
-    )
-
-    # Manually pad labels with -100
-    max_length = batch["input_ids"].shape[1]
-    padded_labels = []
-
-    for label_seq in labels:
-        padded = label_seq + [-100] * (max_length - len(label_seq))
-        padded_labels.append(padded)
-
-    batch["labels"] = torch.tensor(padded_labels, dtype=torch.long)
-
-    # Pass through truncation stats
-    batch["truncated"] = [ex["truncated"] for ex in examples]
-    batch["original_length"] = [ex["original_length"] for ex in examples]
-
-    return batch

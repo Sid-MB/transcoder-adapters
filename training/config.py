@@ -2,7 +2,14 @@
 
 import yaml
 from dataclasses import dataclass, field
-from typing import Literal, Any
+from typing import Any
+
+from .dataset.openthoughts.config import OpenThoughtsConfig
+from .dataset.gemma.config import FineWebLMSysMixedConfig
+
+from .dataset.datasetspecific_config import DatasetSpecificConfig, DatasetType
+
+from .dataset.PredefinedDataset import LengthExcessionBehavior
 from pathlib import Path
 
 
@@ -56,19 +63,23 @@ class ExperimentConfig:
     # Training hyperparameters
     learning_rate: float = 8e-4
     batch_size: int = 1
-    micro_batch_size: int = 1
+    micro_batch_size: int | None = None # not really doing gradient accumulation anymore, see note in PredefinedDataset's _make_dataloader function. If None, this will be set to batch_size.
     num_epochs: int = 1
     warmup_ratio: float = 0.05
     gradient_clip_norm: float = 1.0
     seed: int = 42
 
     # Data settings
-    max_seq_length: int = 10000
-    data_path: str = "/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl"
-    val_data_path: str | None = "/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl"
-    data_format: Literal["tokenizer", "deepseek"] = "deepseek"
-    truncate: bool = True
+    dataset_rows: int | None = None  # If set, randomly subsample each split to at most this many rows
+    dataset_type: DatasetType = DatasetType.OPEN_THOUGHTS
+    length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.TRUNCATE
     loss_on_prompt: bool = True
+    dataset: DatasetSpecificConfig = OpenThoughtsConfig(
+        data_path="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
+        data_format="deepseek",
+        max_seq_length=10000,
+        val_data_path="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl"
+    )
 
     val_frequency: int = 1000  # Run validation every N steps
     layerwise_val_frequency: int = 2000  # Run layerwise validation every N steps
@@ -84,14 +95,21 @@ class ExperimentConfig:
 
     # Checkpoint settings
     save_checkpoints: bool = False  # If True, save periodic checkpoints (overwrites single 'latest' dir)
-    checkpoint_frequency: int = 10000  # Save checkpoint every N steps
+    checkpoint_frequency: int = 8192  # Save checkpoint every N steps
 
     # Debug settings
     debug_mode: bool = False  # If True, break after 50 steps for quick testing
 
 
-def load_config(config_path: str) -> ExperimentConfig:
-    """Load configuration from YAML file."""
+def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> ExperimentConfig:
+    """Load configuration from YAML file.
+
+    Args:
+        config_path: Path to the YAML config file.
+        overrides: Optional dict of overrides. Keys must be valid ExperimentConfig fields.
+            If debug_mode is set to True, wandb is also disabled and _debug is appended to run_name_prefix.
+            If any overrides are applied, wandb_run_name and output_dir are regenerated.
+    """
     config_path = Path(config_path) # type: ignore
 
     if not config_path.exists(): # type: ignore
@@ -112,10 +130,54 @@ def load_config(config_path: str) -> ExperimentConfig:
     # Create main config with adapter configs
     config = ExperimentConfig(**config_dict, **adapter_configs)
 
+    # Apply overrides
+    if overrides:
+        valid_keys = set(ExperimentConfig.__dataclass_fields__.keys())
+        # l1_weight is a known nested override (transcoder.l1_weight)
+        NESTED_OVERRIDES = {
+            "l1_weight": ("transcoder", "l1_weight"),
+            "n_features": ("transcoder", "n_features"),
+        }
+        invalid_keys = set(overrides.keys()) - valid_keys - set(NESTED_OVERRIDES.keys())
+        if invalid_keys:
+            raise ValueError(
+                f"Invalid override keys (not in ExperimentConfig): {invalid_keys}"
+            )
+
+        for key, value in overrides.items():
+            if key in NESTED_OVERRIDES:
+                parent_attr, child_attr = NESTED_OVERRIDES[key]
+                parent = getattr(config, parent_attr, None)
+                if parent is not None:
+                    setattr(parent, child_attr, value)
+                    print(f"Override {parent_attr}.{child_attr}: {value}")
+            else:
+                setattr(config, key, value)
+                print(f"Override {key}: {value}")
+
+        # debug_mode=True has side effects
+        if overrides.get("debug_mode") is True:
+            config.use_wandb = False
+            print("Debug mode enabled through override: wandb disabled")
+            if config.run_name_prefix and not config.run_name_prefix.endswith("_debug"):
+                config.run_name_prefix += "_debug"
+                print(f"Added _debug to run_name_prefix: '{config.run_name_prefix}'")
+
+        # Force regeneration of computed fields
+        config.wandb_run_name = None
+        config.output_dir = None
+
     # Ensure numeric types are correct (YAML can load as strings)
     config.learning_rate = float(config.learning_rate)
     config.batch_size = int(config.batch_size)
-    config.micro_batch_size = int(config.micro_batch_size)
+    # if config.micro_batch_size is None:
+    #     config.micro_batch_size = config.batch_size # int(config.micro_batch_size) # We're not doing gradient accumulation, see note in PredefinedDataset's _make_dataloader function.
+    if config.micro_batch_size is not None:
+        config.micro_batch_size = int(config.micro_batch_size)
+        assert config.micro_batch_size <= config.batch_size, "micro_batch_size cannot be greater than batch_size"
+        assert config.batch_size % config.micro_batch_size == 0, "batch_size must be divisible by micro_batch_size"
+
+    config.dataset_rows = int(config.dataset_rows) if config.dataset_rows is not None else None
 
     if config.transcoder:
         # Convert transcoder weights to float if they exist
@@ -129,6 +191,32 @@ def load_config(config_path: str) -> ExperimentConfig:
         from models import detect_architecture
         config.model_arch = detect_architecture(config.model_name)
 
+    # Convert dataset_type from string to enum
+    if isinstance(config.dataset_type, str):
+        config.dataset_type = DatasetType(config.dataset_type)
+    
+    if isinstance(config.length_excession_behavior, str):
+        config.length_excession_behavior = LengthExcessionBehavior(config.length_excession_behavior)
+
+    # Parse dataset sub-dict
+    if isinstance(config.dataset, dict):
+        match config.dataset_type:
+            case DatasetType.OPEN_THOUGHTS:
+                config.dataset = OpenThoughtsConfig(**config.dataset)
+            case DatasetType.FINEWEB_LMYSYSCHAT_MIXED:
+                config.dataset = FineWebLMSysMixedConfig(**config.dataset)
+            case _:
+                raise ValueError(f"Unsupported dataset type: {config.dataset_type}")
+    
+    assert config.dataset.dataset_type == config.dataset_type, (
+        f"Dataset type mismatch: you set dataset_type to {config.dataset_type}, but the provided dataset-specific config is for {config.dataset.dataset_type}. Please make sure these match."
+    )
+
+    # Print a warning if there were any extra keys in the YAML that were not used in the config dataclass
+    extra_keys = set(config_dict.keys()) - set(ExperimentConfig.__dataclass_fields__.keys())
+    if extra_keys:
+        print("Warning: the following keys in the config file were not recognized and will be ignored:", extra_keys)
+
     # Auto-compute run name and output dir if not specified
     config = _finalize_config(config)
     return config
@@ -136,6 +224,8 @@ def load_config(config_path: str) -> ExperimentConfig:
 
 def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
     """Finalize config by computing run names and output directories."""
+    import os
+    slurm_job_id = os.environ.get("SLURM_JOB_ID", "local")
 
     # Build run name from hyperparameters
     if config.wandb_run_name is None:
@@ -171,21 +261,25 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
         elif config.direct:
             run_parts.append("direct")
 
+
+        # Add data info
+        run_parts.append(f"dr{config.dataset_rows if config.dataset_rows is not None else 'all'}")
+
         # Add training params
         run_parts.append(f"lr{config.learning_rate:.0e}")
         run_parts.append(f"bs{config.batch_size}")
+
+        run_parts.append(f"sl{slurm_job_id}") # so we can cross-reference if needed
 
         config.wandb_run_name = "_".join(run_parts)
 
     # Build output directory
     if config.output_dir is None:
-        import os
         from datetime import datetime
         user = os.environ.get("USER")
         if not user:
             raise RuntimeError("$USER environment variable is not set. Provide an output_dir in your config or set the USER environment variable so we know where to save checkpoints.")
         date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
-        slurm_job_id = os.environ.get("SLURM_JOB_ID", "local")
         config.output_dir = f"/nlp/scr/{user}/sparse-adaptation/checkpoints/{config.wandb_run_name}_{date_str}_{slurm_job_id}"
         print(f"Checkpoints save directory: {config.output_dir}")
 
