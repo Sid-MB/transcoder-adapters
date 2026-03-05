@@ -934,6 +934,10 @@ def main():
         print(f"Pushing model to Hub: {hub_repo_id}")
         push_to_hub(model, config, hub_repo_id)
 
+        if config.use_wandb and wandb.run is not None:
+            wandb.run.summary["hf_model_url"] = f"https://huggingface.co/{hub_repo_id}"
+            wandb.run.summary["hf_repo_id"] = hub_repo_id
+
 
 if __name__ == "__main__":
     main()
