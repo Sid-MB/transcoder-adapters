@@ -1,12 +1,20 @@
 """Push trained model to Hugging Face Hub with metadata."""
 
+import re
+import tempfile
+
 from huggingface_hub import HfApi, ModelCard, ModelCardData
+
+
+HUB_NAME_PREFIX = "2026.TA"
+MAX_REPO_NAME_LEN = 96
 
 
 def push_to_hub(
     model,
     config,
     repo_id: str,
+    wandb_url: str | None = None,
 ):
     """Push trained model to Hugging Face Hub with metadata.
 
@@ -16,7 +24,8 @@ def push_to_hub(
     Args:
         model: The trained model.
         config: ExperimentConfig used for training.
-        repo_id: Full repo ID (e.g., "nathu0/2026.sparse-adaptation.bridging_transcoder_7B_...").
+        repo_id: Full repo ID (e.g., "nathu0/2026.TA.gemma2_2b_...").
+        wandb_url: Optional W&B run URL to include in the model card.
     """
     api = HfApi()
 
@@ -26,11 +35,31 @@ def push_to_hub(
     # Push model weights and config
     model.push_to_hub(repo_id)
 
+    # Upload training config YAML
+    _upload_training_config(api, config, repo_id)
+
     # Build and push model card with metadata
-    card = _build_model_card(config, repo_id)
+    full_name = f"{HUB_NAME_PREFIX}.{config.wandb_run_name}" if config.wandb_run_name else None
+    card = _build_model_card(config, repo_id, full_name=full_name, wandb_url=wandb_url)
     card.push_to_hub(repo_id)
 
     print(f"Model pushed to https://huggingface.co/{repo_id}")
+
+
+def _upload_training_config(api: HfApi, config, repo_id: str):
+    """Save and upload the training config YAML to the HF repo."""
+    from training.config import save_config
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        save_config(config, f.name)
+        tmp_path = f.name
+
+    api.upload_file(
+        path_or_fileobj=tmp_path,
+        path_in_repo="training-config.yaml",
+        repo_id=repo_id,
+        commit_message="Add training config",
+    )
 
 
 def verify_hub_access(repo_id: str):
@@ -73,27 +102,81 @@ def verify_hub_access(repo_id: str):
     print(f"Hub access verified: pushing to {repo_id}")
 
 
+def truncate_repo_name(name: str, max_len: int = MAX_REPO_NAME_LEN) -> str:
+    """Truncate a repo name to fit HF's limit while preserving key segments.
+
+    Keeps the model identity prefix and slurm ID suffix (sl{id}), drops
+    middle segments (training hyperparams) until it fits.
+
+    Returns (truncated_name, was_truncated).
+    """
+    if len(name) <= max_len:
+        return name
+
+    parts = name.split("_")
+
+    # Find slurm suffix index (last part matching sl{digits})
+    slurm_idx = None
+    for i in range(len(parts) - 1, -1, -1):
+        if re.match(r"^sl\d+$", parts[i]):
+            slurm_idx = i
+            break
+
+    if slurm_idx is None:
+        # No slurm ID found — just truncate from the end
+        return name[:max_len].rstrip("-._")
+
+    prefix_parts = parts[:slurm_idx]
+    suffix_parts = parts[slurm_idx:]  # includes sl{id} and anything after
+    suffix = "_".join(suffix_parts)
+
+    # Drop middle segments (from the end of prefix, working backwards) until it fits
+    while prefix_parts and len("_".join(prefix_parts) + "_" + suffix) > max_len:
+        prefix_parts.pop()
+
+    if not prefix_parts:
+        # Extreme case: even prefix alone is too long
+        return (prefix_parts[0][:max_len - len(suffix) - 1] + "_" + suffix) if parts else name[:max_len]
+
+    return "_".join(prefix_parts) + "_" + suffix
+
+
 def build_hub_repo_id(config) -> str:
     """Build the Hub repo ID from config.
 
-    Format: {hub_org}/2026.tc-adapt.{wandb_run_name}
+    Format: {hub_org}/2026.TA.{wandb_run_name}
 
     Falls back to the authenticated user's namespace if hub_org is not set.
+    The model name is truncated to 96 chars (HF limit) while preserving
+    the model identity prefix and slurm ID suffix.
     """
-    model_name = f"2026.tc-adapt.{config.wandb_run_name}"
+    full_name = f"{HUB_NAME_PREFIX}.{config.wandb_run_name}"
+    model_name = truncate_repo_name(full_name)
 
     if config.hub_org:
-        return f"{config.hub_org}/{model_name}"
+        org = config.hub_org
+    else:
+        api = HfApi()
+        org = api.whoami()["name"]
 
-    # Fall back to authenticated user
-    api = HfApi()
-    user = api.whoami()["name"]
-    return f"{user}/{model_name}"
+    return f"{org}/{model_name}"
 
 
-def _build_model_card(config, repo_id: str) -> ModelCard:
-    """Build a ModelCard with training metadata."""
-    github_repo = "https://github.com/nathanhu0/transcoder-adapters"
+def _build_model_card(
+    config,
+    repo_id: str,
+    full_name: str | None = None,
+    wandb_url: str | None = None,
+) -> ModelCard:
+    """Build a ModelCard with training metadata.
+
+    Args:
+        config: ExperimentConfig used for training.
+        repo_id: The HF repo ID (may be truncated).
+        full_name: The full untruncated model name, if it was truncated.
+        wandb_url: Optional W&B run URL.
+    """
+    github_repo = "https://github.com/Sid-MB/transcoder-adapters"
 
     # Determine base model, training mode, and tokenizer source
     mode_prefix = "direct" if config.direct else "bridging"
@@ -128,23 +211,35 @@ def _build_model_card(config, repo_id: str) -> ModelCard:
     )
 
     # Build markdown content
+    display_name = repo_id.split("/")[-1]
     lines = [
-        f"# {repo_id.split('/')[-1]}",
+        f"# {display_name}",
         "",
         f"Sparse transcoder adapter trained with **{mode_prefix}** mode.",
         "",
+    ]
+
+    # Show full name if it was truncated
+    if full_name and full_name != display_name:
+        lines.append(f"**Full name**: `{full_name}`")
+        lines.append("")
+
+    lines.extend([
         "## Model Details",
         "",
         f"- **Base model**: [{config.model_name}](https://huggingface.co/{config.model_name})",
-    ]
+    ])
     if ref_model:
         lines.append(f"- **Reference model**: [{ref_model}](https://huggingface.co/{ref_model})")
     lines.extend([
         f"- **Architecture**: {config.model_arch}",
         f"- **Training mode**: {mode_prefix}",
         f"- **Tokenizer**: [{tokenizer_source}](https://huggingface.co/{tokenizer_source})",
+        "- **Training config**: [training-config.yaml](training-config.yaml)",
         f"- **GitHub**: [{github_repo}]({github_repo})",
     ])
+    if wandb_url:
+        lines.append(f"- **W&B run**: [{wandb_url}]({wandb_url})")
 
     # Transcoder details
     if config.transcoder:

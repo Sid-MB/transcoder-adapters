@@ -30,10 +30,7 @@ from concurrent.futures import Future
 
 from huggingface_hub import HfApi
 
-from .hub import verify_hub_access, _build_model_card
-
-
-HUB_NAME_PREFIX = "2026.TA"
+from .hub import verify_hub_access, _build_model_card, _upload_training_config, truncate_repo_name, HUB_NAME_PREFIX
 
 
 def find_checkpoints(path: str) -> list[str]:
@@ -86,11 +83,7 @@ def repo_id_from_checkpoint(checkpoint_dir: str, hub_org: str | None = None) -> 
     # Strip trailing _YYYY-MM-DD_HHMM_JOBID suffix (added by _finalize_config)
     folder_name = _strip_checkpoint_suffix(folder_name)
 
-    model_name = f"{HUB_NAME_PREFIX}.{folder_name}"
-
-    # HF repo names have a 96-char max; truncate if needed
-    if len(model_name) > 96:
-        model_name = model_name[:96].rstrip("-._")
+    model_name = truncate_repo_name(f"{HUB_NAME_PREFIX}.{folder_name}")
 
     if hub_org:
         return f"{hub_org}/{model_name}"
@@ -127,8 +120,9 @@ def upload_checkpoint(
     # Create repo
     api.create_repo(repo_id, exist_ok=True)
 
-    # Add model card first (small, synchronous)
+    # Add model card and training config (small, synchronous)
     if config is not None:
+        _upload_training_config(api, config, repo_id)
         card = _build_model_card(config, repo_id)
         card.push_to_hub(repo_id)
 

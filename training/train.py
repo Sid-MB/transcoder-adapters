@@ -932,7 +932,8 @@ def main():
         from training.upload_models.hub import push_to_hub
 
         print(f"Pushing model to Hub: {hub_repo_id}")
-        push_to_hub(model, config, hub_repo_id)
+        wandb_url = wandb.run.url if (config.use_wandb and wandb.run is not None) else None
+        push_to_hub(model, config, hub_repo_id, wandb_url=wandb_url)
 
         if config.use_wandb and wandb.run is not None:
             wandb.run.summary["hf_model_url"] = f"https://huggingface.co/{hub_repo_id}"
