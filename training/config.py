@@ -97,6 +97,10 @@ class ExperimentConfig:
     save_checkpoints: bool = False  # If True, save periodic checkpoints (overwrites single 'latest' dir)
     checkpoint_frequency: int = 8192  # Save checkpoint every N steps
 
+    # Hub settings
+    push_to_hub: bool = False  # If True, push final model to Hugging Face Hub after training
+    hub_org: str | None = None  # HF org/user to push to (defaults to authenticated user)
+
     # Debug settings
     debug_mode: bool = False  # If True, break after 50 steps for quick testing
 
