@@ -132,11 +132,12 @@ def upload_checkpoint(
         card = _build_model_card(config, repo_id)
         card.push_to_hub(repo_id)
 
-    # Upload all checkpoint files asynchronously
+    # Upload checkpoint files asynchronously, excluding intermediate checkpoint subdirs
     future = api.upload_folder(
         folder_path=checkpoint_dir,
         repo_id=repo_id,
         commit_message=f"Upload checkpoint from {os.path.basename(checkpoint_dir)}",
+        ignore_patterns=["latest_step_*"],
         run_as_future=True,
     )
 
