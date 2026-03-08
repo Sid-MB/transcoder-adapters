@@ -21,7 +21,7 @@ bridging:
 dataset_type: "fineweb_lmysyschat_mixed"
 dataset:
   pretraining_datapath: "science-of-finetuning/fineweb-1m-sample"
-  chat_conversations_datapath: "lmsys/lmsys-chat-1m"
+  chat_conversations_datapath: "siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
   pretraining_max_seq_length: 1000
   chat_max_seq_length: 1000
 dataset_rows: 10000
