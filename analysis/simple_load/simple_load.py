@@ -2,13 +2,13 @@
 
 Usage:
     # From a HuggingFace repo:
-    python -m analysis.simple_load.simple_load nathu0/2026.TA.gemma2_2b_tc8192_...
+    python -m analysis.simple_load.simple_load siddharthmb/2026.TA.gemma2_2b_tc8192_...
 
     # From a local checkpoint:
     python -m analysis.simple_load.simple_load /path/to/checkpoint
 
     # Specify tokenizer separately (if not saved with checkpoint):
-    python -m analysis.simple_load.simple_load nathu0/2026.TA.gemma2_2b_... \
+    python -m analysis.simple_load.simple_load siddharthmb/2026.TA.gemma2_2b_... \
         --tokenizer google/gemma-2-2b
 """
 
@@ -130,7 +130,7 @@ def main():
                         help="Architecture (auto-detected if not set)")
     parser.add_argument("--raw", action="store_true",
                         help="Send raw text without chat template")
-    parser.add_argument("--show_special_tokens", action="store_true",
+    parser.add_argument("--show_special_tokens", action="store_true", default=True,
                         help="Show special tokens in prompt and output")
     args = parser.parse_args()
 
