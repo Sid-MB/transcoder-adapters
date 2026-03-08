@@ -1,11 +1,4 @@
 #!/bin/bash
-#SBATCH --account=nlp
-#SBATCH --gres=gpu:1
-#SBATCH --constraint=48G
-#SBATCH --mem=128G
-#SBATCH --partition=jag-standard
-#SBATCH --job-name=gemma2_2b
-#SBATCH --time=21-00:00:00
 
 # ── Usage ────────────────────────────────────────────────────────────
 #   Run ./slurm_batch. Or you can do `sbatch slurm_run_debug.sh`, but
