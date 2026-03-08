@@ -151,7 +151,7 @@ class OpenThoughtsDataset(Dataset):
         truncated = False
         if len(input_ids) > self.max_length:
             if self.truncate:
-                input_ids = input_ids[:self.max_length - 1] + [self.tokenizer.eos_token_id]
+                input_ids = input_ids[:self.max_length]
                 truncated = True
             else:
                 raise ValueError(f"Sequence {len(input_ids)} > max_length {self.max_length}")
