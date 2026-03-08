@@ -10,6 +10,7 @@ from .types import DatasetItem, SizedDataset
 
 from .gemma.config import FineWebLMSysMixedConfig
 
+from .CachedDataset import CachedDataset
 from .datasetspecific_config import DatasetSpecificConfig, DatasetType
 from .openthoughts.config import OpenThoughtsConfig
 
@@ -145,7 +146,7 @@ class PredefinedDataset:
                 return datasets
 
             case DatasetType.FINEWEB_LMYSYSCHAT_MIXED:
-                from training.dataset.gemma.mixed import MixedDataset
+                from training.dataset.MixedDataset import MixedDataset
                 from training.dataset.gemma.fineweb import FineWebDataset
                 from training.dataset.gemma.lmsys_chat import LMSYSChatDataset
 
@@ -167,7 +168,7 @@ class PredefinedDataset:
                 )
                 print("Created mixed dataset, rows=", len(mixed))
                 return {
-                    "train": mixed,
+                    "train": CachedDataset(mixed),
                 }
             case _:
                 raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
