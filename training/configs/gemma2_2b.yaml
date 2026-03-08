@@ -25,7 +25,7 @@ dataset:
   pretraining_max_seq_length: 1000
   chat_max_seq_length: 1000
 dataset_rows: 10000
-length_excession_behavior: "truncate"
+length_excession_behavior: "filter"
 loss_on_prompt: true
 
 batch_size: 4
