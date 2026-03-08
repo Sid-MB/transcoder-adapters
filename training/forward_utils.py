@@ -10,8 +10,8 @@ if TYPE_CHECKING:
     from transformers import PreTrainedModel
 
 def forward_mixed(
-    model1: PreTrainedModel,
-    model2: PreTrainedModel,
+    model1: "PreTrainedModel",
+    model2: "PreTrainedModel",
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     switch_layer: int,
