@@ -246,8 +246,8 @@ def setup_models_direct(config: ExperimentConfig):
     return model, None, tokenizer
 
 
-def setup_data(config: ExperimentConfig, tokenizer) -> tuple[SizedDataset[DatasetItem], DataLoader[DatasetItem], DataLoader[DatasetItem] | None]:
-    """Setup dataset and dataloader."""
+def setup_data(config: ExperimentConfig, tokenizer) -> PredefinedDataset:
+    """Setup dataset loader. Dataloaders are created per-epoch via get_epoch_dataloaders()."""
 
     dataset_loader = PredefinedDataset(
         dataset_type=config.dataset_type,
@@ -258,12 +258,11 @@ def setup_data(config: ExperimentConfig, tokenizer) -> tuple[SizedDataset[Datase
         batch_size=config.batch_size,
         dataset_rows=config.dataset_rows,
     )
-    datasets, dataloaders = dataset_loader.load_datasets_and_dataloaders()
+    dataset_loader._load_dataset()
+    return dataset_loader
 
-    return datasets["train"], dataloaders["train"], dataloaders.get("val", None)
 
-
-def setup_training(config: ExperimentConfig, model, dataset):
+def setup_training(config: ExperimentConfig, model, dataset_loader: PredefinedDataset):
     """Setup optimizer and scheduler."""
     trainable_params = [p for p in model.parameters() if p.requires_grad]
 
@@ -273,7 +272,9 @@ def setup_training(config: ExperimentConfig, model, dataset):
         weight_decay=0.0
     )
 
-    steps_per_epoch = len(dataset) // config.batch_size
+    assert dataset_loader._loaded_datasets is not None, "Datasets must be loaded before setting up training"
+    train_size = config.dataset_rows if config.dataset_rows is not None else len(dataset_loader._loaded_datasets["train"])
+    steps_per_epoch = train_size // config.batch_size
     total_steps = steps_per_epoch * config.num_epochs
     warmup_steps = int(total_steps * config.warmup_ratio)
 
@@ -283,7 +284,7 @@ def setup_training(config: ExperimentConfig, model, dataset):
         num_training_steps=total_steps
     )
 
-    return optimizer, scheduler, total_steps, warmup_steps
+    return optimizer, scheduler, total_steps, warmup_steps, train_size
 
 
 def train_step_direct(
@@ -881,8 +882,8 @@ def main():
         if ref_model is not None:
             ref_model = torch.compile(ref_model)
 
-    train_dataset, train_dataloader, val_dataloader = setup_data(config, tokenizer)
-    optimizer, scheduler, total_steps, warmup_steps = setup_training(config, model, train_dataset)
+    dataset_loader = setup_data(config, tokenizer)
+    optimizer, scheduler, total_steps, warmup_steps, train_size = setup_training(config, model, dataset_loader)
 
     # Verify Hub access before training so we fail fast
     if config.push_to_hub:
@@ -901,7 +902,7 @@ def main():
         )
 
     print("Training setup:")
-    print(f"  - Train dataset size: {len(train_dataset)}")
+    print(f"  - Train dataset size per epoch: {train_size}")
     print(f"  - Total steps: {total_steps}")
     print(f"  - Warmup steps: {warmup_steps}")
 
@@ -910,6 +911,10 @@ def main():
     total_samples_seen = 0
 
     for epoch in range(config.num_epochs):
+        dataloaders = dataset_loader.get_epoch_dataloaders(epoch)
+        train_dataloader = dataloaders["train"]
+        val_dataloader = dataloaders.get("val", None)
+
         epoch_loss, current_step, total_samples_seen = train_epoch(
             model, ref_model, tokenizer, train_dataloader, optimizer, scheduler,
             config,

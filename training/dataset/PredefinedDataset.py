@@ -59,8 +59,10 @@ class PredefinedDataset:
 
         self._loaded_datasets: PredefinedDataset.LoadedDatasets | None = None
         """
-        Cache for loaded datasets. Stores training split in "train" and validation split in "val" (if applicable). Initialized to None, and populated on first call to load_dataset().
+        Cache for loaded datasets (full, before dataset_rows subsampling). Initialized to None, and populated on first call to _load_dataset().
         """
+        self._caches: list[CachedDataset] = []
+        """References to CachedDataset wrappers, for clearing between epochs."""
 
         self.batch_size = batch_size
         self.dataloader_seed = dataloader_seed
@@ -71,15 +73,6 @@ class PredefinedDataset:
         """
         if self._loaded_datasets is None:
             self._loaded_datasets = self._make_dataset()
-            if self.dataset_rows is not None:
-                g = TorchGenerator().manual_seed(self.dataloader_seed)
-                for split, ds in self._loaded_datasets.items():
-                    if len(ds) > self.dataset_rows:
-                        indices = torch.randperm(len(ds), generator=g)[:self.dataset_rows].tolist()
-                        print(
-                            f"dataset_rows={self.dataset_rows}, so randomly subsampling {self.dataset_rows} / {len(ds)} total rows from '{split}' (seed={self.dataloader_seed})"
-                        )
-                        self._loaded_datasets[split] = Subset(ds, indices)  # pyright: ignore[reportArgumentType]
         return self._loaded_datasets
 
     @staticmethod
@@ -167,32 +160,51 @@ class PredefinedDataset:
                     datasets=(pretraining_dataset, chat_dataset), weights=(0.5, 0.5)
                 )
                 print("Created mixed dataset, rows=", len(mixed))
+                cached = CachedDataset(mixed)
+                self._caches.append(cached)
                 return {
-                    "train": CachedDataset(mixed),
+                    "train": cached,
                 }
             case _:
                 raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
 
-    def _make_dataloader(self) -> Dataloaders:
+    def _subsample_for_epoch(self, epoch: int) -> LoadedDatasets:
+        """Subsample dataset_rows from each split using an epoch-specific seed."""
+        assert self._loaded_datasets is not None
+        if self.dataset_rows is None:
+            return self._loaded_datasets
+
+        subsampled: PredefinedDataset.LoadedDatasets = {}
+        for split, ds in self._loaded_datasets.items():
+            if len(ds) > self.dataset_rows:
+                epoch_seed = self.dataloader_seed + epoch
+                g = TorchGenerator().manual_seed(epoch_seed)
+                indices = torch.randperm(len(ds), generator=g)[:self.dataset_rows].tolist()
+                print(
+                    f"Epoch {epoch}: subsampling {self.dataset_rows}/{len(ds)} rows from '{split}' (seed={epoch_seed})"
+                )
+                subsampled[split] = Subset(ds, indices)  # pyright: ignore[reportArgumentType]
+            else:
+                subsampled[split] = ds
+        return subsampled
+
+    def _make_dataloader(self, datasets: LoadedDatasets) -> Dataloaders:
         """
-        Creates new dataloaders for each split in the dataset.
+        Creates new dataloaders for each split in the given datasets.
         """
         collate_with_tokenizer = partial(collate_fn, tokenizer=self.tokenizer)
 
         generator = TorchGenerator()
         generator.manual_seed(self.dataloader_seed)
 
-        assert self._loaded_datasets is not None, (
-            "Datasets must be loaded before creating dataloaders"
-        )
-        assert "train" in self._loaded_datasets, (
+        assert "train" in datasets, (
             "Training split ('train') is required in loaded datasets"
         )
         print(f"Loading dataset for {self.dataset_type}, shuffling (seed={self.dataloader_seed})")
         dataloaders: PredefinedDataset.Dataloaders = {
             "train": DataLoader(
-                self._loaded_datasets["train"], # pyright: ignore[reportArgumentType]
-                batch_size=self.batch_size,  # used to be micro_batch_size instead of using the normal batch_size: there were two seperate parameters. This was because we were trying gradient accumulation, however we decided it wasn't worth it so in all cases we set micro_batch_size = batch_size. So, I'm removing micro_batch_size and just using batch_size directly.
+                datasets["train"], # pyright: ignore[reportArgumentType]
+                batch_size=self.batch_size,
                 shuffle=True,
                 collate_fn=collate_with_tokenizer,
                 num_workers=4,
@@ -202,9 +214,9 @@ class PredefinedDataset:
             )
         }
 
-        if "val" in self._loaded_datasets:
+        if "val" in datasets:
             dataloaders["val"] = DataLoader(
-                self._loaded_datasets["val"], # pyright: ignore[reportArgumentType]
+                datasets["val"], # pyright: ignore[reportArgumentType]
                 batch_size=1,
                 shuffle=False,
                 collate_fn=collate_with_tokenizer,
@@ -213,15 +225,29 @@ class PredefinedDataset:
                 persistent_workers=True,
             )
 
-        assert dataloaders.keys() == self._loaded_datasets.keys(), (
+        assert dataloaders.keys() == datasets.keys(), (
             "Note: Dataloader did not generate loaders for all dataset splits"
         )
         return dataloaders
 
+    def clear_caches(self):
+        """Clear all CachedDataset caches to free memory between epochs."""
+        for cache in self._caches:
+            cache.clear()
+
+    def get_epoch_dataloaders(self, epoch: int) -> Dataloaders:
+        """
+        Loads the dataset (if not already loaded), subsamples for the given epoch, and creates dataloaders.
+        """
+        self._load_dataset()
+        self.clear_caches()
+        epoch_datasets = self._subsample_for_epoch(epoch)
+        return self._make_dataloader(epoch_datasets)
+
     def load_datasets_and_dataloaders(self) -> tuple[LoadedDatasets, Dataloaders]:
         """
-        Loads the dataset (if not already loaded) and creates dataloaders for each split. Returns a tuple of (loaded_datasets [all splits of the loaded dataset], dataloaders [one data loader for each split]).
+        Loads the dataset (if not already loaded) and creates dataloaders for each split (without epoch-based subsampling). Returns a tuple of (loaded_datasets, dataloaders).
         """
         datasets = self._load_dataset()
-        dataloaders = self._make_dataloader()
+        dataloaders = self._make_dataloader(datasets)
         return datasets, dataloaders

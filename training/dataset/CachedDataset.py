@@ -30,3 +30,6 @@ class CachedDataset(SizedDataset[DatasetRow]):
         except KeyError:
             self.cache[idx] = self.dataset[idx]
             return self.cache[idx]
+
+    def clear(self):
+        self.cache.clear()
