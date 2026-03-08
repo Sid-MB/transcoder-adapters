@@ -17,7 +17,7 @@ class MixedDataset(Dataset[DatasetRow]):
     def __init__(
         self,
         datasets: tuple[SizedDataset[DatasetRow], ...],
-        weights: tuple[float, ...],
+        weights: tuple[float, ...] | None = None,
         *,
         seed: int = 80,
     ):
@@ -25,9 +25,12 @@ class MixedDataset(Dataset[DatasetRow]):
 
         Args:
             datasets: List of Dataset instances to mix.
-            weights: Sampling weight for each dataset (need not sum to 1).
+            weights: Sampling weight for each dataset (need not sum to 1). If `None`, each dataset has equal weight.
             seed: Random seed for reproducible mixing.
         """
+        if weights is None:
+            weights = tuple(1.0 for _ in datasets)
+
         if len(datasets) != len(weights):
             raise ValueError(
                 f"Got {len(datasets)} datasets but {len(weights)} weights"
