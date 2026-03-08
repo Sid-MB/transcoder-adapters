@@ -17,6 +17,9 @@ from .openthoughts.config import OpenThoughtsConfig
 class LengthExcessionBehavior(Enum):
     TRUNCATE = "truncate"
     ERROR = "error"
+    """Throw if any sequences are over the max length."""
+    FILTER = "filter"
+    """Filter out any sequences that exceed the maximum length."""
 
 
 class PredefinedDataset:
@@ -78,9 +81,40 @@ class PredefinedDataset:
                         self._loaded_datasets[split] = Subset(ds, indices)  # pyright: ignore[reportArgumentType]
         return self._loaded_datasets
 
+    @staticmethod
+    def _filter_by_length(dataset: SizedDataset[DatasetItem], name: str = "") -> Subset:
+        """Filter a dataset to only include non-truncated examples.
+
+        Assumes the dataset was constructed with truncate=True, so each item
+        has a 'truncated' flag. Returns a Subset containing only items where
+        truncated=False (i.e. the full sequence fit within max_length).
+        """
+        
+        valid_indices = []
+        for i in range(len(dataset)):
+            item = dataset[i]
+            if not item["truncated"]:
+                valid_indices.append(i)
+        label = f" ({name})" if name else ""
+        print(f"Filtered{label}: kept {len(valid_indices)}/{len(dataset)} examples that fit within max_length")
+        return Subset(dataset, valid_indices)  # pyright: ignore[reportArgumentType]
+
     def _make_dataset(self) -> LoadedDatasets:
         print(f"Loading training dataset of type {self.dataset_type} with config:", self.dataset_specific_config)
+        _should_filter = self.length_excession_behavior == LengthExcessionBehavior.FILTER
+        # When filtering, we construct with truncate=True so __getitem__ doesn't
+        # error, then drop truncated examples after construction.
+        _truncate = _should_filter or self.length_excession_behavior == LengthExcessionBehavior.TRUNCATE
 
+        datasets = self._make_dataset_splits(_truncate)
+
+        if _should_filter:
+            for split in datasets:
+                datasets[split] = self._filter_by_length(datasets[split], split)  # pyright: ignore[reportArgumentType]
+
+        return datasets
+
+    def _make_dataset_splits(self, truncate: bool) -> LoadedDatasets:
         match self.dataset_type:
             case DatasetType.OPEN_THOUGHTS:
                 from training.dataset.openthoughts.open_thoughts import (
@@ -94,8 +128,7 @@ class PredefinedDataset:
                         tokenizer=self.tokenizer,
                         max_length=self.dataset_specific_config.max_seq_length,
                         format=self.dataset_specific_config.data_format,
-                        truncate=self.length_excession_behavior
-                        == LengthExcessionBehavior.TRUNCATE,
+                        truncate=truncate,
                         loss_on_prompt=self.loss_on_prompt,
                     )
                 }
@@ -105,8 +138,7 @@ class PredefinedDataset:
                         tokenizer=self.tokenizer,
                         max_length=self.dataset_specific_config.max_seq_length,
                         format=self.dataset_specific_config.data_format,
-                        truncate=self.length_excession_behavior
-                        == LengthExcessionBehavior.TRUNCATE,
+                        truncate=truncate,
                         loss_on_prompt=self.loss_on_prompt,
                     )
                 return datasets
@@ -121,15 +153,13 @@ class PredefinedDataset:
                     data_path=self.dataset_specific_config.pretraining_datapath,
                     tokenizer=self.tokenizer,
                     max_length=self.dataset_specific_config.pretraining_max_seq_length,
-                    truncate=self.length_excession_behavior
-                    == LengthExcessionBehavior.TRUNCATE,
+                    truncate=truncate,
                 )
                 chat_dataset = LMSYSChatDataset(
                     data_path=self.dataset_specific_config.chat_conversations_datapath,
                     tokenizer=self.tokenizer,
                     max_length=self.dataset_specific_config.chat_max_seq_length if self.dataset_specific_config.chat_max_seq_length != "pretraining_max_seq_length" else self.dataset_specific_config.pretraining_max_seq_length,
-                    truncate=self.length_excession_behavior
-                    == LengthExcessionBehavior.TRUNCATE,
+                    truncate=truncate,
                 )
                 mixed = MixedDataset(
                     datasets=(pretraining_dataset, chat_dataset), weights=(0.5, 0.5)
