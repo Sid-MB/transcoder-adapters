@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # ── Usage ────────────────────────────────────────────────────────────
 #   Run ./slurm_batch. Or you can do `sbatch slurm_run_debug.sh`, but

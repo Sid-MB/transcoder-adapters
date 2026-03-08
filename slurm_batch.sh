@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Setup environment variables. sbatch passes all current env variables to the job.
 # This runs `export HF_TOKEN=...`

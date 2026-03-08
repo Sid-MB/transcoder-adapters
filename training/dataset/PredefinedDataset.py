@@ -89,7 +89,7 @@ class PredefinedDataset:
         has a 'truncated' flag. Returns a Subset containing only items where
         truncated=False (i.e. the full sequence fit within max_length).
         """
-        
+        print("Dropping truncated rows from dataset split ", (f"({name})" if name else "[no name]") + "...")
         valid_indices = []
         for i in range(len(dataset)):
             item = dataset[i]
@@ -109,6 +109,7 @@ class PredefinedDataset:
         datasets = self._make_dataset_splits(_truncate)
 
         if _should_filter:
+            print("Filtering datasets...")
             for split in datasets:
                 datasets[split] = self._filter_by_length(datasets[split], split)  # pyright: ignore[reportArgumentType]
 
@@ -164,6 +165,7 @@ class PredefinedDataset:
                 mixed = MixedDataset(
                     datasets=(pretraining_dataset, chat_dataset), weights=(0.5, 0.5)
                 )
+                print("Created mixed dataset, rows=", len(mixed))
                 return {
                     "train": mixed,
                 }
