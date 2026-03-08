@@ -15,4 +15,4 @@ sbatch \
   --time=21-00:00:00 \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
-  ./slurm_run_debug.sh "$@"
+  ./run_train_gpu.sh "$@"
