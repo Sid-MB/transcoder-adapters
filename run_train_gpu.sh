@@ -33,9 +33,9 @@ uv sync
 
 echo "[Slurm] Running Python..."
 
-set -x
+set -xe
 # uv run python -m training.train --config training/configs/gemma2_9b.yaml "$@"
 uv run python -m training.train --config training/configs/gemma2_2b.yaml "$@"
-set +x
+set +xe
 
 echo "[Slurm] Job finished!"
