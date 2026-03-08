@@ -64,12 +64,6 @@ class BridgingConfig:
     backbone: str = "target"  # "base" or "target" (which model provides attn/embed/layernorm)
 
 
-@dataclass
-class DirectConfig:
-    """Direct fine-tuning configuration (no bridging, LM loss only on response tokens)."""
-    reference_model_path: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"  # Source for copied token embeddings
-    copied_tokens: list[str] = field(default_factory=lambda: ["<think>", "</think>"])  # Tokens to add and copy from reference
-
 
 @dataclass
 class ExperimentConfig:
@@ -82,9 +76,8 @@ class ExperimentConfig:
     # Transcoder configuration
     transcoder: TranscoderConfig | None = None
 
-    # Training mode (exactly one of bridging or direct must be set)
-    bridging: BridgingConfig | None = None
-    direct: DirectConfig | None = None
+    # Training mode
+    bridging: Optional[BridgingConfig] = None
 
     # Training hyperparameters
     learning_rate: float = 8e-4
@@ -176,24 +169,6 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
         adapter_configs['transcoder'] = TranscoderConfig(**config_dict.pop('transcoder'))
     if 'bridging' in config_dict:
         adapter_configs['bridging'] = BridgingConfig(**config_dict.pop('bridging'))
-    if 'direct' in config_dict:
-        adapter_configs['direct'] = DirectConfig(**config_dict.pop('direct'))
-
-    # Parse datasets list before creating ExperimentConfig
-    if 'datasets' in config_dict:
-        raw_datasets = config_dict.pop('datasets')
-        parsed_datasets = []
-        for entry in raw_datasets:
-            if isinstance(entry, dict):
-                if 'length_excession_behavior' in entry and isinstance(entry['length_excession_behavior'], str):
-                    entry['length_excession_behavior'] = LengthExcessionBehavior(entry['length_excession_behavior'])
-                if 'num_rows' in entry and entry['num_rows'] is not None:
-                    entry['num_rows'] = int(entry['num_rows'])
-                parsed_datasets.append(DatasetEntryConfig(**entry))
-            else:
-                parsed_datasets.append(entry)
-        adapter_configs['datasets'] = parsed_datasets
-
     # Create main config with adapter configs
     config = ExperimentConfig(**config_dict, **adapter_configs)
     config.all_configs = paths
@@ -308,20 +283,6 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
             run_parts.append(f"{backbone[:3]}bb")  # "basbb" or "tgtbb"
             run_parts.append(f"lb{config.bridging.lambda_bridge}")
             run_parts.append(f"ln{config.bridging.lambda_nmse}")
-        elif config.direct:
-            run_parts.append("direct")
-
-        # Add data info
-        if config.total_rows is not None:
-            run_parts.append(f"dr{config.total_rows}")
-        else:
-            entries_with_rows = [e for e in config.datasets if e.num_rows is not None]
-            if entries_with_rows:
-                total_rows = sum(e.num_rows for e in entries_with_rows)  # type: ignore
-                run_parts.append(f"dr{total_rows}")
-            else:
-                run_parts.append("drall")
-
         # Add training params
         run_parts.append(f"lr{config.learning_rate:.0e}")
         run_parts.append(f"bs{config.batch_size}")
@@ -367,8 +328,6 @@ def apply_overrides(config: ExperimentConfig, overrides: dict[str, Any]) -> Expe
                 setattr(config.transcoder, param, value)
             elif section == 'bridging' and config.bridging:
                 setattr(config.bridging, param, value)
-            elif section == 'direct' and config.direct:
-                setattr(config.direct, param, value)
             else:
                 raise ValueError(f"Invalid override section: {section}")
         else:
