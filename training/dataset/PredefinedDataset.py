@@ -7,6 +7,7 @@ from torch import Generator as TorchGenerator
 
 from .collate import collate_fn
 from .types import DatasetItem, SizedDataset
+from training.helpers.log import logger
 
 from .gemma.config import FineWebLMSysMixedConfig
 
@@ -83,18 +84,18 @@ class PredefinedDataset:
         has a 'truncated' flag. Returns a Subset containing only items where
         truncated=False (i.e. the full sequence fit within max_length).
         """
-        print("Dropping truncated rows from dataset split ", (f"({name})" if name else "[no name]") + "...")
+        logger.info(f"Dropping truncated rows from dataset split {f'({name})' if name else '[no name]'}...")
         valid_indices = []
         for i in range(len(dataset)):
             item = dataset[i]
             if not item["truncated"]:
                 valid_indices.append(i)
         label = f" ({name})" if name else ""
-        print(f"Filtered{label}: kept {len(valid_indices)}/{len(dataset)} examples that fit within max_length")
+        logger.info(f"Filtered{label}: kept {len(valid_indices)}/{len(dataset)} examples that fit within max_length")
         return Subset(dataset, valid_indices)  # pyright: ignore[reportArgumentType]
 
     def _make_dataset(self) -> LoadedDatasets:
-        print(f"Loading training dataset of type {self.dataset_type} with config:", self.dataset_specific_config)
+        logger.info(f"Loading training dataset of type {self.dataset_type} with config: {self.dataset_specific_config}")
         _should_filter = self.length_excession_behavior == LengthExcessionBehavior.FILTER
         # When filtering, we construct with truncate=True so __getitem__ doesn't
         # error, then drop truncated examples after construction.
@@ -103,7 +104,7 @@ class PredefinedDataset:
         datasets = self._make_dataset_splits(_truncate)
 
         if _should_filter:
-            print("Filtering datasets...")
+            logger.info("Filtering datasets...")
             for split in datasets:
                 datasets[split] = self._filter_by_length(datasets[split], split)  # pyright: ignore[reportArgumentType]
 
@@ -159,7 +160,7 @@ class PredefinedDataset:
                 mixed = MixedDataset(
                     datasets=(pretraining_dataset, chat_dataset), weights=(0.5, 0.5)
                 )
-                print("Created mixed dataset, rows=", len(mixed))
+                logger.info(f"Created mixed dataset, rows={len(mixed)}")
                 cached = CachedDataset(mixed)
                 self._caches.append(cached)
                 return {
@@ -180,7 +181,7 @@ class PredefinedDataset:
                 epoch_seed = self.dataloader_seed + epoch
                 g = TorchGenerator().manual_seed(epoch_seed)
                 indices = torch.randperm(len(ds), generator=g)[:self.dataset_rows].tolist()
-                print(
+                logger.info(
                     f"Epoch {epoch}: subsampling {self.dataset_rows}/{len(ds)} rows from '{split}' (seed={epoch_seed})"
                 )
                 subsampled[split] = Subset(ds, indices)  # pyright: ignore[reportArgumentType]
@@ -200,7 +201,7 @@ class PredefinedDataset:
         assert "train" in datasets, (
             "Training split ('train') is required in loaded datasets"
         )
-        print(f"Loading dataset for {self.dataset_type}, shuffling (seed={self.dataloader_seed})")
+        logger.info(f"Loading dataset for {self.dataset_type}, shuffling (seed={self.dataloader_seed})")
         dataloaders: PredefinedDataset.Dataloaders = {
             "train": DataLoader(
                 datasets["train"], # pyright: ignore[reportArgumentType]

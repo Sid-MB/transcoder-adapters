@@ -4,6 +4,7 @@ import re
 import tempfile
 
 from huggingface_hub import HfApi, ModelCard, ModelCardData
+from training.helpers.log import logger
 
 
 HUB_NAME_PREFIX = "2026.TA"
@@ -43,7 +44,7 @@ def push_to_hub(
     card = _build_model_card(config, repo_id, full_name=full_name, wandb_url=wandb_url)
     card.push_to_hub(repo_id)
 
-    print(f"Model pushed to https://huggingface.co/{repo_id}")
+    logger.info(f"Model pushed to https://huggingface.co/{repo_id}")
 
 
 def _upload_training_config(api: HfApi, config, repo_id: str):
@@ -99,7 +100,7 @@ def verify_hub_access(repo_id: str):
             f"Set hub_org to your username or one of your orgs."
         )
 
-    print(f"Hub access verified: pushing to {repo_id}")
+    logger.info(f"Hub access verified: pushing to {repo_id}")
 
 
 def truncate_repo_name(name: str, max_len: int = MAX_REPO_NAME_LEN) -> str:

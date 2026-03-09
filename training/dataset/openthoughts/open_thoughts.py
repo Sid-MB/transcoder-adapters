@@ -4,6 +4,7 @@ import json
 
 from training.dataset.types import DatasetItem
 from training.dataset.openthoughts.types import DataFormat
+from training.helpers.log import logger
 
 
 # DeepSeek R1 Distill format tokens
@@ -68,14 +69,14 @@ class OpenThoughtsDataset(Dataset):
         self.split = split
         self.filter_length = filter_length
         if self.truncate and self.filter_length:
-            print('truncating enabled, disabling filter_length')
+            logger.info('truncating enabled, disabling filter_length')
             self.filter_length = False
         self.examples = []
         self._load_data()
 
     def _load_data(self):
         """Load filtered JSONL data from local path or HuggingFace (hf://repo/path)."""
-        print(f"Loading data from {self.data_path}")
+        logger.info(f"Loading data from {self.data_path}")
 
         all_examples = []
         if self.data_path.startswith("hf://"):
@@ -95,16 +96,16 @@ class OpenThoughtsDataset(Dataset):
                 all_examples.append(example)
 
         if self.filter_length:
-            print(f"Filtering {len(all_examples)} examples by length...")
+            logger.info(f"Filtering {len(all_examples)} examples by length...")
             for example in all_examples:
                 formatted_text = self.format_example(example)
                 tokens = self.tokenizer(formatted_text, add_special_tokens=True)
                 if len(tokens['input_ids']) <= self.max_length:
                     self.examples.append(example)
-            print(f"Kept {len(self.examples)}/{len(all_examples)} after filtering")
+            logger.info(f"Kept {len(self.examples)}/{len(all_examples)} after filtering")
         else:
             self.examples = all_examples
-            print(f"Loaded {len(self.examples)} examples (no length filtering)")
+            logger.info(f"Loaded {len(self.examples)} examples (no length filtering)")
 
     def __len__(self) -> int:
         """Return the number of examples."""

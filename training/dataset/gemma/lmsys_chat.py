@@ -2,6 +2,7 @@ from torch.utils.data import Dataset
 
 from datasets import Dataset as HFDataset, load_dataset
 from training.dataset.types import DatasetItem
+from training.helpers.log import logger
 
 
 class LMSYSChatDataset(Dataset):
@@ -44,10 +45,10 @@ class LMSYSChatDataset(Dataset):
         self.conversation_field = conversation_field
 
         from training.helpers.timing import Timer
-        print(f"Loading LMSYS-Chat data: {data_path} (split={split})")
+        logger.info(f"Loading LMSYS-Chat data: {data_path} (split={split})")
         with Timer("load LMSYS-Chat"):
             self.ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAttributeAccessIssue]. Since we're choosing a split, we know a dict isn't returned, and since streaming is not True, we know it's not an IterableDataset.
-        print(f"Loaded {len(self.ds)} examples")
+        logger.info(f"Loaded {len(self.ds)} examples")
 
     def __len__(self) -> int:
         return len(self.ds)

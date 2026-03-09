@@ -10,6 +10,7 @@ import os
 from torch.utils.data.dataloader import DataLoader
 
 from training.dataset.types import DatasetItem, SizedDataset
+from training.helpers.log import logger, setup_logging
 os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
 
 import torch
@@ -85,7 +86,7 @@ def setup_models_bridging(config: ExperimentConfig):
     if backbone == "target":
         # Target backbone: load reference model (attn/embed/layernorm from reference),
         # then swap in base model's MLP weights. Result: reference attn + base MLP + fresh transcoder.
-        print(f"Loading reference model as backbone: {bridging_config.reference_model_path}")
+        logger.info(f"Loading reference model as backbone: {bridging_config.reference_model_path}")
         model = ModelWithTranscoder.from_pretrained(
             bridging_config.reference_model_path,
             config=hf_config,
@@ -93,7 +94,7 @@ def setup_models_bridging(config: ExperimentConfig):
             device_map="auto",
             trust_remote_code=True,
         )
-        print(f"Swapping in base model MLP weights from: {config.model_name}")
+        logger.info(f"Swapping in base model MLP weights from: {config.model_name}")
         base_model = AutoModelForCausalLM.from_pretrained(
             config.model_name,
             dtype=torch.bfloat16,
@@ -107,10 +108,10 @@ def setup_models_bridging(config: ExperimentConfig):
             adapter_mlp.up_proj.weight.data.copy_(base_mlp.up_proj.weight.data.to(device))
             adapter_mlp.down_proj.weight.data.copy_(base_mlp.down_proj.weight.data.to(device))
         del base_model
-        print("MLP weights swapped")
+        logger.info("MLP weights swapped")
     else:
         # Base backbone: all non-transcoder weights from base model directly.
-        print(f"Loading base model: {config.model_name}")
+        logger.info(f"Loading base model: {config.model_name}")
         model = ModelWithTranscoder.from_pretrained(
             config.model_name,
             config=hf_config,
@@ -131,10 +132,10 @@ def setup_models_bridging(config: ExperimentConfig):
         param.requires_grad = "transcoder" in name
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    print(f"Trainable: {n_trainable:,} params, Frozen: {n_frozen:,} params")
+    logger.info(f"Trainable: {n_trainable:,} params, Frozen: {n_frozen:,} params")
 
     # Load reference model (frozen)
-    print(f"Loading reference model: {bridging_config.reference_model_path}")
+    logger.info(f"Loading reference model: {bridging_config.reference_model_path}")
     ref_model = AutoModelForCausalLM.from_pretrained(
         bridging_config.reference_model_path,
         dtype=torch.bfloat16,
@@ -144,7 +145,7 @@ def setup_models_bridging(config: ExperimentConfig):
     ref_model.eval()
     for param in ref_model.parameters():
         param.requires_grad = False
-    print("Reference model loaded and frozen")
+    logger.info("Reference model loaded and frozen")
 
     return model, ref_model, tokenizer
 
@@ -176,7 +177,7 @@ def setup_models_direct(config: ExperimentConfig):
         num_added = tokenizer.add_special_tokens({
             "additional_special_tokens": direct_config.copied_tokens,
         })
-        print(f"Added {num_added} special tokens: {direct_config.copied_tokens}")
+        logger.info(f"Added {num_added} special tokens: {direct_config.copied_tokens}")
 
     # Load base model with transcoders
     hf_config = ConfigWithTranscoder.from_pretrained(
@@ -184,7 +185,7 @@ def setup_models_direct(config: ExperimentConfig):
         transcoder_n_features=tc_config.n_features,
         transcoder_dec_bias=tc_config.dec_bias,
     )
-    print(f"Loading base model: {config.model_name}")
+    logger.info(f"Loading base model: {config.model_name}")
     model = ModelWithTranscoder.from_pretrained(
         config.model_name,
         config=hf_config,
@@ -198,7 +199,7 @@ def setup_models_direct(config: ExperimentConfig):
         model.resize_token_embeddings(len(tokenizer))
 
         # Copy embeddings from reference model for the new tokens
-        print(f"Copying token embeddings from: {direct_config.reference_model_path}")
+        logger.info(f"Copying token embeddings from: {direct_config.reference_model_path}")
         ref_model = AutoModelForCausalLM.from_pretrained(
             direct_config.reference_model_path,
             dtype=torch.bfloat16,
@@ -214,7 +215,7 @@ def setup_models_direct(config: ExperimentConfig):
             new_id = tokenizer.convert_tokens_to_ids(token_str)
             ref_id = ref_tokenizer.convert_tokens_to_ids(token_str)
             if ref_id == ref_tokenizer.unk_token_id:
-                print(f"  WARNING: '{token_str}' not found in reference tokenizer, skipping")
+                logger.warning(f"  '{token_str}' not found in reference tokenizer, skipping")
                 continue
 
             # Copy embed_tokens
@@ -227,10 +228,10 @@ def setup_models_direct(config: ExperimentConfig):
             model.lm_head.weight.data[new_id] = (
                 ref_model.lm_head.weight.data[ref_id].to(head_device)
             )
-            print(f"  Copied '{token_str}': ref[{ref_id}] -> base[{new_id}]")
+            logger.info(f"  Copied '{token_str}': ref[{ref_id}] -> base[{new_id}]")
 
         del ref_model, ref_tokenizer
-        print("Token embeddings copied")
+        logger.info("Token embeddings copied")
 
     # Re-initialize transcoder weights (same reason as bridging)
     for mlp in model._transcoder_mlps(): # pyright: ignore[reportCallIssue]
@@ -241,7 +242,7 @@ def setup_models_direct(config: ExperimentConfig):
         param.requires_grad = "transcoder" in name
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    print(f"Trainable: {n_trainable:,} params, Frozen: {n_frozen:,} params")
+    logger.info(f"Trainable: {n_trainable:,} params, Frozen: {n_frozen:,} params")
 
     return model, None, tokenizer
 
@@ -593,31 +594,31 @@ def train_epoch(
                     val_metrics["val/epoch"] = epoch
                     val_metrics["val/step"] = global_step
                     val_metrics["val/samples_seen"] = samples_seen
-                    print(f"  Val LM: {val_metrics['val/lm_loss']:.4f}")
+                    logger.info(f"  Val LM: {val_metrics['val/lm_loss']:.4f}")
                 else:
                     val_metrics = validate_bridging(model, ref_model, val_dataloader, config)
                     val_metrics["val/epoch"] = epoch
                     val_metrics["val/step"] = global_step
                     val_metrics["val/samples_seen"] = samples_seen
-                    print(f"  Val total: {val_metrics['val/total_loss']:.4f}, LM: {val_metrics['val/language_modeling_loss']:.4f}, KL: {val_metrics['val/kl_to_ref']:.4f}")
+                    logger.info(f"  Val total: {val_metrics['val/total_loss']:.4f}, LM: {val_metrics['val/language_modeling_loss']:.4f}, KL: {val_metrics['val/kl_to_ref']:.4f}")
                 if config.use_wandb:
                     wandb.log(val_metrics, step=global_step)
 
             # Run comprehensive layerwise validation (bridging only)
             if config.bridging and val_dataloader is not None and global_step % config.layerwise_val_frequency == 0:
-                print("  Running layerwise validation...")
+                logger.info("  Running layerwise validation...")
                 layerwise_metrics = validate_layerwise(model, ref_model, val_dataloader, config)
                 if config.use_wandb:
                     wandb.log(layerwise_metrics, step=global_step)
 
             # Save periodic checkpoint (overwrites previous latest)
             if config.save_checkpoints and global_step > 0 and global_step % config.checkpoint_frequency == 0:
-                print(f"  Saving checkpoint at step {global_step}...")
+                logger.info(f"  Saving checkpoint at step {global_step}...")
                 save_latest_checkpoint(model, tokenizer, config.output_dir, global_step)
 
             # Debug mode early exit
             if config.debug_mode and global_step >= DEBUG_MODE_EARLY_EXIT_STEPS:
-                print(f"Debug mode: Breaking after {global_step} steps")
+                logger.info(f"Debug mode: Breaking after {global_step} steps")
                 break
 
         del batch
@@ -805,7 +806,7 @@ def save_checkpoint(model, tokenizer, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
-    print(f"Checkpoint saved to {output_dir}")
+    logger.info(f"Checkpoint saved to {output_dir}")
 
 
 def save_latest_checkpoint(model, tokenizer, base_dir, step):
@@ -846,6 +847,8 @@ def main():
         else:
             parser.error(f"Invalid value for --debug_mode: '{overrides['debug_mode']}'. Must be 'true' or 'false'.")
 
+    setup_logging()
+
     # Load config with overrides
     config = load_config(args.config, overrides=overrides)
 
@@ -857,16 +860,16 @@ def main():
 
     # Print mode-specific info
     if config.direct:
-        print("Starting direct fine-tuning")
-        print(f"  Base model: {config.model_name}")
-        print(f"  Copied tokens: {config.direct.copied_tokens}")
+        logger.info("Starting direct fine-tuning")
+        logger.info(f"  Base model: {config.model_name}")
+        logger.info(f"  Copied tokens: {config.direct.copied_tokens}")
     else:
         assert config.bridging is not None
-        print("Starting bridging training")
-        print(f"  Base model: {config.model_name}")
-        print(f"  Reference model: {config.bridging.reference_model_path}")
-        print(f"  Loss type: {config.bridging.loss_type}")
-        print(f"  N cutoffs: {config.bridging.n_cutoffs}")
+        logger.info("Starting bridging training")
+        logger.info(f"  Base model: {config.model_name}")
+        logger.info(f"  Reference model: {config.bridging.reference_model_path}")
+        logger.info(f"  Loss type: {config.bridging.loss_type}")
+        logger.info(f"  N cutoffs: {config.bridging.n_cutoffs}")
 
     # Setup models
     from training.helpers.timing import Timer
@@ -880,7 +883,7 @@ def main():
     # Compile models for faster standard forward passes.
     # forward_mixed / compute_nmse_loss use manual layer loops and remain uncompiled.
     if False:
-        print("Compiling models...")
+        logger.info("Compiling models...")
         model = torch.compile(model)
         if ref_model is not None:
             ref_model = torch.compile(ref_model)
@@ -907,10 +910,10 @@ def main():
             config=config.__dict__
         )
 
-    print("Training setup:")
-    print(f"  - Train dataset size per epoch: {train_size}")
-    print(f"  - Total steps: {total_steps}")
-    print(f"  - Warmup steps: {warmup_steps}")
+    logger.info("Training setup:")
+    logger.info(f"  - Train dataset size per epoch: {train_size}")
+    logger.info(f"  - Total steps: {total_steps}")
+    logger.info(f"  - Warmup steps: {warmup_steps}")
 
     # Training loop
     current_step = 0
@@ -931,10 +934,10 @@ def main():
 
         # Save checkpoint at end of epoch (overwrites previous latest)
         if config.save_checkpoints:
-            print(f"  Saving checkpoint at end of epoch {epoch}...")
+            logger.info(f"  Saving checkpoint at end of epoch {epoch}...")
             save_latest_checkpoint(model, tokenizer, config.output_dir, current_step)
 
-    print("Training complete!")
+    logger.info("Training complete!")
 
     # Always save final checkpoint
     save_checkpoint(model, tokenizer, config.output_dir)
@@ -943,7 +946,7 @@ def main():
     if hub_repo_id:
         from training.upload_models.hub import push_to_hub
 
-        print(f"Pushing model to Hub: {hub_repo_id}")
+        logger.info(f"Pushing model to Hub: {hub_repo_id}")
         wandb_url = wandb.run.url if (config.use_wandb and wandb.run is not None) else None
         push_to_hub(model, config, hub_repo_id, wandb_url=wandb_url)
 

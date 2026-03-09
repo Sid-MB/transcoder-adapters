@@ -1,5 +1,7 @@
 import time
 
+from training.helpers.log import logger
+
 
 def fmt_elapsed(seconds: float) -> str:
     """Format elapsed seconds as e.g. '5s' or '2m05s'."""
@@ -25,4 +27,4 @@ class Timer:
         return self
 
     def __exit__(self, *_):
-        print(f"  [{self.label}: {fmt_elapsed(time.time() - self.start)}]")
+        logger.info(f"  [{self.label}: {fmt_elapsed(time.time() - self.start)}]")

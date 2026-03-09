@@ -4,6 +4,8 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Any
 
+from training.helpers.log import logger
+
 from .dataset.openthoughts.config import OpenThoughtsConfig
 from .dataset.gemma.config import FineWebLMSysMixedConfig
 
@@ -154,18 +156,18 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
                 parent = getattr(config, parent_attr, None)
                 if parent is not None:
                     setattr(parent, child_attr, value)
-                    print(f"Override {parent_attr}.{child_attr}: {value}")
+                    logger.info(f"Override {parent_attr}.{child_attr}: {value}")
             else:
                 setattr(config, key, value)
-                print(f"Override {key}: {value}")
+                logger.info(f"Override {key}: {value}")
 
         # debug_mode=True has side effects
         if overrides.get("debug_mode") is True:
             config.use_wandb = False
-            print("Debug mode enabled through override: wandb disabled")
+            logger.info("Debug mode enabled through override: wandb disabled")
             if config.run_name_prefix and not config.run_name_prefix.endswith("_debug"):
                 config.run_name_prefix += "_debug"
-                print(f"Added _debug to run_name_prefix: '{config.run_name_prefix}'")
+                logger.info(f"Added _debug to run_name_prefix: '{config.run_name_prefix}'")
 
         # Force regeneration of computed fields
         config.wandb_run_name = None
@@ -219,7 +221,7 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
     # Print a warning if there were any extra keys in the YAML that were not used in the config dataclass
     extra_keys = set(config_dict.keys()) - set(ExperimentConfig.__dataclass_fields__.keys())
     if extra_keys:
-        print("Warning: the following keys in the config file were not recognized and will be ignored:", extra_keys)
+        logger.warning(f"The following keys in the config file were not recognized and will be ignored: {extra_keys}")
 
     # Auto-compute run name and output dir if not specified
     config = _finalize_config(config)
@@ -285,7 +287,7 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
             raise RuntimeError("$USER environment variable is not set. Provide an output_dir in your config or set the USER environment variable so we know where to save checkpoints.")
         date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
         config.output_dir = f"/nlp/scr/{user}/sparse-adaptation/checkpoints/{config.wandb_run_name}_{date_str}_{slurm_job_id}"
-        print(f"Checkpoints save directory: {config.output_dir}")
+        logger.info(f"Checkpoints save directory: {config.output_dir}")
 
     return config
 

@@ -30,6 +30,7 @@ from concurrent.futures import Future
 
 from huggingface_hub import HfApi
 
+from training.helpers.log import logger
 from .hub import verify_hub_access, _build_model_card, _upload_training_config, truncate_repo_name, HUB_NAME_PREFIX
 
 
@@ -135,11 +136,13 @@ def upload_checkpoint(
         run_as_future=True,
     )
 
-    print(f"  Started upload: {os.path.basename(checkpoint_dir)} -> {repo_id}")
+    logger.info(f"  Started upload: {os.path.basename(checkpoint_dir)} -> {repo_id}")
     return future
 
 
 def main():
+    from training.helpers.log import setup_logging
+    setup_logging()
     default_path = f"/nlp/scr/{os.environ.get('USER')}/sparse-adaptation/checkpoints"
     parser = argparse.ArgumentParser(
         description="Upload saved checkpoints to Hugging Face Hub",
@@ -176,27 +179,27 @@ def main():
     # Find checkpoints
     checkpoints = find_checkpoints(args.path)
     if not checkpoints:
-        print(f"No checkpoints found at {args.path}")
+        logger.error(f"No checkpoints found at {args.path}")
         sys.exit(1)
 
-    print(f"Found {len(checkpoints)} checkpoint(s):")
+    logger.info(f"Found {len(checkpoints)} checkpoint(s):")
     for cp in checkpoints:
-        print(f"  {os.path.basename(cp)}")
+        logger.info(f"  {os.path.basename(cp)}")
 
     # Load config if provided (for model card metadata)
     config = None
     if args.config:
         from training.config import load_config
         config = load_config(args.config)
-        print(f"Loaded config from {args.config}")
+        logger.info(f"Loaded config from {args.config}")
 
     # Build repo IDs and verify access on the first one
     repo_ids = [repo_id_from_checkpoint(cp, args.hub_org) for cp in checkpoints]
 
     if args.dry_run:
-        print("\nDry run — would upload:")
+        logger.info("Dry run — would upload:")
         for cp, repo_id in zip(checkpoints, repo_ids):
-            print(f"  {os.path.basename(cp)} -> {repo_id}")
+            logger.info(f"  {os.path.basename(cp)} -> {repo_id}")
         return
 
     verify_hub_access(repo_ids[0])
@@ -206,27 +209,26 @@ def main():
     existing = [rid for rid in repo_ids if api.repo_exists(rid)]
     if existing:
         if args.exists == "skip":
-            print(f"\nSkipping {len(existing)} existing repo(s):")
+            logger.info(f"Skipping {len(existing)} existing repo(s):")
             for rid in existing:
-                print(f"  {rid}")
+                logger.info(f"  {rid}")
             # Filter out existing ones
             pairs = [(cp, rid) for cp, rid in zip(checkpoints, repo_ids) if rid not in existing]
             checkpoints = [cp for cp, _ in pairs]
             repo_ids = [rid for _, rid in pairs]
             if not checkpoints:
-                print("Nothing to upload.")
+                logger.info("Nothing to upload.")
                 return
         elif args.exists == "overwrite":
-            print(f"\n{len(existing)} repo(s) already exist and will be overwritten.")
+            logger.info(f"{len(existing)} repo(s) already exist and will be overwritten.")
         else:
-            print(f"\nError: {len(existing)} repo(s) already exist on the Hub:")
+            logger.error(f"{len(existing)} repo(s) already exist on the Hub:")
             for rid in existing:
-                print(f"  https://huggingface.co/{rid}")
-            print("Use --exists=skip to skip them or --exists=overwrite to overwrite.")
+                logger.info(f"  https://huggingface.co/{rid}")
+            logger.error("Use --exists=skip to skip them or --exists=overwrite to overwrite.")
             sys.exit(1)
 
     # Launch all uploads concurrently
-    print()
     futures: list[tuple[str, Future]] = []
     for cp, repo_id in zip(checkpoints, repo_ids):
         future = upload_checkpoint(cp, repo_id, config)
@@ -234,21 +236,21 @@ def main():
             futures.append((repo_id, future))
 
     # Wait for all uploads to complete
-    print(f"\nWaiting for {len(futures)} upload(s) to complete...")
+    logger.info(f"Waiting for {len(futures)} upload(s) to complete...")
     failed = []
     for repo_id, future in futures:
         try:
             future.result()
-            print(f"  Done: https://huggingface.co/{repo_id}")
+            logger.info(f"  Done: https://huggingface.co/{repo_id}")
         except Exception as e:
-            print(f"  FAILED: {repo_id}: {e}")
+            logger.error(f"  FAILED: {repo_id}: {e}")
             failed.append(repo_id)
 
     if failed:
-        print(f"\n{len(failed)} upload(s) failed: {failed}")
+        logger.error(f"{len(failed)} upload(s) failed: {failed}")
         sys.exit(1)
     else:
-        print(f"\nAll {len(futures)} upload(s) completed successfully.")
+        logger.info(f"All {len(futures)} upload(s) completed successfully.")
 
 
 if __name__ == "__main__":
