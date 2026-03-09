@@ -140,16 +140,19 @@ def upload_checkpoint(
 
 
 def main():
+    default_path = f"/nlp/scr/{os.environ.get('USER')}/sparse-adaptation/checkpoints"
     parser = argparse.ArgumentParser(
         description="Upload saved checkpoints to Hugging Face Hub",
     )
     parser.add_argument(
-        "path",
-        help="Path to a checkpoint directory or a folder containing checkpoint directories",
+        "--path",
+        help=f"Path to a checkpoint directory or a folder containing checkpoint directories. Default: {default_path}",
+        default=default_path,
     )
     parser.add_argument(
         "--config",
         help="Path to the training config YAML (for model card metadata). Optional.",
+        default="training/configs/gemma2_2b.yaml",
     )
     parser.add_argument(
         "--hub_org",

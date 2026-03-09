@@ -2,7 +2,7 @@
 
 # Setup environment variables. sbatch passes all current env variables to the job.
 # This runs `export HF_TOKEN=...`
-export HF_TOKEN=$(cat ~/.shell/secrets/hf_token)
+export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
 
 # Submit batch
 sbatch \

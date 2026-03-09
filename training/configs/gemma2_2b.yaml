@@ -35,3 +35,4 @@ warmup_ratio: 0.05
 
 use_wandb: true
 save_checkpoints: true
+push_to_hub: true
