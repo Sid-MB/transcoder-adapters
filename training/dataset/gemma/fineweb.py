@@ -40,8 +40,10 @@ class FineWebDataset(Dataset):
         self.truncate = truncate
         self.text_field = text_field
 
+        from training.helpers.timing import Timer
         print(f"Loading FineWeb data: {data_path} (split={split})")
-        self.ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAttributeAccessIssue]
+        with Timer("load FineWeb"):
+            self.ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAttributeAccessIssue]
         print(f"Loaded {len(self.ds)} examples")
 
     def __len__(self) -> int:

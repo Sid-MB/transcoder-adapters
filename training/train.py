@@ -869,10 +869,13 @@ def main():
         print(f"  N cutoffs: {config.bridging.n_cutoffs}")
 
     # Setup models
-    if config.direct:
-        model, ref_model, tokenizer = setup_models_direct(config)
-    else:
-        model, ref_model, tokenizer = setup_models_bridging(config)
+    from training.helpers.timing import Timer
+
+    with Timer("setup_models"):
+        if config.direct:
+            model, ref_model, tokenizer = setup_models_direct(config)
+        else:
+            model, ref_model, tokenizer = setup_models_bridging(config)
 
     # Compile models for faster standard forward passes.
     # forward_mixed / compute_nmse_loss use manual layer loops and remain uncompiled.
@@ -882,8 +885,11 @@ def main():
         if ref_model is not None:
             ref_model = torch.compile(ref_model)
 
-    dataset_loader = setup_data(config, tokenizer)
-    optimizer, scheduler, total_steps, warmup_steps, train_size = setup_training(config, model, dataset_loader)
+    with Timer("setup_data"):
+        dataset_loader = setup_data(config, tokenizer)
+
+    with Timer("setup_training"):
+        optimizer, scheduler, total_steps, warmup_steps, train_size = setup_training(config, model, dataset_loader)
 
     # Verify Hub access before training so we fail fast
     if config.push_to_hub:
@@ -911,7 +917,8 @@ def main():
     total_samples_seen = 0
 
     for epoch in range(config.num_epochs):
-        dataloaders = dataset_loader.get_epoch_dataloaders(epoch)
+        with Timer(f"get_epoch_dataloaders(epoch={epoch})"):
+            dataloaders = dataset_loader.get_epoch_dataloaders(epoch)
         train_dataloader = dataloaders["train"]
         val_dataloader = dataloaders.get("val", None)
 
