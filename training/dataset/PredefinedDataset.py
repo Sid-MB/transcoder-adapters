@@ -2,7 +2,7 @@ from enum import Enum
 from functools import partial
 from typing import Literal
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import DataLoader, Subset
 from torch import Generator as TorchGenerator
 
 from .collate import collate_fn

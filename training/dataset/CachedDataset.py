@@ -1,7 +1,6 @@
 
 from typing import TypeVar
 
-from torch.utils.data import Dataset
 from training.dataset.types import SizedDataset
 
 DatasetRow = TypeVar("DatasetRow")
