@@ -7,7 +7,7 @@ from torch import Generator as TorchGenerator
 
 from .collate import collate_fn
 from .types import DatasetItem, SizedDataset
-from training.helpers.log import logger
+from helpers.log import logger
 
 from .gemma.config import FineWebLMSysMixedConfig
 

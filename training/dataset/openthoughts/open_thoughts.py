@@ -4,7 +4,7 @@ import json
 
 from training.dataset.types import DatasetItem
 from training.dataset.openthoughts.types import DataFormat
-from training.helpers.log import logger
+from helpers.log import logger
 
 
 # DeepSeek R1 Distill format tokens

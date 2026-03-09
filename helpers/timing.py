@@ -1,6 +1,6 @@
 import time
 
-from training.helpers.log import logger
+from helpers.log import logger
 
 
 def fmt_elapsed(seconds: float) -> str:

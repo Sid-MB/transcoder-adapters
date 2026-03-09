@@ -30,7 +30,7 @@ from concurrent.futures import Future
 
 from huggingface_hub import HfApi
 
-from training.helpers.log import logger
+from helpers.log import logger
 from .hub import verify_hub_access, _build_model_card, _upload_training_config, truncate_repo_name, HUB_NAME_PREFIX
 
 
@@ -141,9 +141,10 @@ def upload_checkpoint(
 
 
 def main():
-    from training.helpers.log import setup_logging
+    from helpers.log import setup_logging
     setup_logging()
-    default_path = f"/nlp/scr/{os.environ.get('USER')}/sparse-adaptation/checkpoints"
+    from helpers.paths import PRODUCTS_DIR
+    default_path = str(PRODUCTS_DIR / "checkpoints")
     parser = argparse.ArgumentParser(
         description="Upload saved checkpoints to Hugging Face Hub",
     )

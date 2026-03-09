@@ -4,7 +4,7 @@ import re
 import tempfile
 
 from huggingface_hub import HfApi, ModelCard, ModelCardData
-from training.helpers.log import logger
+from helpers.log import logger
 
 
 HUB_NAME_PREFIX = "2026.TA"

@@ -2,7 +2,7 @@ from torch.utils.data import Dataset
 
 from datasets import load_dataset, Dataset as HFDataset
 from training.dataset.types import DatasetItem
-from training.helpers.log import logger
+from helpers.log import logger
 
 
 class FineWebDataset(Dataset):
@@ -41,7 +41,7 @@ class FineWebDataset(Dataset):
         self.truncate = truncate
         self.text_field = text_field
 
-        from training.helpers.timing import Timer
+        from helpers.timing import Timer
         logger.info(f"Loading FineWeb data: {data_path} (split={split})")
         with Timer("load FineWeb"):
             self.ds: HFDataset = load_dataset(data_path, split=split) # pyright: ignore[reportAttributeAccessIssue]

@@ -4,7 +4,7 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Any
 
-from training.helpers.log import logger
+from helpers.log import logger
 
 from .dataset.openthoughts.config import OpenThoughtsConfig
 from .dataset.gemma.config import FineWebLMSysMixedConfig
@@ -231,7 +231,8 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
 def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
     """Finalize config by computing run names and output directories."""
     import os
-    slurm_job_id = os.environ.get("SLURM_JOB_ID", "local")
+    from ..helpers.paths import SLURM_JOB_ID
+    slurm_job_id = SLURM_JOB_ID
 
     # Build run name from hyperparameters
     if config.wandb_run_name is None:

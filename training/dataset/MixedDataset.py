@@ -3,7 +3,7 @@ from typing import TypeVar
 import torch
 from torch.utils.data import Dataset
 from training.dataset.types import SizedDataset
-from training.helpers.log import logger
+from helpers.log import logger
 
 DatasetRow = TypeVar("DatasetRow")
 

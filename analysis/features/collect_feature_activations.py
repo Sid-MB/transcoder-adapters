@@ -8,8 +8,12 @@ Outputs per-feature JSONs compatible with the circuit-tracer frontend.
 Usage:
     python -m analysis.features.collect_feature_activations \
         --model_path nathu0/transcoder-adapters-R1-Distill-Qwen-7B-l1w0.001-l0-1.4 \
-        --val_data hf://nathu0/transcoder-adapters-openthoughts3-stratified-55k/data/val.jsonl \
-        --output_dir ./feature_data
+        --val_data hf://nathu0/transcoder-adapters-openthoughts3-stratified-55k/data/val.jsonl
+
+    python -m analysis.features.collect_feature_activations \
+        --model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr10000_lr8e-04_bs4_sl14754432 \
+        --val_data siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits \
+        --max_samples 100
 
 Output:
     {output_dir}/
@@ -21,6 +25,8 @@ Output:
 
 from pathlib import Path
 
+from helpers.log import logger, setup_logging
+
 import argparse
 import json
 import random
@@ -31,12 +37,12 @@ from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
-import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from training.dataset import OpenThoughtsDataset
-from models.qwen2_transcoder import Qwen2ForCausalLMWithTranscoder
+from models.auto import AutoModelForCausalLMWithTranscoder
+from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
+from analysis.features.load_val_data import load_val_data
 
 
 # =============================================================================
@@ -85,117 +91,6 @@ class FeatureStats:
 
     # Thinking position histogram (10 bins)
     thinking_position_counts: list = field(default_factory=lambda: [0] * 10)
-
-
-# =============================================================================
-# Region Classification
-# =============================================================================
-
-# Cache for special token IDs (populated on first use)
-_SPECIAL_TOKEN_IDS = {}
-
-
-def get_special_token_ids(tokenizer) -> dict:
-    """Get token IDs for special tokens (cached)."""
-    global _SPECIAL_TOKEN_IDS
-    if not _SPECIAL_TOKEN_IDS:
-        # These are the DeepSeek R1 special tokens
-        _SPECIAL_TOKEN_IDS = {
-            'bos': tokenizer.bos_token_id,
-            'user_marker': tokenizer.encode("<｜User｜>", add_special_tokens=False)[0],
-            'assistant_marker': tokenizer.encode("<｜Assistant｜>", add_special_tokens=False)[0],
-            'think_start': tokenizer.encode("<think>", add_special_tokens=False)[0],
-            'think_end': tokenizer.encode("</think>", add_special_tokens=False)[0],
-        }
-    return _SPECIAL_TOKEN_IDS
-
-
-def find_token_positions(tokens: list[int], tokenizer) -> dict:
-    """Find positions of special tokens in a sequence."""
-    special_ids = get_special_token_ids(tokenizer)
-
-    positions: dict[str, int | None] = {
-        'bos': None,
-        'user_marker': None,
-        'assistant_marker': None,
-        'think_start': None,
-        'think_end': None,
-    }
-
-    for i, tok in enumerate(tokens):
-        if tok == special_ids['bos'] and positions['bos'] is None:
-            positions['bos'] = i
-        elif tok == special_ids['user_marker'] and positions['user_marker'] is None:
-            positions['user_marker'] = i
-        elif tok == special_ids['assistant_marker'] and positions['assistant_marker'] is None:
-            positions['assistant_marker'] = i
-        elif tok == special_ids['think_start'] and positions['think_start'] is None:
-            positions['think_start'] = i
-        elif tok == special_ids['think_end'] and positions['think_end'] is None:
-            positions['think_end'] = i
-            break  # Found all markers
-
-    return positions
-
-
-def classify_position(position: int, markers: dict) -> tuple[str, float | None]:
-    """
-    Classify which region a token position belongs to.
-
-    Returns: (region_name, thinking_position_or_none)
-        - thinking_position is 0.0-1.0 for tokens in thinking region, None otherwise
-    """
-    # Check single-token special markers first
-    if position == markers.get('bos'):
-        return 'bos', None
-    if position == markers.get('user_marker'):
-        return 'user_marker', None
-    if position == markers.get('assistant_marker'):
-        return 'assistant_marker', None
-    if position == markers.get('think_start'):
-        return 'think_start', None
-    if position == markers.get('think_end'):
-        return 'think_end', None
-
-    # Content regions
-    assistant_pos = markers.get('assistant_marker')
-    think_start_pos = markers.get('think_start')
-    think_end_pos = markers.get('think_end')
-
-    # Before assistant marker = question
-    if assistant_pos is not None and position < assistant_pos:
-        return 'question', None
-
-    # Inside thinking tags
-    if think_start_pos is not None and think_end_pos is not None:
-        if think_start_pos < position < think_end_pos:
-            # Compute relative position within thinking (0 = start, 1 = end)
-            thinking_content_start = think_start_pos + 1
-            thinking_content_end = think_end_pos - 1
-            thinking_length = thinking_content_end - thinking_content_start + 1
-            if thinking_length > 0:
-                relative_pos = (position - thinking_content_start) / thinking_length
-            else:
-                relative_pos = 0.5
-            return 'thinking', relative_pos
-
-    # After think_end = answer
-    if think_end_pos is not None and position > think_end_pos:
-        return 'answer', None
-
-    # Fallback (shouldn't happen with well-formed data)
-    return 'unknown', None
-
-
-def precompute_regions(tokens: list[int], markers: dict) -> tuple[list[str], list[float | None]]:
-    """Precompute region classification for all positions in a sequence."""
-    regions = []
-    thinking_positions = []
-    for pos in range(len(tokens)):
-        region, think_pos = classify_position(pos, markers)
-        regions.append(region)
-        thinking_positions.append(think_pos)
-    return regions, thinking_positions
 
 
 # =============================================================================
@@ -418,7 +313,7 @@ def compute_logit_lens(model, tokenizer, top_k: int = 10) -> list[dict]:
     For each feature, computes decoder @ unembed.T to find which tokens
     the feature most strongly promotes/suppresses.
     """
-    print("Computing logit lens...")
+    logger.info("Computing logit lens...")
 
     # Get unembedding matrix
     unembed = model.lm_head.weight.data  # [vocab_size, d_model]
@@ -487,7 +382,7 @@ def export_circuit_tracer_json(
     features_dir = output_dir / "features"
     features_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Exporting features to {features_dir}...")
+    logger.info(f"Exporting features to {features_dir}...")
 
     # First pass: build all JSON objects
     write_tasks = []  # list of (filepath, json_dict)
@@ -543,16 +438,16 @@ def export_circuit_tracer_json(
             write_tasks.append((filepath, feature_json))
 
     # Second pass: write files in parallel
-    print(f"Writing {len(write_tasks)} files with {n_workers} workers...")
+    logger.info(f"Writing {len(write_tasks)} files with {n_workers} workers...")
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         list(tqdm(executor.map(_write_feature_json, write_tasks), total=len(write_tasks), desc="Writing files"))
 
-    print(f"Generated {len(write_tasks)} feature files, skipped {skipped} empty features")
+    logger.info(f"Generated {len(write_tasks)} feature files, skipped {skipped} empty features")
 
 
 def export_metadata(collector: FeatureCollector, output_dir: Path):
     """Export rich metadata to JSON for analysis."""
-    print("Exporting metadata...")
+    logger.info("Exporting metadata...")
 
     metadata: dict[str, Any] = {
         # Global counts
@@ -618,7 +513,7 @@ def export_metadata(collector: FeatureCollector, output_dir: Path):
     with open(output_dir / "feature_metadata.json", 'w') as f:
         json.dump(metadata, f)
 
-    print(f"Saved metadata for {len(metadata['features'])} features")
+    logger.info(f"Saved metadata for {len(metadata['features'])} features")
 
 
 # =============================================================================
@@ -626,6 +521,7 @@ def export_metadata(collector: FeatureCollector, output_dir: Path):
 # =============================================================================
 
 def main():
+    setup_logging()
     parser = argparse.ArgumentParser(
         description="Collect transcoder feature activations for visualization",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -633,13 +529,13 @@ def main():
     parser.add_argument("--model_path", type=str, required=True,
                         help="HF repo ID or local path to transcoder checkpoint")
     parser.add_argument("--val_data", type=str, required=True,
-                        help="Path to validation JSONL (local or hf://)")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="Output directory for feature JSONs and metadata")
+                        help="Path to validation data: JSONL (local or hf://), or HF dataset ID")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)")
 
     # Optional args
-    parser.add_argument("--tokenizer", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-                        help="Tokenizer name/path")
+    # parser.add_argument("--tokenizer", type=str, default=None,
+    #                     help="Tokenizer name/path (default: same as model_path)")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Max samples to process (default: all)")
     parser.add_argument("--top_k", type=int, default=20,
@@ -655,17 +551,25 @@ def main():
 
     args = parser.parse_args()
 
+    if args.output_dir is None:
+        from helpers.paths import PRODUCTS_DIR, SLURM_JOB_ID
+        from datetime import datetime
+        # Truncate model path: take last component, cap at 80 chars
+        model_slug = args.model_path.rstrip("/").split("/")[-1][:80]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output_dir = str(PRODUCTS_DIR / "feature_data" / f"{model_slug}_{timestamp}_{SLURM_JOB_ID}")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}")
+    logger.info(f"Output directory: {output_dir}")
 
     # Load tokenizer
-    print(f"Loading tokenizer: {args.tokenizer}")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
+    logger.info(f"Loading tokenizer: {args.model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
     # Load model
-    print(f"Loading model: {args.model_path}")
-    model = Qwen2ForCausalLMWithTranscoder.from_pretrained(
+    logger.info(f"Loading model: {args.model_path}")
+    model = AutoModelForCausalLMWithTranscoder.from_pretrained(
         args.model_path,
         dtype=torch.bfloat16,
         device_map="auto",
@@ -675,23 +579,24 @@ def main():
     n_layers = len(model.model.layers)
     first_mlp = next(model._transcoder_mlps())
     n_features = first_mlp.n_features
-    print(f"Model: {n_layers} layers, {n_features} features per layer")
+    model_type = model.config.model_type
+    logger.info(f"Model: {n_layers} layers, {n_features} features per layer, arch={model_type}")
+
+    # Detect special tokens for this architecture/tokenizer
+    special_tokens = detect_special_tokens(tokenizer, model_type=model_type)
+    has_thinking = special_tokens.think_start is not None and special_tokens.think_end is not None
+    logger.info(f"Detected special tokens: {special_tokens}")
+    if not has_thinking:
+        logger.info("Note: No <think> tags detected — thinking region analysis will be skipped")
 
     # Load dataset
-    print(f"Loading validation data: {args.val_data}")
-    dataset = OpenThoughtsDataset(
-        data_path=args.val_data,
-        tokenizer=tokenizer,
-        max_length=args.max_length,
-        format="deepseek",
-        truncate=True,
-        loss_on_prompt=False,
-    )
+    logger.info(f"Loading validation data: {args.val_data}")
+    dataset, examples_meta = load_val_data(args.val_data, tokenizer, args.max_length)
 
     n_samples = len(dataset)
     if args.max_samples:
         n_samples = min(args.max_samples, n_samples)
-    print(f"Processing {n_samples} samples")
+    logger.info(f"Processing {n_samples} samples")
 
     # Create collector
     collector = FeatureCollector(
@@ -710,17 +615,20 @@ def main():
     skipped = 0
     for idx in tqdm(range(n_samples), desc="Processing sequences"):
         item = dataset[idx]
-        meta = dataset.examples[idx]
+        meta = examples_meta[idx] if examples_meta is not None else {}
 
         tokens = item['input_ids']
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.tolist()
         domain = meta.get('domain', 'unknown')
 
         # Find special token markers
-        markers = find_token_positions(tokens, tokenizer)
+        markers = find_token_positions(tokens, special_tokens)
 
-        # Validate structure
-        if markers['think_start'] is None or markers['think_end'] is None:
-            print(f"Warning: Skipping sample {idx} - missing <think> tags")
+        # For thinking models, skip malformed samples missing think tags
+        if has_thinking and (markers['think_start'] is None or markers['think_end'] is None):
+            if skipped < 5:
+                logger.warning(f"Skipping sample {idx} - missing <think> tags")
             skipped += 1
             continue
 
@@ -729,13 +637,13 @@ def main():
     collector.remove_hooks()
 
     if skipped > 0:
-        print(f"Skipped {skipped} samples due to missing <think> tags")
+        logger.warning(f"Skipped {skipped}/{n_samples} samples due to missing <think> tags")
 
     # Summary stats
-    print(f"\nCollection summary:")
-    print(f"  Total tokens: {collector.total_tokens:,}")
-    print(f"  Domains: {dict(collector.tokens_per_domain)}")
-    print(f"  Regions: {dict(collector.tokens_per_region)}")
+    logger.info("Collection summary:")
+    logger.info(f"  Total tokens: {collector.total_tokens:,}")
+    logger.info(f"  Domains: {dict(collector.tokens_per_domain)}")
+    logger.info(f"  Regions: {dict(collector.tokens_per_region)}")
 
     # Compute logit lens
     logit_lens_data = compute_logit_lens(model, tokenizer)
@@ -744,9 +652,9 @@ def main():
     export_circuit_tracer_json(collector, logit_lens_data, tokenizer, output_dir)
     export_metadata(collector, output_dir)
 
-    print(f"\nDone! Output written to {output_dir}")
-    print(f"  features/: Circuit tracer JSON files")
-    print(f"  feature_metadata.json: Rich metadata for analysis")
+    logger.info(f"Done! Output written to {output_dir}")
+    logger.info("  features/: Circuit tracer JSON files")
+    logger.info("  feature_metadata.json: Rich metadata for analysis")
 
 
 if __name__ == "__main__":

@@ -10,9 +10,28 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from transformers import PretrainedConfig, PreTrainedModel
+    from models.qwen2_transcoder import (
+        Qwen2ConfigWithTranscoder,
+        Qwen2ForCausalLMWithTranscoder,
+    )
+    from models.gemma2_transcoder import (
+        Gemma2ConfigWithTranscoder,
+        Gemma2ForCausalLMWithTranscoder,
+    )
+    from transformers import Gemma2Config, Gemma2ForCausalLM
+
+
+ModelOutputTypes = (
+    tuple[type["Qwen2ConfigWithTranscoder"], type["Qwen2ForCausalLMWithTranscoder"]]
+    | tuple[type["Gemma2ConfigWithTranscoder"], type["Gemma2ForCausalLMWithTranscoder"]]
+    | tuple[type["Gemma2Config"], type["Gemma2ForCausalLM"]]
+)
 
 # Architecture name -> (config class, model class) — populated lazily on first use
-_REGISTRY: dict[str, tuple[type, type]] = {}
+_REGISTRY: dict[
+    str,
+    ModelOutputTypes,
+] = {}
 
 
 def _ensure_registered():
@@ -36,7 +55,7 @@ def _ensure_registered():
     _REGISTRY["gemma2-orig"] = (Gemma2Config, Gemma2ForCausalLM)  # For loading original Gemma2 checkpoints without transcoder
 
 
-def get_transcoder_classes(arch: str) -> tuple[type["PretrainedConfig"], type["PreTrainedModel"]]:
+def get_transcoder_classes(arch: str) -> ModelOutputTypes:
     """Return (ConfigWithTranscoder, ModelWithTranscoder) for the given architecture name."""
     _ensure_registered()
     if arch not in _REGISTRY:

@@ -6,7 +6,7 @@ that encourage layer-wise compatibility with a reference model.
 """
 
 import os
-from training.helpers.log import logger, setup_logging
+from helpers import logger, setup_logging
 os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
 
 import torch
@@ -868,7 +868,7 @@ def main():
         logger.info(f"  N cutoffs: {config.bridging.n_cutoffs}")
 
     # Setup models
-    from training.helpers.timing import Timer
+    from helpers import Timer
 
     with Timer("setup_models"):
         if config.direct:
