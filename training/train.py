@@ -6,10 +6,6 @@ that encourage layer-wise compatibility with a reference model.
 """
 
 import os
-
-from torch.utils.data.dataloader import DataLoader
-
-from training.dataset.types import DatasetItem, SizedDataset
 from training.helpers.log import logger, setup_logging
 os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
 
