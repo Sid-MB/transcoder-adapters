@@ -29,15 +29,18 @@ def _ensure_registered():
         Gemma2ForCausalLMWithTranscoder,
     )
 
+    from transformers import Gemma2Config, Gemma2ForCausalLM
+
     _REGISTRY["qwen2"] = (Qwen2ConfigWithTranscoder, Qwen2ForCausalLMWithTranscoder)
     _REGISTRY["gemma2"] = (Gemma2ConfigWithTranscoder, Gemma2ForCausalLMWithTranscoder)
+    _REGISTRY["gemma2-orig"] = (Gemma2Config, Gemma2ForCausalLM)  # For loading original Gemma2 checkpoints without transcoder
 
 
 def get_transcoder_classes(arch: str) -> tuple[type["PretrainedConfig"], type["PreTrainedModel"]]:
     """Return (ConfigWithTranscoder, ModelWithTranscoder) for the given architecture name."""
     _ensure_registered()
     if arch not in _REGISTRY:
-        available = ", ".join(sorted(_REGISTRY.keys()))
+        available = ", ".join(available_architectures())
         raise ValueError(f"Unknown architecture: '{arch}'. Available: {available}")
     return _REGISTRY[arch]
 
@@ -48,8 +51,12 @@ def detect_architecture(model_name: str) -> str:
     Raises ValueError if the architecture cannot be determined.
     """
     name_lower = model_name.lower()
+
     if "qwen" in name_lower:
         return "qwen2"
+    if "google/gemma" in name_lower:
+        print("Using original (non-transcoder) Gemma2 architecture for", model_name)
+        return "gemma2-orig"
     if "gemma" in name_lower:
         return "gemma2"
     raise ValueError(
