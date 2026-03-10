@@ -4,6 +4,7 @@ Pack per-feature JSON files into circuit-tracer binary format.
 Converts a directory of {cantor_id}.json files into layer_*.bin files
 with a compressed index, compatible with the circuit-tracer frontend.
 See /nlp/u/nathu/circuit-tracer/docs/packed_feature_spec.md for format details.
+Relies on collect_feature_activations.py run beforehand to generate the JSON files.
 
 Usage:
     python -m analysis.features.pack_features \
