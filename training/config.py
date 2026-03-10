@@ -231,7 +231,7 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
 def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
     """Finalize config by computing run names and output directories."""
     import os
-    from ..helpers.paths import SLURM_JOB_ID
+    from helpers.paths import SLURM_JOB_ID
     slurm_job_id = SLURM_JOB_ID
 
     # Build run name from hyperparameters
