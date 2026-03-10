@@ -577,7 +577,7 @@ def main():
     model.eval()
 
     n_layers = len(model.model.layers)
-    first_mlp = next(model._transcoder_mlps())
+    first_mlp = next(model._transcoder_mlps())  # type: ignore[operator]
     n_features = first_mlp.n_features
     model_type = model.config.model_type
     logger.info(f"Model: {n_layers} layers, {n_features} features per layer, arch={model_type}")

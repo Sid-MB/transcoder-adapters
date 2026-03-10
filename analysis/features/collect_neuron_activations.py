@@ -2,14 +2,18 @@
 Collect MLP neuron activations for visualization (baseline comparison).
 
 Collects activating examples for MLP neurons in standard transformer models
-(e.g., DeepSeek R1 Distill) for comparison with transcoder features.
+for comparison with transcoder features.
 Outputs per-neuron JSONs in the same circuit-tracer format as feature collection.
 
 Usage:
     python -m analysis.features.collect_neuron_activations \
         --model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
-        --val_data hf://nathu0/transcoder-adapters-openthoughts3-stratified-55k/data/val.jsonl \
-        --output_dir ./neuron_data
+        --val_data hf://nathu0/transcoder-adapters-openthoughts3-stratified-55k/data/val.jsonl
+
+    python -m analysis.features.collect_neuron_activations \
+        --model_path google/gemma-2-2b-it \
+        --val_data siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits \
+        --max_samples 100
 
 Key differences from collect_feature_activations.py:
 - Captures MLP intermediate activations: act(gate_proj(x)) * up_proj(x)
@@ -18,6 +22,8 @@ Key differences from collect_feature_activations.py:
 """
 
 from pathlib import Path
+
+from helpers.log import logger, setup_logging
 
 import argparse
 import json
@@ -28,19 +34,16 @@ from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
-import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from training.dataset import OpenThoughtsDataset
+from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
+from analysis.features.load_val_data import load_val_data
 
 # Reuse data structures and helpers from the feature collection script
 from analysis.features.collect_feature_activations import (
     ActivatingExample,
     FeatureStats,
-    get_special_token_ids,
-    find_token_positions,
-    precompute_regions,
     cantor_pair,
     format_example_for_circuit_tracer,
     _write_feature_json,
@@ -104,7 +107,7 @@ class NeuronCollector:
         def hook(module, input, output):
             hidden_states = input[0]  # [batch, seq, d_model]
             with torch.no_grad():
-                # Qwen2 SwiGLU: act(gate_proj(x)) * up_proj(x)
+                # SwiGLU / GeGLU: act(gate_proj(x)) * up_proj(x)
                 gate = module.act_fn(module.gate_proj(hidden_states))
                 up = module.up_proj(hidden_states)
                 neurons = gate * up  # [batch, seq, intermediate_size]
@@ -278,7 +281,7 @@ def compute_logit_lens_neurons(
 
     Uses down_proj weights to find which tokens each neuron promotes/suppresses.
     """
-    print("Computing logit lens for neurons...")
+    logger.info("Computing logit lens for neurons...")
 
     unembed = model.lm_head.weight.data  # [vocab_size, d_model]
 
@@ -290,7 +293,6 @@ def compute_logit_lens_neurons(
         down_proj = mlp.down_proj.weight.data
 
         sampled = sampled_neurons[layer_idx]
-        n_sampled = len(sampled)
 
         # Get columns for sampled neurons only
         sampled_down = down_proj[:, sampled]  # [d_model, n_sampled]
@@ -328,7 +330,7 @@ def export_circuit_tracer_json_neurons(
     features_dir = output_dir / "features"
     features_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Exporting neurons to {features_dir}...")
+    logger.info(f"Exporting neurons to {features_dir}...")
 
     write_tasks = []
     skipped = 0
@@ -378,16 +380,16 @@ def export_circuit_tracer_json_neurons(
             filepath = features_dir / f"{cantor_id}.json"
             write_tasks.append((filepath, feature_json))
 
-    print(f"Writing {len(write_tasks)} files with {n_workers} workers...")
+    logger.info(f"Writing {len(write_tasks)} files with {n_workers} workers...")
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         list(tqdm(executor.map(_write_feature_json, write_tasks), total=len(write_tasks), desc="Writing files"))
 
-    print(f"Generated {len(write_tasks)} neuron files, skipped {skipped} empty neurons")
+    logger.info(f"Generated {len(write_tasks)} neuron files, skipped {skipped} empty neurons")
 
 
 def export_metadata_neurons(collector: NeuronCollector, output_dir: Path):
     """Export metadata for neurons."""
-    print("Exporting metadata...")
+    logger.info("Exporting metadata...")
 
     metadata: dict[str, Any] = {
         "total_tokens": collector.total_tokens,
@@ -449,7 +451,7 @@ def export_metadata_neurons(collector: NeuronCollector, output_dir: Path):
     with open(output_dir / "feature_metadata.json", 'w') as f:
         json.dump(metadata, f)
 
-    print(f"Saved metadata for {len(metadata['features'])} neurons")
+    logger.info(f"Saved metadata for {len(metadata['features'])} neurons")
 
 
 # =============================================================================
@@ -457,6 +459,7 @@ def export_metadata_neurons(collector: NeuronCollector, output_dir: Path):
 # =============================================================================
 
 def main():
+    setup_logging()
     parser = argparse.ArgumentParser(
         description="Collect MLP neuron activations for visualization (baseline)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -464,9 +467,9 @@ def main():
     parser.add_argument("--model_path", type=str, required=True,
                         help="HF repo ID or local path to model")
     parser.add_argument("--val_data", type=str, required=True,
-                        help="Path to validation JSONL (local or hf://)")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="Output directory for neuron JSONs and metadata")
+                        help="Path to validation data: JSONL (local or hf://), or HF dataset ID")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Output directory (default: PRODUCTS_DIR/neuron_data/<model>_<timestamp>)")
 
     # Neuron sampling
     parser.add_argument("--n_neurons_per_layer", type=int, default=500,
@@ -474,9 +477,6 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for neuron sampling")
 
-    # Other args (same as transcoder version)
-    parser.add_argument("--tokenizer", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-                        help="Tokenizer (default: DeepSeek R1 Distill for data compatibility)")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Max samples to process")
     parser.add_argument("--top_k", type=int, default=20,
@@ -492,19 +492,26 @@ def main():
 
     args = parser.parse_args()
 
+    if args.output_dir is None:
+        from helpers.paths import PRODUCTS_DIR, SLURM_JOB_ID
+        from datetime import datetime
+        model_slug = args.model_path.rstrip("/").split("/")[-1][:80]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output_dir = str(PRODUCTS_DIR / "neuron_data" / f"{model_slug}_{timestamp}_{SLURM_JOB_ID}")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}")
+    logger.info(f"Output directory: {output_dir}")
 
-    # Tokenizer (always use DeepSeek for data compatibility)
-    print(f"Loading tokenizer: {args.tokenizer}")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
+    # Tokenizer (loaded from the model itself)
+    logger.info(f"Loading tokenizer: {args.model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
     # Model
-    print(f"Loading model: {args.model_path}")
+    logger.info(f"Loading model: {args.model_path}")
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
     )
@@ -512,7 +519,15 @@ def main():
 
     n_layers = len(model.model.layers)
     intermediate_size = model.config.intermediate_size
-    print(f"Model: {n_layers} layers, {intermediate_size} intermediate size")
+    model_type = model.config.model_type
+    logger.info(f"Model: {n_layers} layers, {intermediate_size} intermediate size, arch={model_type}")
+
+    # Detect special tokens for this architecture/tokenizer
+    special_tokens = detect_special_tokens(tokenizer, model_type=model_type)
+    has_thinking = special_tokens.think_start is not None and special_tokens.think_end is not None
+    logger.info(f"Detected special tokens: {special_tokens}")
+    if not has_thinking:
+        logger.info("Note: No <think> tags detected — thinking region analysis will be skipped")
 
     # Sample neurons
     random.seed(args.seed)
@@ -521,23 +536,16 @@ def main():
         n_sample = min(args.n_neurons_per_layer, intermediate_size)
         sampled = sorted(random.sample(range(intermediate_size), n_sample))
         sampled_neurons.append(sampled)
-    print(f"Sampled {args.n_neurons_per_layer} neurons per layer ({n_layers * args.n_neurons_per_layer} total)")
+    logger.info(f"Sampled {args.n_neurons_per_layer} neurons per layer ({n_layers * args.n_neurons_per_layer} total)")
 
     # Dataset
-    print(f"Loading validation data: {args.val_data}")
-    dataset = OpenThoughtsDataset(
-        data_path=args.val_data,
-        tokenizer=tokenizer,
-        max_length=args.max_length,
-        format="deepseek",
-        truncate=True,
-        loss_on_prompt=False,
-    )
+    logger.info(f"Loading validation data: {args.val_data}")
+    dataset, examples_meta = load_val_data(args.val_data, tokenizer, args.max_length)
 
     n_samples = len(dataset)
     if args.max_samples:
         n_samples = min(args.max_samples, n_samples)
-    print(f"Processing {n_samples} samples")
+    logger.info(f"Processing {n_samples} samples")
 
     # Collector
     collector = NeuronCollector(
@@ -556,14 +564,19 @@ def main():
     skipped = 0
     for idx in tqdm(range(n_samples), desc="Processing sequences"):
         item = dataset[idx]
-        meta = dataset.examples[idx]
+        meta = examples_meta[idx] if examples_meta is not None else {}
 
         tokens = item['input_ids']
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.tolist()
         domain = meta.get('domain', 'unknown')
 
-        markers = find_token_positions(tokens, tokenizer)
+        markers = find_token_positions(tokens, special_tokens)
 
-        if markers['think_start'] is None or markers['think_end'] is None:
+        # For thinking models, skip malformed samples missing think tags
+        if has_thinking and (markers['think_start'] is None or markers['think_end'] is None):
+            if skipped < 5:
+                logger.warning(f"Skipping sample {idx} - missing <think> tags")
             skipped += 1
             continue
 
@@ -572,12 +585,12 @@ def main():
     collector.remove_hooks()
 
     if skipped > 0:
-        print(f"Skipped {skipped} samples due to missing <think> tags")
+        logger.warning(f"Skipped {skipped}/{n_samples} samples due to missing <think> tags")
 
-    print(f"\nCollection summary:")
-    print(f"  Total tokens: {collector.total_tokens:,}")
-    print(f"  Domains: {dict(collector.tokens_per_domain)}")
-    print(f"  Regions: {dict(collector.tokens_per_region)}")
+    logger.info("Collection summary:")
+    logger.info(f"  Total tokens: {collector.total_tokens:,}")
+    logger.info(f"  Domains: {dict(collector.tokens_per_domain)}")
+    logger.info(f"  Regions: {dict(collector.tokens_per_region)}")
 
     # Logit lens
     logit_lens_data = compute_logit_lens_neurons(model, tokenizer, sampled_neurons)
@@ -586,7 +599,7 @@ def main():
     export_circuit_tracer_json_neurons(collector, logit_lens_data, tokenizer, output_dir)
     export_metadata_neurons(collector, output_dir)
 
-    print(f"\nDone! Output written to {output_dir}")
+    logger.info(f"Done! Output written to {output_dir}")
 
 
 if __name__ == "__main__":

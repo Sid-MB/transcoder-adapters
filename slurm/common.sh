@@ -22,7 +22,7 @@ fi
 mkdir -p "$SLURM_LOG_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOGFILE="${SLURM_LOG_DIR}/${SLURM_JOB_ID:-local}_${TIMESTAMP}"
-exec > "${LOGFILE}.out" 2> "${LOGFILE}.err"
+exec > >(tee "${LOGFILE}.out") 2> >(tee "${LOGFILE}.err" >&2)
 
 # ── Setup ─────────────────────────────────────────────────────────────
 echo "[Slurm] Setting up (uv sync)..."
