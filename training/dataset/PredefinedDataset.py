@@ -267,7 +267,7 @@ class PredefinedDataset:
                 shuffle=True,
                 collate_fn=collate_with_tokenizer,
                 num_workers=4,
-                pin_memory=True,
+                pin_memory=False,
                 persistent_workers=True,
                 generator=generator,
             )
@@ -275,12 +275,12 @@ class PredefinedDataset:
 
         if "val" in datasets:
             dataloaders["val"] = DataLoader(
-                datasets["val"], # pyright: ignore[reportArgumentType]
+                datasets["val"],  # pyright: ignore[reportArgumentType]
                 batch_size=1,
                 shuffle=False,
                 collate_fn=collate_with_tokenizer,
                 num_workers=4,
-                pin_memory=True,
+                pin_memory=False,  # note: this being true was causing errors, see logs here for example: https://wandb.ai/siddharth-stanford/sparse-adaptation/runs/0aozn1r1/logs?nw=nwusersidmb
                 persistent_workers=True,
             )
 
