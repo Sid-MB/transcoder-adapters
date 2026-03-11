@@ -824,6 +824,7 @@ def main():
     parser.add_argument("--n_features", type=int, help="Override transcoder n_features")
     parser.add_argument("--batch_size", type=int, help="Override batch size")
     parser.add_argument("--num_epochs", type=int, help="Override number of epochs")
+    parser.add_argument("--run_name_prefix", type=str, help="Override the run name prefix used for wandb and the output directory")
     parser.add_argument("--debug_mode", nargs="?", const="true", default=None, help="Override debug_mode (--debug_mode, --debug_mode=true, --debug_mode=false). If activating debug mode through this setting, wandb will be disabled.")
     parser.add_argument("--sweep", type=str, default=None, help="Path to a wandb sweep config YAML. When set, creates a sweep and runs training via wandb.agent.")
     parser.add_argument("--sweep_id", type=str, default=None, help="Join an existing wandb sweep by ID (e.g. from another GPU). Mutually exclusive with --sweep.")
