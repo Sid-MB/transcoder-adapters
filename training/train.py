@@ -834,14 +834,14 @@ def main():
     if args.sweep and args.sweep_id:
         parser.error("--sweep and --sweep_id are mutually exclusive.")
     elif args.sweep or args.sweep_id:
-        _run_sweep(args)
+        _run_sweep(args, parser)
     else:
-        _run_training(args)
+        _run_training(args, parser=parser)
 
 
-def _run_sweep(args):
+def _run_sweep(args, parser: argparse.ArgumentParser | None = None):
     """Create or join a wandb sweep and launch an agent that calls _run_training for each run."""
-    overrides = _build_overrides(args)
+    overrides = _build_overrides(args, parser)
     base_config = load_config(args.config, overrides=overrides)
 
     if args.sweep_id:
@@ -857,12 +857,12 @@ def _run_sweep(args):
     logger.info(f"Starting agent with {args.sweep_count} runs")
 
     def sweep_train():
-        _run_training(args, sweep_mode=True)
+        _run_training(args, parser=parser, sweep_mode=True)
 
     wandb.agent(sweep_id, function=sweep_train, count=args.sweep_count, project=base_config.wandb_project)
 
 
-def _build_overrides(args) -> dict[str, Any]:
+def _build_overrides(args, parser: argparse.ArgumentParser | None = None) -> dict[str, Any]:
     """Build overrides dict from CLI args (all non-None args except config/sweep args)."""
     exclude = {"config", "sweep", "sweep_id", "sweep_count"}
     overrides: dict[str, Any] = {
@@ -877,17 +877,24 @@ def _build_overrides(args) -> dict[str, Any]:
         elif overrides["debug_mode"].lower() == "false":
             overrides["debug_mode"] = False
         else:
-            raise ValueError(f"Invalid value for --debug_mode: '{overrides['debug_mode']}'. Must be 'true' or 'false'.")
+            msg = f"Invalid value for --debug_mode: '{overrides['debug_mode']}'. Must be 'true' or 'false'."
+            if parser:
+                parser.error(msg)
+            raise ValueError(msg)
 
     return overrides
 
 
-def _run_training(args, sweep_mode: bool = False):
+def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mode: bool = False):
     """Run a single training session. Called directly or by wandb.agent."""
-    overrides = _build_overrides(args)
+    overrides = _build_overrides(args, parser)
 
     # Load config with CLI overrides
     config = load_config(args.config, overrides=overrides)
+
+    # Sweeps require wandb
+    if sweep_mode and not config.use_wandb:
+        raise ValueError("Cannot run sweeps with use_wandb=False (e.g. debug_mode). Remove --debug_mode or set use_wandb: true.")
 
     # In sweep mode, wandb.init is called to pick up sweep parameters
     if sweep_mode:
@@ -1025,7 +1032,7 @@ def _run_training(args, sweep_mode: bool = False):
             wandb.run.summary["hf_model_url"] = f"https://huggingface.co/{hub_repo_id}"
             wandb.run.summary["hf_repo_id"] = hub_repo_id
 
-    if config.use_wandb:
+    if wandb.run is not None:
         wandb.finish()
 
 
