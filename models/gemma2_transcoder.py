@@ -104,7 +104,8 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
 
             if self._attention_mask is not None:
                 mask = self._attention_mask.bool()  # [batch, seq]
-                self.cached_l1 = per_token_l1[mask].mean()
+                n_real = mask.sum().clamp(min=1)
+                self.cached_l1 = (per_token_l1 * mask).sum() / n_real
             else:
                 self.cached_l1 = per_token_l1.mean()
 
@@ -115,7 +116,8 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
                 per_token_l0 = feature_active.float().sum(dim=-1)  # [batch, seq]
                 if self._attention_mask is not None:
                     mask = self._attention_mask.bool()
-                    self.cached_l0 = per_token_l0[mask].mean().item()
+                    n_real = mask.sum().clamp(min=1)
+                    self.cached_l0 = ((per_token_l0 * mask).sum() / n_real).item()
                 else:
                     self.cached_l0 = per_token_l0.mean().item()
 
@@ -140,11 +142,11 @@ class Gemma2ForCausalLMWithTranscoder(Gemma2ForCausalLM):
         for layer in self.model.layers:
             layer.mlp = Gemma2MLPWithTranscoder(config)
 
-    def forward(self, *args, attention_mask=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, *args, **kwargs):
         """Forward pass — broadcasts attention_mask to MLPs for masked stats."""
         for layer in self.model.layers:
-            layer.mlp._attention_mask = attention_mask
-        return super().forward(*args, attention_mask=attention_mask, **kwargs)
+            layer.mlp._attention_mask = attention_mask  # type: ignore[union-attr]
+        return super().forward(input_ids, attention_mask, *args, **kwargs)
 
     def _transcoder_mlps(self) -> Iterator[Gemma2MLPWithTranscoder]:
         """Yield each transcoder MLP layer with proper typing."""

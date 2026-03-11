@@ -111,7 +111,7 @@ def _layer_nmse(h_adapt: torch.Tensor, h_ref: torch.Tensor,
         mask_3d = mask.unsqueeze(-1).to(h_adapt.device)  # [batch, seq, 1]
         diff = (h_adapt - h_ref) * mask_3d
         ref_masked = h_ref * mask_3d
-        n_elements = mask_3d.sum() * h_adapt.shape[-1]
+        n_elements = torch.clamp(mask_3d.sum() * h_adapt.shape[-1], min=1)
         mse = diff.pow(2).sum() / n_elements
         norm = ref_masked.pow(2).sum() / n_elements
     else:
