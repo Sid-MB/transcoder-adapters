@@ -3,7 +3,7 @@
 import yaml
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from helpers.log import logger
 
@@ -32,7 +32,7 @@ class DatasetEntryConfig:
     length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.TRUNCATE
     weight: float = 1.0
     """Higher weighted datasets will be sampled more frequently for training. Weights are relative to each other, sampled using `torch.multinomial`."""
-    
+
     # open_thoughts-specific
     data_format: DataFormat | None = None  # "tokenizer", "deepseek", "qwen"
     val_datapath: str | None = None
@@ -110,7 +110,10 @@ class ExperimentConfig:
     Total rows used for training, after any mixing of the datasets. 
     If set, rows are allocated across datasets proportionally to weights.
     """
-    weight_by: str = "rows"  # "rows" or "tokens". If "tokens", weights represent desired token proportions (adjusts for avg sequence length).
+    weight_by: Literal["rows", "tokens"] = "rows"
+    """
+    "rows" or "tokens". If "tokens", weights represent desired token proportions (adjusts for avg sequence length).
+    """
     loss_on_prompt: bool = True
 
     val_frequency: int = 1000  # Run validation every N steps
