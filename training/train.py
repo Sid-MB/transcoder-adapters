@@ -6,6 +6,7 @@ that encourage layer-wise compatibility with a reference model.
 """
 
 import os
+import sys
 from helpers import logger, setup_logging
 os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
 
@@ -971,6 +972,9 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
     elif sweep_mode:
         # Update the sweep run with full config
         wandb.config.update(config.__dict__, allow_val_change=True)
+
+    if config.use_wandb or sweep_mode:
+        wandb.config.update({"cli_args": sys.argv}, allow_val_change=True)
 
     # Log per-dataset stats
     if hasattr(dataset_loader, 'dataset_stats'):

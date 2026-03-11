@@ -68,6 +68,7 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
         # Dead feature tracking: persistent counter per feature, never cleared.
         # Increments by batch_size each forward, resets to 0 for active features.
         self._dead_feature_counters = torch.zeros(self.n_features)
+        self._attention_mask = None  # set by parent model to mask padding
 
     def _init_transcoder_weights(self):
         """Initialize transcoder weights."""
@@ -95,17 +96,30 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
         if self.cache_features:
             batch_size = features.shape[0]
 
-            # L1: weighted by decoder column norms, sum over features, mean over (batch, seq)
+            # L1: weighted by decoder column norms, sum over features, mean over real tokens
             # Differentiable — stays in computation graph for backward
             dec_column_norms = torch.norm(self.transcoder_dec.weight, dim=0)  # [n_features]
             weighted_features = features * dec_column_norms.unsqueeze(0).unsqueeze(0)
-            self.cached_l1 = weighted_features.sum(dim=-1).mean()
+            per_token_l1 = weighted_features.sum(dim=-1)  # [batch, seq]
+
+            if self._attention_mask is not None:
+                mask = self._attention_mask.bool().to(per_token_l1.device)  # [batch, seq]
+                n_real = mask.sum().clamp(min=1)
+                self.cached_l1 = (per_token_l1 * mask).sum() / n_real
+            else:
+                self.cached_l1 = per_token_l1.mean()
 
             with torch.no_grad():
                 feature_active = features > 0  # [batch, seq, n_features]
 
-                # L0: count active features per token, mean over (batch, seq)
-                self.cached_l0 = feature_active.float().sum(dim=-1).mean().item()
+                # L0: count active features per token, mean over real tokens
+                per_token_l0 = feature_active.float().sum(dim=-1)  # [batch, seq]
+                if self._attention_mask is not None:
+                    mask = self._attention_mask.bool().to(per_token_l0.device)
+                    n_real = mask.sum().clamp(min=1)
+                    self.cached_l0 = ((per_token_l0 * mask).sum() / n_real).item()
+                else:
+                    self.cached_l0 = per_token_l0.mean().item()
 
                 # Dead features: age all, reset active ones
                 self._dead_feature_counters = self._dead_feature_counters.to(features.device)
@@ -127,6 +141,12 @@ class Gemma2ForCausalLMWithTranscoder(Gemma2ForCausalLM):
         # Replace all MLP modules with transcoder versions
         for layer in self.model.layers:
             layer.mlp = Gemma2MLPWithTranscoder(config)
+
+    def forward(self, input_ids=None, attention_mask=None, *args, **kwargs):
+        """Forward pass — broadcasts attention_mask to MLPs for masked stats."""
+        for layer in self.model.layers:
+            layer.mlp._attention_mask = attention_mask  # type: ignore[union-attr]
+        return super().forward(input_ids, attention_mask, *args, **kwargs)
 
     def _transcoder_mlps(self) -> Iterator[Gemma2MLPWithTranscoder]:
         """Yield each transcoder MLP layer with proper typing."""
@@ -175,6 +195,7 @@ class Gemma2ForCausalLMWithTranscoder(Gemma2ForCausalLM):
         for mlp in self._transcoder_mlps():
             mlp.cached_l1 = None
             mlp.cached_l0 = None
+            mlp._attention_mask = None
 
 
 def register_gemma2_transcoder():
