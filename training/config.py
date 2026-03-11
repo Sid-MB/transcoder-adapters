@@ -141,11 +141,15 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
     paths = config_path if isinstance(config_path, list) else [config_path]
 
     config_dict: dict = {}
-    for p in paths:
+    for n, p in enumerate(paths):
         with open(p, 'r') as f:
             layer = yaml.safe_load(f)
         if layer:
             config_dict = {**config_dict, **layer}
+            if n != 0:
+                logger.info(f'Overriding base config "{paths[0]}" with values from {p}: {layer}')
+        else:
+            raise ValueError(f"Config file {p} is empty or invalid.")
 
     # Handle nested configs
     adapter_configs = {}
