@@ -817,6 +817,7 @@ def save_latest_checkpoint(model, tokenizer, base_dir, step):
 
 def main():
     parser = argparse.ArgumentParser(description="Train with bridging loss")
+    parser.add_argument("--config", required=True, nargs="+", help="Path(s) to experiment config YAMLs. Later files shallow-override earlier ones.")
     parser.add_argument("--learning_rate", "-lr", type=float, help="Override learning rate")
     parser.add_argument("--l1_weight", type=float, help="Override transcoder L1 weight")
     parser.add_argument("--n_features", type=int, help="Override transcoder n_features")
