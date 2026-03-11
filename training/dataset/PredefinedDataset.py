@@ -1,7 +1,8 @@
 from functools import partial
+from collections.abc import Sequence
 from typing import Literal
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torch import Generator as TorchGenerator
 
 from .collate import collate_fn
@@ -59,22 +60,24 @@ class PredefinedDataset:
         return self._loaded_datasets
 
     @staticmethod
-    def _filter_by_length(dataset: SizedDataset[DatasetItem], name: str = "") -> Subset:
-        """Filter a dataset to only include non-truncated examples.
+    def _filter_by_length(dataset: CachedDataset[DatasetItem], name: str = "") -> None:
+        """Filter a dataset in-place to only include non-truncated examples.
 
         Assumes the dataset was constructed with truncate=True, so each item
-        has a 'truncated' flag. Returns a Subset containing only items where
-        truncated=False (i.e. the full sequence fit within max_length).
+        has a 'truncated' flag. Subsamples the CachedDataset to only items
+        where truncated=False (i.e. the full sequence fit within max_length).
+        The cache is preserved for kept items.
         """
-        logger.info(f"Dropping truncated rows from dataset split {f'({name})' if name else '[no name]'}...")
+        logger.info(f"Dropping truncated rows from dataset split of {f"\"{name}\"" if name else '[no dataset name]'}...")
+        total = len(dataset)
         valid_indices = []
-        for i in range(len(dataset)):
+        for i in range(total):
             item = dataset[i]
             if not item["truncated"]:
                 valid_indices.append(i)
         label = f" ({name})" if name else ""
-        logger.info(f"Filtered{label}: kept {len(valid_indices)}/{len(dataset)} examples that fit within max_length")
-        return Subset(dataset, valid_indices)  # pyright: ignore[reportArgumentType]
+        logger.info(f"Filtered{label}: kept {len(valid_indices)}/{total} examples that fit within max_length")
+        dataset.subsample(valid_indices)
 
     def _build_single_dataset(
         self, entry: DatasetEntryConfig, *, truncate: bool, is_val: bool = False
@@ -116,35 +119,36 @@ class PredefinedDataset:
 
     def _process_entry(
         self, entry: DatasetEntryConfig
-    ) -> tuple[SizedDataset[DatasetItem], SizedDataset[DatasetItem] | None]:
+    ) -> tuple[CachedDataset[DatasetItem], CachedDataset[DatasetItem] | None]:
         """Build, filter, and subsample a single entry. Returns (train_ds, val_ds_or_None)."""
         should_filter = entry.length_excession_behavior == LengthExcessionBehavior.FILTER
         truncate = should_filter or entry.length_excession_behavior == LengthExcessionBehavior.TRUNCATE
 
-        # Build train dataset
-        train_ds: SizedDataset[DatasetItem] = self._build_single_dataset(entry, truncate=truncate)
+        # Build train dataset and wrap in CachedDataset early so filtering populates the cache
+        train_ds = CachedDataset(self._build_single_dataset(entry, truncate=truncate))
+        self._caches.append(train_ds)
 
         if should_filter:
-            train_ds = self._filter_by_length(train_ds, entry.datapath)  # pyright: ignore[reportAssignmentType]
+            self._filter_by_length(train_ds, entry.datapath)
 
         if entry.num_rows is not None and len(train_ds) > entry.num_rows:
             g = TorchGenerator().manual_seed(self.dataloader_seed)
             indices = torch.randperm(len(train_ds), generator=g)[:entry.num_rows].tolist()
             logger.info(f"Subsampled {entry.num_rows}/{len(train_ds)} rows from '{entry.datapath}'")
-            train_ds = Subset(train_ds, indices) # pyright: ignore[reportArgumentType, reportAssignmentType]
+            train_ds.subsample(indices)
 
         # Build val dataset if path provided
-        val_ds: SizedDataset[DatasetItem] | None = None
+        val_ds: CachedDataset[DatasetItem] | None = None
         if entry.val_datapath:
-            val_ds = self._build_single_dataset(entry, truncate=truncate, is_val=True)
+            val_ds = CachedDataset(self._build_single_dataset(entry, truncate=truncate, is_val=True))
             if should_filter:
-                val_ds = self._filter_by_length(val_ds, entry.val_datapath)  # pyright: ignore[reportAssignmentType, reportArgumentType]
+                self._filter_by_length(val_ds, entry.val_datapath)
 
         return train_ds, val_ds
 
     @staticmethod
     def _estimate_avg_tokens(
-        datasets: list[SizedDataset[DatasetItem]], sample_size: int = 500
+        datasets: Sequence[SizedDataset[DatasetItem]], sample_size: int = 500
     ) -> list[float]:
         """Estimate average token count per row for each dataset by sampling."""
         avg_tokens: list[float] = []
@@ -159,8 +163,8 @@ class PredefinedDataset:
     def _make_dataset(self) -> LoadedDatasets:
         logger.info(f"Loading {len(self.dataset_entries)} dataset(s)")
 
-        train_datasets: list[SizedDataset[DatasetItem]] = []
-        val_datasets: list[SizedDataset[DatasetItem]] = []
+        train_datasets: list[CachedDataset[DatasetItem]] = []
+        val_datasets: list[CachedDataset[DatasetItem]] = []
         weights: list[float] = []
         active_entries: list[DatasetEntryConfig] = []
 
@@ -169,11 +173,7 @@ class PredefinedDataset:
                 logger.info(f"Skipping dataset '{entry.datapath}' (weight={entry.weight})")
                 continue
             train_ds, val_ds = self._process_entry(entry)
-            # Wrap each dataset in CachedDataset early so that token estimation,
-            # stats computation, and training all share the same cache.
-            cached_train = CachedDataset(train_ds)
-            self._caches.append(cached_train)
-            train_datasets.append(cached_train)
+            train_datasets.append(train_ds)
             weights.append(entry.weight)
             active_entries.append(entry)
             if val_ds is not None:
@@ -197,7 +197,7 @@ class PredefinedDataset:
                         f"Allocated {target}/{len(train_datasets[i])} rows "
                         f"from '{active_entries[i].datapath}'"
                     )
-                    train_datasets[i].subsample(indices)  # pyright: ignore[reportAttributeAccessIssue]
+                    train_datasets[i].subsample(indices)
                 else:
                     logger.warning(
                         f"Dataset '{active_entries[i].datapath}' has only "
