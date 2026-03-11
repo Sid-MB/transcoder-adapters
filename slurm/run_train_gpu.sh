@@ -10,4 +10,4 @@ SLURM_LOG_DIR="logs/train"
 source slurm/common.sh
 
 # uv run python -m training.train --config training/configs/gemma2_9b.yaml "$@"
-run uv run python -m training.train --config training/configs/gemma2_2b.yaml "$@"
+run uv run python -m training.train "$@"
