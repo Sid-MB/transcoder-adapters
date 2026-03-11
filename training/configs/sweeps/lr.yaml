@@ -1,5 +1,5 @@
 method: random
-name: lr_totalrows_sweep
+name: lr_sweep
 metric:
   goal: minimize
   name: train/loss

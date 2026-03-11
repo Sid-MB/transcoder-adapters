@@ -10,8 +10,8 @@ set -euo pipefail
 # then launches one agent per GPU using --sweep_id.
 #
 # Examples:
-#   ./run_sweep.sh --config training/configs/gemma2_2b.yaml --sweep training/configs/sweeps/lr_totalrows.yaml
-#   ./run_sweep.sh --config training/configs/gemma2_2b.yaml --sweep training/configs/sweeps/lr_totalrows.yaml --sweep_count 20
+#   ./run_sweep.sh --config training/configs/gemma2_2b.yaml --sweep training/configs/sweeps/lr.yaml
+#   ./run_sweep.sh --config training/configs/gemma2_2b.yaml --sweep training/configs/sweeps/lr.yaml --sweep_count 20
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
