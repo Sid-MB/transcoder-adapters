@@ -4,13 +4,14 @@ import re
 import tempfile
 
 from huggingface_hub import HfApi, ModelCard, ModelCardData
-from helpers.log import logger
+from helpers.log import logger, log_group
 
 
 HUB_NAME_PREFIX = "2026.TA"
 MAX_REPO_NAME_LEN = 96
 
 
+@log_group("Push to Hub")
 def push_to_hub(
     model,
     config,
@@ -30,18 +31,20 @@ def push_to_hub(
     """
     api = HfApi()
 
-    # Create the repo (no-op if it already exists)
+    logger.info(f"Creating repo {repo_id}...")
     api.create_repo(repo_id, exist_ok=True)
 
-    # Push model weights and config
+    logger.info("Pushing model weights and config...")
     model.push_to_hub(repo_id)
 
-    # Upload training config YAML
+    logger.info("Uploading training config YAML...")
     _upload_training_config(api, config, repo_id)
 
-    # Build and push model card with metadata
+    logger.info("Building model card...")
     full_name = f"{HUB_NAME_PREFIX}.{config.wandb_run_name}" if config.wandb_run_name else None
     card = _build_model_card(config, repo_id, full_name=full_name, wandb_url=wandb_url)
+
+    logger.info("Pushing model card...")
     card.push_to_hub(repo_id)
 
     logger.info(f"Model pushed to https://huggingface.co/{repo_id}")

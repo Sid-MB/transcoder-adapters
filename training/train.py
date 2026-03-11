@@ -975,6 +975,7 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
 
     if config.use_wandb or sweep_mode:
         wandb.config.update({"cli_args": sys.argv}, allow_val_change=True)
+        logger.info(f"Args passed to train.py: {sys.argv}")
 
     # Log per-dataset stats
     if hasattr(dataset_loader, 'dataset_stats'):
