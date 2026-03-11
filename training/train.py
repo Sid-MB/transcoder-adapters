@@ -908,7 +908,7 @@ def main():
     if hasattr(dataset_loader, 'dataset_stats'):
         for stat in dataset_loader.dataset_stats:
             logger.info(
-                f"  Dataset '{stat['datapath']}' ({stat['type']}): "
+                f"  Subset from '{stat['datapath']}' ({stat['type']}): "
                 f"{stat['rows']:,} rows, {stat['total_tokens']:,} tokens"
             )
         if config.use_wandb:
