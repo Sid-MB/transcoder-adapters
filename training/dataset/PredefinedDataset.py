@@ -191,7 +191,7 @@ class PredefinedDataset:
             effective_weights = [w / t for w, t in zip(weights, avg_tokens)]
 
         # Allocate total_rows across datasets if set
-        if self.total_rows is not None and len(train_datasets) > 1:
+        if self.total_rows is not None:
             total_ew = sum(effective_weights)
             row_counts = [round(self.total_rows * ew / total_ew) for ew in effective_weights]
             for i, target in enumerate(row_counts):

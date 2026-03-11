@@ -95,6 +95,7 @@ class ExperimentConfig:
         DatasetEntryConfig(
             type="open_thoughts",
             datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
+            num_rows=10000,
             data_format="deepseek",
             max_seq_length=10000,
             val_datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl",
