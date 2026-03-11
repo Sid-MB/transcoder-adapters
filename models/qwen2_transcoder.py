@@ -102,7 +102,7 @@ class Qwen2MLPWithTranscoder(Qwen2MLP):
             per_token_l1 = weighted_features.sum(dim=-1)  # [batch, seq]
 
             if self._attention_mask is not None:
-                mask = self._attention_mask.bool()  # [batch, seq]
+                mask = self._attention_mask.bool().to(per_token_l1.device)  # [batch, seq]
                 n_real = mask.sum().clamp(min=1)
                 self.cached_l1 = (per_token_l1 * mask).sum() / n_real
             else:
@@ -114,7 +114,7 @@ class Qwen2MLPWithTranscoder(Qwen2MLP):
                 # L0: count active features per token, mean over real tokens
                 per_token_l0 = feature_active.float().sum(dim=-1)  # [batch, seq]
                 if self._attention_mask is not None:
-                    mask = self._attention_mask.bool()
+                    mask = self._attention_mask.bool().to(per_token_l0.device)
                     n_real = mask.sum().clamp(min=1)
                     self.cached_l0 = ((per_token_l0 * mask).sum() / n_real).item()
                 else:
