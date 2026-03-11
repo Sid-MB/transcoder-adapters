@@ -824,12 +824,50 @@ def main():
     parser.add_argument("--batch_size", type=int, help="Override batch size")
     parser.add_argument("--num_epochs", type=int, help="Override number of epochs")
     parser.add_argument("--debug_mode", nargs="?", const="true", default=None, help="Override debug_mode (--debug_mode, --debug_mode=true, --debug_mode=false). If activating debug mode through this setting, wandb will be disabled.")
+    parser.add_argument("--sweep", type=str, default=None, help="Path to a wandb sweep config YAML. When set, creates a sweep and runs training via wandb.agent.")
+    parser.add_argument("--sweep_id", type=str, default=None, help="Join an existing wandb sweep by ID (e.g. from another GPU). Mutually exclusive with --sweep.")
+    parser.add_argument("--sweep_count", type=int, default=5, help="Number of sweep runs per agent (default: 5)")
     args = parser.parse_args()
 
-    # Build overrides dict from CLI args (all non-None args except "config")
+    setup_logging()
+
+    if args.sweep and args.sweep_id:
+        parser.error("--sweep and --sweep_id are mutually exclusive.")
+    elif args.sweep or args.sweep_id:
+        _run_sweep(args)
+    else:
+        _run_training(args)
+
+
+def _run_sweep(args):
+    """Create or join a wandb sweep and launch an agent that calls _run_training for each run."""
+    overrides = _build_overrides(args)
+    base_config = load_config(args.config, overrides=overrides)
+
+    if args.sweep_id:
+        sweep_id = args.sweep_id
+        logger.info(f"Joining existing sweep {sweep_id}")
+    else:
+        import yaml
+        with open(args.sweep, 'r') as f:
+            sweep_config = yaml.safe_load(f)
+        sweep_id = wandb.sweep(sweep=sweep_config, project=base_config.wandb_project)
+        logger.info(f"Created sweep {sweep_id}")
+
+    logger.info(f"Starting agent with {args.sweep_count} runs")
+
+    def sweep_train():
+        _run_training(args, sweep_mode=True)
+
+    wandb.agent(sweep_id, function=sweep_train, count=args.sweep_count, project=base_config.wandb_project)
+
+
+def _build_overrides(args) -> dict[str, Any]:
+    """Build overrides dict from CLI args (all non-None args except config/sweep args)."""
+    exclude = {"config", "sweep", "sweep_id", "sweep_count"}
     overrides: dict[str, Any] = {
         k: v for k, v in vars(args).items()
-        if k != "config" and v is not None
+        if k not in exclude and v is not None
     }
 
     # debug_mode comes in as a string from argparse, convert to bool
@@ -839,12 +877,31 @@ def main():
         elif overrides["debug_mode"].lower() == "false":
             overrides["debug_mode"] = False
         else:
-            parser.error(f"Invalid value for --debug_mode: '{overrides['debug_mode']}'. Must be 'true' or 'false'.")
+            raise ValueError(f"Invalid value for --debug_mode: '{overrides['debug_mode']}'. Must be 'true' or 'false'.")
 
-    setup_logging()
+    return overrides
 
-    # Load config with overrides
+
+def _run_training(args, sweep_mode: bool = False):
+    """Run a single training session. Called directly or by wandb.agent."""
+    overrides = _build_overrides(args)
+
+    # Load config with CLI overrides
     config = load_config(args.config, overrides=overrides)
+
+    # In sweep mode, wandb.init is called to pick up sweep parameters
+    if sweep_mode:
+        wandb.init()
+        # Apply sweep parameters on top of config
+        for key, value in dict(wandb.config).items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+                logger.info(f"Sweep override {key}: {value}")
+        # Regenerate computed fields since sweep changed hyperparams
+        config.wandb_run_name = None
+        config.output_dir = None
+        from training.config import _finalize_config
+        config = _finalize_config(config)
 
     # Validate exactly one training mode is set
     has_bridging = config.bridging is not None
@@ -895,14 +952,18 @@ def main():
         verify_hub_access(hub_repo_id)
     else:
         hub_repo_id = None
+
     # WandB
-    if config.use_wandb:
+    if config.use_wandb and not sweep_mode:
         mode_prefix = "direct" if config.direct else "bridging"
         wandb.init(
             project=config.wandb_project,
             name=f"{mode_prefix}_{config.wandb_run_name}",
             config=config.__dict__
         )
+    elif sweep_mode:
+        # Update the sweep run with full config
+        wandb.config.update(config.__dict__, allow_val_change=True)
 
     # Log per-dataset stats
     if hasattr(dataset_loader, 'dataset_stats'):
@@ -918,7 +979,7 @@ def main():
                 wandb_dataset_summary[f"{prefix}/rows"] = stat["rows"]
                 wandb_dataset_summary[f"{prefix}/total_tokens"] = stat["total_tokens"]
                 wandb_dataset_summary[f"{prefix}/datapath"] = stat["datapath"]
-            wandb.config.update(wandb_dataset_summary)
+            wandb.config.update(wandb_dataset_summary, allow_val_change=True)
 
     logger.info("Training setup:")
     logger.info(f"  - Train dataset size per epoch: {train_size}")
@@ -963,6 +1024,9 @@ def main():
         if config.use_wandb and wandb.run is not None:
             wandb.run.summary["hf_model_url"] = f"https://huggingface.co/{hub_repo_id}"
             wandb.run.summary["hf_repo_id"] = hub_repo_id
+
+    if config.use_wandb:
+        wandb.finish()
 
 
 if __name__ == "__main__":
