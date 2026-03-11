@@ -27,8 +27,12 @@ class DatasetEntryConfig:
     datapath: str
     max_seq_length: int = 8192
     num_rows: int | None = None
+    """Row cap applied before mixing of the datasets and any total_rows allocation. Ensures no more than the given amount of rows from this dataset will be used in one epoch. If None, all rows can be used."""
+
     length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.TRUNCATE
     weight: float = 1.0
+    """Higher weighted datasets will be sampled more frequently for training. Weights are relative to each other, sampled using `torch.multinomial`."""
+    
     # open_thoughts-specific
     data_format: DataFormat | None = None  # "tokenizer", "deepseek", "qwen"
     val_datapath: str | None = None
@@ -101,7 +105,11 @@ class ExperimentConfig:
             val_datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl",
         )
     ])
-    total_rows: int | None = None  # Total rows in the mixed dataset. If set, rows are allocated across datasets proportionally to weights.
+    total_rows: int | None = None
+    """
+    Total rows used for training, after any mixing of the datasets. 
+    If set, rows are allocated across datasets proportionally to weights.
+    """
     weight_by: str = "rows"  # "rows" or "tokens". If "tokens", weights represent desired token proportions (adjusts for avg sequence length).
     loss_on_prompt: bool = True
 
