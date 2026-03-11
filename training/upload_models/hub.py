@@ -35,7 +35,7 @@ def push_to_hub(
     api.create_repo(repo_id, exist_ok=True)
 
     logger.info("Pushing model weights and config...")
-    model.push_to_hub(repo_id)
+    model.push_to_hub(repo_id, verbose=True)
 
     logger.info("Uploading training config YAML...")
     _upload_training_config(api, config, repo_id)
