@@ -897,7 +897,16 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
     if sweep_mode and not config.use_wandb:
         raise ValueError("Cannot run sweeps with use_wandb=False (e.g. debug_mode). Remove --debug_mode or set use_wandb: true.")
 
-    # In sweep mode, wandb.init is called to pick up sweep parameters
+    # Verify Hub access before training so we fail fast
+    if config.push_to_hub:
+        from training.upload_models.hub import build_hub_repo_id, verify_hub_access
+
+        hub_repo_id = build_hub_repo_id(config)
+        verify_hub_access(hub_repo_id)
+    else:
+        hub_repo_id = None
+
+    # WandB — initialize early so setup logs are captured
     if sweep_mode:
         wandb.init()
         # Apply sweep parameters on top of config
@@ -910,6 +919,10 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         config.output_dir = None
         from training.config import _finalize_config
         config = _finalize_config(config)
+        wandb.config.update(config.__dict__, allow_val_change=True)
+    elif config.use_wandb:
+        mode_prefix = "direct" if config.direct else "bridging"
+        wandb.init(project=config.wandb_project, name=f"{mode_prefix}_{config.wandb_run_name}", config=config.__dict__)
 
     # Validate exactly one training mode is set
     has_bridging = config.bridging is not None
@@ -952,26 +965,6 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
 
     with Timer("setup_training"):
         optimizer, scheduler, total_steps, warmup_steps, train_size = setup_training(config, model, dataset_loader)
-
-    # Verify Hub access before training so we fail fast
-    if config.push_to_hub:
-        from training.upload_models.hub import build_hub_repo_id, verify_hub_access
-        hub_repo_id = build_hub_repo_id(config)
-        verify_hub_access(hub_repo_id)
-    else:
-        hub_repo_id = None
-
-    # WandB
-    if config.use_wandb and not sweep_mode:
-        mode_prefix = "direct" if config.direct else "bridging"
-        wandb.init(
-            project=config.wandb_project,
-            name=f"{mode_prefix}_{config.wandb_run_name}",
-            config=config.__dict__
-        )
-    elif sweep_mode:
-        # Update the sweep run with full config
-        wandb.config.update(config.__dict__, allow_val_change=True)
 
     if config.use_wandb or sweep_mode:
         wandb.config.update({"cli_args": sys.argv}, allow_val_change=True)
