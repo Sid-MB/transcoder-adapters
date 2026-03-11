@@ -197,7 +197,7 @@ class PredefinedDataset:
                         f"Allocated {target}/{len(train_datasets[i])} rows "
                         f"from '{active_entries[i].datapath}'"
                     )
-                    train_datasets[i] = Subset(train_datasets[i], indices)  # pyright: ignore[reportCallIssue, reportArgumentType, reportAssignmentType]
+                    train_datasets[i].subsample(indices)  # pyright: ignore[reportAttributeAccessIssue]
                 else:
                     logger.warning(
                         f"Dataset '{active_entries[i].datapath}' has only "
