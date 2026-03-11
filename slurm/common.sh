@@ -12,6 +12,12 @@
 #   - uv sync
 #   - run() function that executes a command with set -xe
 
+# Assert that we're in the root of the repo (where slurm/ is) for consistent log paths and uv sync
+if [ ! -d "slurm" ]; then
+    echo "ERROR: common.sh must be sourced from the root of the repository (the parent folder of slurm/), so that log paths, Python calls and other run commands are consistent" >&2
+    exit 1
+fi
+
 # ── Validate ──────────────────────────────────────────────────────────
 if [ -z "$SLURM_LOG_DIR" ]; then
     echo "ERROR: SLURM_LOG_DIR must be set before sourcing common.sh" >&2
