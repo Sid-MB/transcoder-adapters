@@ -985,7 +985,11 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
             )
         if config.use_wandb:
             assert wandb.run is not None, "wandb.run should not be None when use_wandb is True"
-            wandb.run.summary["dataset_stats"] = dataset_loader.dataset_stats
+            # flatten the stats for wandb so they're easier to look through and filter on
+            for i, stat in enumerate(dataset_loader.dataset_stats):
+                prefix = f"dataset_stats/{i}_{stat['type']}"
+                for key, val in stat.items():
+                    wandb.run.summary[f"{prefix}/{key}"] = val
 
     logger.info("Training setup:")
     logger.info(f"  - Train dataset size per epoch: {train_size}")
