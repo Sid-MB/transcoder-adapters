@@ -127,6 +127,9 @@ class ExperimentConfig:
     # Debug settings
     debug_mode: bool = False  # If True, break after 50 steps for quick testing
 
+    all_configs: list[str] = field(default_factory=list)
+    """Don't set directly, used to store which config paths were loaded. Later configs override previous ones."""
+
 
 def load_config(config_path: str | list[str], overrides: dict[str, Any] | None = None) -> ExperimentConfig:
     """Load configuration from one or more YAML files.
@@ -139,6 +142,7 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
             If any overrides are applied, wandb_run_name and output_dir are regenerated.
     """
     paths = config_path if isinstance(config_path, list) else [config_path]
+    """The paths of all configs to load"""
 
     config_dict: dict = {}
     for n, p in enumerate(paths):
@@ -177,6 +181,7 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
 
     # Create main config with adapter configs
     config = ExperimentConfig(**config_dict, **adapter_configs)
+    config.all_configs = paths
 
     # Apply overrides
     if overrides:
@@ -261,6 +266,12 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
         else:
             model_size = _extract_model_size(config.model_name)
             run_parts.extend(["transcoder", model_size])
+
+        # Add overlay config names (skip the first/base config)
+        if len(config.all_configs) > 1:
+            for cfg_path in config.all_configs[1:]:
+                cfg_name = Path(cfg_path).stem
+                run_parts.append(cfg_name)
 
         # Add transcoder params
         if config.transcoder:
