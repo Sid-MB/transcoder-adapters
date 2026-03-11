@@ -12,5 +12,5 @@ source slurm/common.sh
 run ./run_sweep.sh \
     --config training/configs/gemma2_2b.yaml \
     --sweep training/configs/sweeps/lr.yaml \
-    --sweep_count 3 \
+    --sweep_count 4 \
     "$@"
