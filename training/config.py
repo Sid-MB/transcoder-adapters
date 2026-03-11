@@ -9,6 +9,8 @@ from helpers.log import logger
 
 from pathlib import Path
 
+from .dataset.openthoughts.types import DataFormat
+
 
 class LengthExcessionBehavior(Enum):
     TRUNCATE = "truncate"
@@ -28,7 +30,7 @@ class DatasetEntryConfig:
     length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.TRUNCATE
     weight: float = 1.0
     # open_thoughts-specific
-    data_format: str | None = None  # "tokenizer", "deepseek", "qwen"
+    data_format: DataFormat | None = None  # "tokenizer", "deepseek", "qwen"
     val_datapath: str | None = None
 
 

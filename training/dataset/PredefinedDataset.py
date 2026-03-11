@@ -125,20 +125,20 @@ class PredefinedDataset:
         train_ds: SizedDataset[DatasetItem] = self._build_single_dataset(entry, truncate=truncate)
 
         if should_filter:
-            train_ds = self._filter_by_length(train_ds, entry.datapath)  # pyright: ignore[reportArgumentType]
+            train_ds = self._filter_by_length(train_ds, entry.datapath)  # pyright: ignore[reportAssignmentType]
 
         if entry.num_rows is not None and len(train_ds) > entry.num_rows:
             g = TorchGenerator().manual_seed(self.dataloader_seed)
             indices = torch.randperm(len(train_ds), generator=g)[:entry.num_rows].tolist()
             logger.info(f"Subsampled {entry.num_rows}/{len(train_ds)} rows from '{entry.datapath}'")
-            train_ds = Subset(train_ds, indices)  # pyright: ignore[reportArgumentType]
+            train_ds = Subset(train_ds, indices) # pyright: ignore[reportArgumentType, reportAssignmentType]
 
         # Build val dataset if path provided
         val_ds: SizedDataset[DatasetItem] | None = None
         if entry.val_datapath:
             val_ds = self._build_single_dataset(entry, truncate=truncate, is_val=True)
             if should_filter:
-                val_ds = self._filter_by_length(val_ds, entry.val_datapath)  # pyright: ignore[reportArgumentType]
+                val_ds = self._filter_by_length(val_ds, entry.val_datapath)  # pyright: ignore[reportAssignmentType, reportArgumentType]
 
         return train_ds, val_ds
 
@@ -197,7 +197,7 @@ class PredefinedDataset:
                         f"Allocated {target}/{len(train_datasets[i])} rows "
                         f"from '{active_entries[i].datapath}'"
                     )
-                    train_datasets[i] = Subset(train_datasets[i], indices)  # pyright: ignore[reportArgumentType]
+                    train_datasets[i] = Subset(train_datasets[i], indices)  # pyright: ignore[reportCallIssue, reportArgumentType, reportAssignmentType]
                 else:
                     logger.warning(
                         f"Dataset '{active_entries[i].datapath}' has only "

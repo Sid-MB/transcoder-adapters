@@ -10,7 +10,7 @@ def collate_fn(examples, tokenizer: "PreTrainedTokenizerFast"):
     # Extract sequences
     input_ids = [ex["input_ids"] for ex in examples]
     labels = [ex["labels"] for ex in examples]
-    
+
     tokenizer.deprecation_warnings["Asking-to-pad-a-fast-tokenizer"] = True # remove the warning. we aren't padding when we tokenize because we run an analysis of the # of tokens in each sample beforehand (and maybe other reasons too?). https://github.com/huggingface/transformers/issues/22638#issuecomment-1560406455
 
     # Pad input_ids and attention_mask
@@ -21,7 +21,7 @@ def collate_fn(examples, tokenizer: "PreTrainedTokenizerFast"):
     )
 
     # Manually pad labels with -100
-    max_length = batch["input_ids"].shape[1]
+    max_length = batch["input_ids"].shape[1] # pyright: ignore[reportAttributeAccessIssue]
     padded_labels = []
 
     for label_seq in labels:
