@@ -980,13 +980,8 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
                 f"{stat['rows']:,} rows, {stat['total_tokens']:,} tokens"
             )
         if config.use_wandb:
-            wandb_dataset_summary = {}
-            for i, stat in enumerate(dataset_loader.dataset_stats):
-                prefix = f"dataset/{i}_{stat['type']}"
-                wandb_dataset_summary[f"{prefix}/rows"] = stat["rows"]
-                wandb_dataset_summary[f"{prefix}/total_tokens"] = stat["total_tokens"]
-                wandb_dataset_summary[f"{prefix}/datapath"] = stat["datapath"]
-            wandb.config.update(wandb_dataset_summary, allow_val_change=True)
+            assert wandb.run is not None, "wandb.run should not be None when use_wandb is True"
+            wandb.run.summary["dataset_stats"] = dataset_loader.dataset_stats
 
     logger.info("Training setup:")
     logger.info(f"  - Train dataset size per epoch: {train_size}")
