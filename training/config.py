@@ -128,22 +128,24 @@ class ExperimentConfig:
     debug_mode: bool = False  # If True, break after 50 steps for quick testing
 
 
-def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> ExperimentConfig:
-    """Load configuration from YAML file.
+def load_config(config_path: str | list[str], overrides: dict[str, Any] | None = None) -> ExperimentConfig:
+    """Load configuration from one or more YAML files.
 
     Args:
-        config_path: Path to the YAML config file.
+        config_path: Path (or list of paths) to YAML config file(s).
+            When multiple paths are given, later files shallow-override earlier ones.
         overrides: Optional dict of overrides. Keys must be valid ExperimentConfig fields.
             If debug_mode is set to True, wandb is also disabled and _debug is appended to run_name_prefix.
             If any overrides are applied, wandb_run_name and output_dir are regenerated.
     """
-    config_path = Path(config_path) # type: ignore
+    paths = config_path if isinstance(config_path, list) else [config_path]
 
-    if not config_path.exists(): # type: ignore
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    with open(config_path, 'r') as f:
-        config_dict = yaml.safe_load(f)
+    config_dict: dict = {}
+    for p in paths:
+        with open(p, 'r') as f:
+            layer = yaml.safe_load(f)
+        if layer:
+            config_dict = {**config_dict, **layer}
 
     # Handle nested configs
     adapter_configs = {}
