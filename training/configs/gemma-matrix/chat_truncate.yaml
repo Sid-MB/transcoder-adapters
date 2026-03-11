@@ -1,0 +1,6 @@
+datasets:
+  - type: "lmsys_chat"
+    datapath: "siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
+    max_seq_length: 1000
+    length_excession_behavior: "truncate"
+    weight: 1.0
