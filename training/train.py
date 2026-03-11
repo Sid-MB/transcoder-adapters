@@ -247,13 +247,12 @@ def setup_data(config: ExperimentConfig, tokenizer) -> PredefinedDataset:
     """Setup dataset loader. Dataloaders are created per-epoch via get_epoch_dataloaders()."""
 
     dataset_loader = PredefinedDataset(
-        dataset_type=config.dataset_type,
+        dataset_entries=config.datasets,
         tokenizer=tokenizer,
-        length_excession_behavior=config.length_excession_behavior,
         loss_on_prompt=config.loss_on_prompt,
-        dataset_specific_config=config.dataset,
         batch_size=config.batch_size,
-        dataset_rows=config.dataset_rows,
+        total_rows=config.total_rows,
+        weight_by=config.weight_by,
     )
     dataset_loader._load_dataset()
     return dataset_loader
@@ -270,7 +269,7 @@ def setup_training(config: ExperimentConfig, model, dataset_loader: PredefinedDa
     )
 
     assert dataset_loader._loaded_datasets is not None, "Datasets must be loaded before setting up training"
-    train_size = config.dataset_rows if config.dataset_rows is not None else len(dataset_loader._loaded_datasets["train"])
+    train_size = len(dataset_loader._loaded_datasets["train"])
     steps_per_epoch = train_size // config.batch_size
     total_steps = steps_per_epoch * config.num_epochs
     warmup_steps = int(total_steps * config.warmup_ratio)
@@ -823,7 +822,6 @@ def main():
     parser.add_argument("--l1_weight", type=float, help="Override transcoder L1 weight")
     parser.add_argument("--n_features", type=int, help="Override transcoder n_features")
     parser.add_argument("--batch_size", type=int, help="Override batch size")
-    parser.add_argument("--dataset_rows", type=int, help="Override number of dataset rows to use")
     parser.add_argument("--num_epochs", type=int, help="Override number of epochs")
     parser.add_argument("--debug_mode", nargs="?", const="true", default=None, help="Override debug_mode (--debug_mode, --debug_mode=true, --debug_mode=false). If activating debug mode through this setting, wandb will be disabled.")
     args = parser.parse_args()
@@ -905,6 +903,22 @@ def main():
             name=f"{mode_prefix}_{config.wandb_run_name}",
             config=config.__dict__
         )
+
+    # Log per-dataset stats
+    if hasattr(dataset_loader, 'dataset_stats'):
+        for stat in dataset_loader.dataset_stats:
+            logger.info(
+                f"  Dataset '{stat['datapath']}' ({stat['type']}): "
+                f"{stat['rows']:,} rows, {stat['total_tokens']:,} tokens"
+            )
+        if config.use_wandb:
+            wandb_dataset_summary = {}
+            for i, stat in enumerate(dataset_loader.dataset_stats):
+                prefix = f"dataset/{i}_{stat['type']}"
+                wandb_dataset_summary[f"{prefix}/rows"] = stat["rows"]
+                wandb_dataset_summary[f"{prefix}/total_tokens"] = stat["total_tokens"]
+                wandb_dataset_summary[f"{prefix}/datapath"] = stat["datapath"]
+            wandb.config.update(wandb_dataset_summary)
 
     logger.info("Training setup:")
     logger.info(f"  - Train dataset size per epoch: {train_size}")

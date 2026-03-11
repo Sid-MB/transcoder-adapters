@@ -291,25 +291,20 @@ def _build_model_card(
 
 def _collect_dataset_ids(config) -> list[str]:
     """Extract HuggingFace dataset identifiers from config."""
-    from ..dataset.openthoughts.config import OpenThoughtsConfig
-    from ..dataset.gemma.config import FineWebLMSysMixedConfig
-
     ids: list[str] = []
-    ds = config.dataset
 
-    if isinstance(ds, OpenThoughtsConfig):
-        # data_path may be like "hf://nathu0/transcoder-adapters-openthoughts3-stratified-55k/data/train.jsonl"
-        for path in [ds.data_path, getattr(ds, "val_data_path", None)]:
-            if path and path.startswith("hf://"):
+    for entry in config.datasets:
+        for path in [entry.datapath, entry.val_datapath]:
+            if not path:
+                continue
+            if path.startswith("hf://"):
                 # Extract "org/dataset-name" from "hf://org/dataset-name/..."
                 parts = path[len("hf://"):].split("/", 2)
                 if len(parts) >= 2:
                     dataset_id = f"{parts[0]}/{parts[1]}"
                     if dataset_id not in ids:
                         ids.append(dataset_id)
-    elif isinstance(ds, FineWebLMSysMixedConfig):
-        for path in [ds.pretraining_datapath, ds.chat_conversations_datapath]:
-            if path and not path.startswith("/"):
+            elif not path.startswith("/"):
                 # Looks like a HF dataset ID (e.g., "science-of-finetuning/fineweb-1m-sample")
                 if path not in ids:
                     ids.append(path)

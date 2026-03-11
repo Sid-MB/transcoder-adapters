@@ -2,17 +2,34 @@
 
 import yaml
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from helpers.log import logger
 
-from .dataset.openthoughts.config import OpenThoughtsConfig
-from .dataset.gemma.config import FineWebLMSysMixedConfig
-
-from .dataset.datasetspecific_config import DatasetSpecificConfig, DatasetType
-
-from .dataset.PredefinedDataset import LengthExcessionBehavior
 from pathlib import Path
+
+
+class LengthExcessionBehavior(Enum):
+    TRUNCATE = "truncate"
+    ERROR = "error"
+    """Throw if any sequences are over the max length."""
+    FILTER = "filter"
+    """Filter out any sequences that exceed the maximum length."""
+
+
+@dataclass
+class DatasetEntryConfig:
+    """Configuration for a single dataset in the training mix."""
+    type: str  # "fineweb", "lmsys_chat", "open_thoughts"
+    datapath: str
+    max_seq_length: int = 8192
+    num_rows: int | None = None
+    length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.TRUNCATE
+    weight: float = 1.0
+    # open_thoughts-specific
+    data_format: str | None = None  # "tokenizer", "deepseek", "qwen"
+    val_datapath: str | None = None
 
 
 @dataclass
@@ -72,16 +89,18 @@ class ExperimentConfig:
     seed: int = 42
 
     # Data settings
-    dataset_rows: int | None = None  # If set, randomly subsample each split to at most this many rows
-    dataset_type: DatasetType = DatasetType.OPEN_THOUGHTS
-    length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.TRUNCATE
+    datasets: list[DatasetEntryConfig] = field(default_factory=lambda: [
+        DatasetEntryConfig(
+            type="open_thoughts",
+            datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
+            data_format="deepseek",
+            max_seq_length=10000,
+            val_datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl",
+        )
+    ])
+    total_rows: int | None = None  # Total rows in the mixed dataset. If set, rows are allocated across datasets proportionally to weights.
+    weight_by: str = "rows"  # "rows" or "tokens". If "tokens", weights represent desired token proportions (adjusts for avg sequence length).
     loss_on_prompt: bool = True
-    dataset: DatasetSpecificConfig = OpenThoughtsConfig(
-        data_path="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
-        data_format="deepseek",
-        max_seq_length=10000,
-        val_data_path="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl"
-    )
 
     val_frequency: int = 1000  # Run validation every N steps
     layerwise_val_frequency: int = 2000  # Run layerwise validation every N steps
@@ -133,6 +152,21 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
     if 'direct' in config_dict:
         adapter_configs['direct'] = DirectConfig(**config_dict.pop('direct'))
 
+    # Parse datasets list before creating ExperimentConfig
+    if 'datasets' in config_dict:
+        raw_datasets = config_dict.pop('datasets')
+        parsed_datasets = []
+        for entry in raw_datasets:
+            if isinstance(entry, dict):
+                if 'length_excession_behavior' in entry and isinstance(entry['length_excession_behavior'], str):
+                    entry['length_excession_behavior'] = LengthExcessionBehavior(entry['length_excession_behavior'])
+                if 'num_rows' in entry and entry['num_rows'] is not None:
+                    entry['num_rows'] = int(entry['num_rows'])
+                parsed_datasets.append(DatasetEntryConfig(**entry))
+            else:
+                parsed_datasets.append(entry)
+        adapter_configs['datasets'] = parsed_datasets
+
     # Create main config with adapter configs
     config = ExperimentConfig(**config_dict, **adapter_configs)
 
@@ -176,14 +210,10 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
     # Ensure numeric types are correct (YAML can load as strings)
     config.learning_rate = float(config.learning_rate)
     config.batch_size = int(config.batch_size)
-    # if config.micro_batch_size is None:
-    #     config.micro_batch_size = config.batch_size # int(config.micro_batch_size) # We're not doing gradient accumulation, see note in PredefinedDataset's _make_dataloader function.
     if config.micro_batch_size is not None:
         config.micro_batch_size = int(config.micro_batch_size)
         assert config.micro_batch_size <= config.batch_size, "micro_batch_size cannot be greater than batch_size"
         assert config.batch_size % config.micro_batch_size == 0, "batch_size must be divisible by micro_batch_size"
-
-    config.dataset_rows = int(config.dataset_rows) if config.dataset_rows is not None else None
 
     if config.transcoder:
         # Convert transcoder weights to float if they exist
@@ -196,27 +226,6 @@ def load_config(config_path: str, overrides: dict[str, Any] | None = None) -> Ex
     if config.model_arch is None:
         from models import detect_architecture
         config.model_arch = detect_architecture(config.model_name)
-
-    # Convert dataset_type from string to enum
-    if isinstance(config.dataset_type, str):
-        config.dataset_type = DatasetType(config.dataset_type)
-    
-    if isinstance(config.length_excession_behavior, str):
-        config.length_excession_behavior = LengthExcessionBehavior(config.length_excession_behavior)
-
-    # Parse dataset sub-dict
-    if isinstance(config.dataset, dict):
-        match config.dataset_type:
-            case DatasetType.OPEN_THOUGHTS:
-                config.dataset = OpenThoughtsConfig(**config.dataset)
-            case DatasetType.FINEWEB_LMYSYSCHAT_MIXED:
-                config.dataset = FineWebLMSysMixedConfig(**config.dataset)
-            case _:
-                raise ValueError(f"Unsupported dataset type: {config.dataset_type}")
-    
-    assert config.dataset.dataset_type == config.dataset_type, (
-        f"Dataset type mismatch: you set dataset_type to {config.dataset_type}, but the provided dataset-specific config is for {config.dataset.dataset_type}. Please make sure these match."
-    )
 
     # Print a warning if there were any extra keys in the YAML that were not used in the config dataclass
     extra_keys = set(config_dict.keys()) - set(ExperimentConfig.__dataclass_fields__.keys())
@@ -268,9 +277,16 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
         elif config.direct:
             run_parts.append("direct")
 
-
         # Add data info
-        run_parts.append(f"dr{config.dataset_rows if config.dataset_rows is not None else 'all'}")
+        if config.total_rows is not None:
+            run_parts.append(f"dr{config.total_rows}")
+        else:
+            entries_with_rows = [e for e in config.datasets if e.num_rows is not None]
+            if entries_with_rows:
+                total_rows = sum(e.num_rows for e in entries_with_rows)  # type: ignore
+                run_parts.append(f"dr{total_rows}")
+            else:
+                run_parts.append("drall")
 
         # Add training params
         run_parts.append(f"lr{config.learning_rate:.0e}")
@@ -338,6 +354,8 @@ def save_config(config: ExperimentConfig, output_path: str):
         val = getattr(config, field_name)
         if hasattr(val, '__dataclass_fields__'):
             config_dict[field_name] = val.__dict__
+        elif isinstance(val, list) and val and hasattr(val[0], '__dataclass_fields__'):
+            config_dict[field_name] = [item.__dict__ for item in val]
         else:
             config_dict[field_name] = val
 

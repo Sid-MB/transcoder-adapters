@@ -1,9 +1,13 @@
+from typing import TYPE_CHECKING
+
 from torch.utils.data import Dataset
 
 from datasets import load_dataset, Dataset as HFDataset
 from training.dataset.types import DatasetItem
 from helpers.log import logger
 
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerFast
 
 class FineWebDataset(Dataset):
     """Dataset for FineWeb pretraining data.
@@ -19,7 +23,7 @@ class FineWebDataset(Dataset):
         self,
         data_path: str,
         *,
-        tokenizer,
+        tokenizer: "PreTrainedTokenizerFast",
         max_length: int = 8192,
         truncate: bool = False,
         split: str = "train",

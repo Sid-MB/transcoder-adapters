@@ -18,14 +18,19 @@ bridging:
   lambda_bridge: 2.0
   lambda_nmse: 1
 
-dataset_type: "fineweb_lmysyschat_mixed"
-dataset:
-  pretraining_datapath: "science-of-finetuning/fineweb-1m-sample"
-  chat_conversations_datapath: "siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
-  pretraining_max_seq_length: 1000
-  chat_max_seq_length: 1000
-dataset_rows: 10000
-length_excession_behavior: "filter"
+datasets:
+  - type: "fineweb"
+    datapath: "science-of-finetuning/fineweb-1m-sample"
+    max_seq_length: 1000
+    length_excession_behavior: "filter"
+    weight: 0.5
+  - type: "lmsys_chat"
+    datapath: "siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
+    max_seq_length: 1000
+    length_excession_behavior: "filter"
+    weight: 0.5
+total_rows: 20000
+weight_by: "tokens"
 loss_on_prompt: true
 
 batch_size: 4

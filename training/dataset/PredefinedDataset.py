@@ -1,4 +1,3 @@
-from enum import Enum
 from functools import partial
 from typing import Literal
 import torch
@@ -9,24 +8,15 @@ from .collate import collate_fn
 from .types import DatasetItem, SizedDataset
 from helpers.log import logger
 
-from .gemma.config import FineWebLMSysMixedConfig
+from training.config import DatasetEntryConfig, LengthExcessionBehavior
 
 from .CachedDataset import CachedDataset
-from .datasetspecific_config import DatasetSpecificConfig, DatasetType
-from .openthoughts.config import OpenThoughtsConfig
-
-
-class LengthExcessionBehavior(Enum):
-    TRUNCATE = "truncate"
-    ERROR = "error"
-    """Throw if any sequences are over the max length."""
-    FILTER = "filter"
-    """Filter out any sequences that exceed the maximum length."""
 
 
 class PredefinedDataset:
     """
-    Specifies how a dataset should be loaded and processed for training
+    Builds training (and optional validation) datasets from a list of DatasetEntryConfig entries,
+    wrapping multiple datasets in a MixedDataset when needed.
     """
 
     # Type for loaded datasets
@@ -36,32 +26,23 @@ class PredefinedDataset:
 
     def __init__(
         self,
-        dataset_type: DatasetType,
+        dataset_entries: list[DatasetEntryConfig],
         *,
         tokenizer,
-        length_excession_behavior: LengthExcessionBehavior = LengthExcessionBehavior.ERROR,
         loss_on_prompt: bool = False,
-        dataset_specific_config: DatasetSpecificConfig | None = None,
         batch_size: int = 1,
         dataloader_seed: int = 81,
-        dataset_rows: int | None = None,
+        total_rows: int | None = None,
+        weight_by: str = "rows",
     ):
-        self.dataset_type = dataset_type
+        self.dataset_entries = dataset_entries
         self.tokenizer = tokenizer
-        self.length_excession_behavior = length_excession_behavior
         self.loss_on_prompt = loss_on_prompt
-        self.dataset_specific_config = dataset_specific_config
-        self.dataset_rows = dataset_rows
-        if dataset_specific_config is not None:
-            assert dataset_specific_config.dataset_type == dataset_type, (
-                f"Config type mismatch: config is for {dataset_specific_config.dataset_type}, "
-                f"but dataset_type is {dataset_type}"
-            )
+        self.total_rows = total_rows
+        self.weight_by = weight_by
 
         self._loaded_datasets: PredefinedDataset.LoadedDatasets | None = None
-        """
-        Cache for loaded datasets (full, before dataset_rows subsampling). Initialized to None, and populated on first call to _load_dataset().
-        """
+        """Cache for loaded datasets. Initialized to None, and populated on first call to _load_dataset()."""
         self._caches: list[CachedDataset] = []
         """References to CachedDataset wrappers, for clearing between epochs."""
 
@@ -70,7 +51,8 @@ class PredefinedDataset:
 
     def _load_dataset(self):
         """
-        Loads the dataset according to the type and configuration parameters specified in the constructor. Caches the loaded dataset for future calls; there's no need to call this method more than once per instance.
+        Loads the dataset according to the entries specified in the constructor.
+        Caches the loaded dataset for future calls.
         """
         if self._loaded_datasets is None:
             self._loaded_datasets = self._make_dataset()
@@ -94,100 +76,171 @@ class PredefinedDataset:
         logger.info(f"Filtered{label}: kept {len(valid_indices)}/{len(dataset)} examples that fit within max_length")
         return Subset(dataset, valid_indices)  # pyright: ignore[reportArgumentType]
 
-    def _make_dataset(self) -> LoadedDatasets:
-        logger.info(f"Loading training dataset of type {self.dataset_type} with config: {self.dataset_specific_config}")
-        _should_filter = self.length_excession_behavior == LengthExcessionBehavior.FILTER
-        # When filtering, we construct with truncate=True so __getitem__ doesn't
-        # error, then drop truncated examples after construction.
-        _truncate = _should_filter or self.length_excession_behavior == LengthExcessionBehavior.TRUNCATE
+    def _build_single_dataset(
+        self, entry: DatasetEntryConfig, *, truncate: bool, is_val: bool = False
+    ) -> SizedDataset[DatasetItem]:
+        """Instantiate a single dataset from its entry config."""
+        datapath = entry.val_datapath if is_val else entry.datapath
+        assert datapath is not None
 
-        datasets = self._make_dataset_splits(_truncate)
-
-        if _should_filter:
-            logger.info("Filtering datasets...")
-            for split in datasets:
-                datasets[split] = self._filter_by_length(datasets[split], split)  # pyright: ignore[reportArgumentType]
-
-        return datasets
-
-    def _make_dataset_splits(self, truncate: bool) -> LoadedDatasets:
-        match self.dataset_type:
-            case DatasetType.OPEN_THOUGHTS:
-                from training.dataset.openthoughts.open_thoughts import (
-                    OpenThoughtsDataset,
-                )
-
-                assert isinstance(self.dataset_specific_config, OpenThoughtsConfig)
-                datasets: PredefinedDataset.LoadedDatasets = {
-                    "train": OpenThoughtsDataset(
-                        data_path=self.dataset_specific_config.data_path,
-                        tokenizer=self.tokenizer,
-                        max_length=self.dataset_specific_config.max_seq_length,
-                        format=self.dataset_specific_config.data_format,
-                        truncate=truncate,
-                        loss_on_prompt=self.loss_on_prompt,
-                    )
-                }
-                if self.dataset_specific_config.val_data_path is not None:
-                    datasets["val"] = OpenThoughtsDataset(
-                        data_path=self.dataset_specific_config.val_data_path,
-                        tokenizer=self.tokenizer,
-                        max_length=self.dataset_specific_config.max_seq_length,
-                        format=self.dataset_specific_config.data_format,
-                        truncate=truncate,
-                        loss_on_prompt=self.loss_on_prompt,
-                    )
-                return datasets
-
-            case DatasetType.FINEWEB_LMYSYSCHAT_MIXED:
-                from training.dataset.MixedDataset import MixedDataset
+        match entry.type:
+            case "fineweb":
                 from training.dataset.gemma.fineweb import FineWebDataset
+                return FineWebDataset(
+                    data_path=datapath,
+                    tokenizer=self.tokenizer,
+                    max_length=entry.max_seq_length,
+                    truncate=truncate,
+                )
+            case "lmsys_chat":
                 from training.dataset.gemma.lmsys_chat import LMSYSChatDataset
-
-                assert isinstance(self.dataset_specific_config, FineWebLMSysMixedConfig)
-                pretraining_dataset = FineWebDataset(
-                    data_path=self.dataset_specific_config.pretraining_datapath,
+                return LMSYSChatDataset(
+                    data_path=datapath,
                     tokenizer=self.tokenizer,
-                    max_length=self.dataset_specific_config.pretraining_max_seq_length,
+                    max_length=entry.max_seq_length,
                     truncate=truncate,
+                    loss_on_prompt=self.loss_on_prompt,
                 )
-                chat_dataset = LMSYSChatDataset(
-                    data_path=self.dataset_specific_config.chat_conversations_datapath,
+            case "open_thoughts":
+                from training.dataset.openthoughts.open_thoughts import OpenThoughtsDataset
+                return OpenThoughtsDataset(
+                    data_path=datapath,
                     tokenizer=self.tokenizer,
-                    max_length=self.dataset_specific_config.chat_max_seq_length if self.dataset_specific_config.chat_max_seq_length != "pretraining_max_seq_length" else self.dataset_specific_config.pretraining_max_seq_length,
+                    max_length=entry.max_seq_length,
+                    format=entry.data_format or "tokenizer",
                     truncate=truncate,
+                    loss_on_prompt=self.loss_on_prompt,
                 )
-                mixed = MixedDataset(
-                    datasets=(pretraining_dataset, chat_dataset), weights=(0.5, 0.5)
-                )
-                logger.info(f"Created mixed dataset, rows={len(mixed)}")
-                cached = CachedDataset(mixed)
-                self._caches.append(cached)
-                return {
-                    "train": cached,
-                }
             case _:
-                raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
+                raise ValueError(f"Unknown dataset type: {entry.type}")
 
-    def _subsample_for_epoch(self, epoch: int) -> LoadedDatasets:
-        """Subsample dataset_rows from each split using an epoch-specific seed."""
-        assert self._loaded_datasets is not None
-        if self.dataset_rows is None:
-            return self._loaded_datasets
+    def _process_entry(
+        self, entry: DatasetEntryConfig
+    ) -> tuple[SizedDataset[DatasetItem], SizedDataset[DatasetItem] | None]:
+        """Build, filter, and subsample a single entry. Returns (train_ds, val_ds_or_None)."""
+        should_filter = entry.length_excession_behavior == LengthExcessionBehavior.FILTER
+        truncate = should_filter or entry.length_excession_behavior == LengthExcessionBehavior.TRUNCATE
 
-        subsampled: PredefinedDataset.LoadedDatasets = {}
-        for split, ds in self._loaded_datasets.items():
-            if len(ds) > self.dataset_rows:
-                epoch_seed = self.dataloader_seed + epoch
-                g = TorchGenerator().manual_seed(epoch_seed)
-                indices = torch.randperm(len(ds), generator=g)[:self.dataset_rows].tolist()
-                logger.info(
-                    f"Epoch {epoch}: subsampling {self.dataset_rows}/{len(ds)} rows from '{split}' (seed={epoch_seed})"
-                )
-                subsampled[split] = Subset(ds, indices)  # pyright: ignore[reportArgumentType]
+        # Build train dataset
+        train_ds: SizedDataset[DatasetItem] = self._build_single_dataset(entry, truncate=truncate)
+
+        if should_filter:
+            train_ds = self._filter_by_length(train_ds, entry.datapath)  # pyright: ignore[reportArgumentType]
+
+        if entry.num_rows is not None and len(train_ds) > entry.num_rows:
+            g = TorchGenerator().manual_seed(self.dataloader_seed)
+            indices = torch.randperm(len(train_ds), generator=g)[:entry.num_rows].tolist()
+            logger.info(f"Subsampled {entry.num_rows}/{len(train_ds)} rows from '{entry.datapath}'")
+            train_ds = Subset(train_ds, indices)  # pyright: ignore[reportArgumentType]
+
+        # Build val dataset if path provided
+        val_ds: SizedDataset[DatasetItem] | None = None
+        if entry.val_datapath:
+            val_ds = self._build_single_dataset(entry, truncate=truncate, is_val=True)
+            if should_filter:
+                val_ds = self._filter_by_length(val_ds, entry.val_datapath)  # pyright: ignore[reportArgumentType]
+
+        return train_ds, val_ds
+
+    @staticmethod
+    def _estimate_avg_tokens(
+        datasets: list[SizedDataset[DatasetItem]], sample_size: int = 500
+    ) -> list[float]:
+        """Estimate average token count per row for each dataset by sampling."""
+        avg_tokens: list[float] = []
+        for ds in datasets:
+            n = min(sample_size, len(ds))
+            total_toks = sum(len(ds[i]["input_ids"]) for i in range(n))
+            avg = total_toks / n
+            avg_tokens.append(avg)
+        logger.info(f"Estimated avg tokens per dataset: {[f'{t:.0f}' for t in avg_tokens]}")
+        return avg_tokens
+
+    def _make_dataset(self) -> LoadedDatasets:
+        logger.info(f"Loading {len(self.dataset_entries)} dataset(s)")
+
+        train_datasets: list[SizedDataset[DatasetItem]] = []
+        val_datasets: list[SizedDataset[DatasetItem]] = []
+        weights: list[float] = []
+        active_entries: list[DatasetEntryConfig] = []
+
+        for entry in self.dataset_entries:
+            if entry.weight <= 0:
+                logger.info(f"Skipping dataset '{entry.datapath}' (weight={entry.weight})")
+                continue
+            train_ds, val_ds = self._process_entry(entry)
+            # Wrap each dataset in CachedDataset early so that token estimation,
+            # stats computation, and training all share the same cache.
+            cached_train = CachedDataset(train_ds)
+            self._caches.append(cached_train)
+            train_datasets.append(cached_train)
+            weights.append(entry.weight)
+            active_entries.append(entry)
+            if val_ds is not None:
+                val_datasets.append(val_ds)
+
+        # Compute effective weights (adjust for token length if needed)
+        effective_weights = list(weights)
+        if self.weight_by == "tokens" and len(train_datasets) > 1:
+            avg_tokens = self._estimate_avg_tokens(train_datasets)
+            effective_weights = [w / t for w, t in zip(weights, avg_tokens)]
+
+        # Allocate total_rows across datasets if set
+        if self.total_rows is not None and len(train_datasets) > 1:
+            total_ew = sum(effective_weights)
+            row_counts = [round(self.total_rows * ew / total_ew) for ew in effective_weights]
+            for i, target in enumerate(row_counts):
+                if len(train_datasets[i]) > target:
+                    g = TorchGenerator().manual_seed(self.dataloader_seed + i)
+                    indices = torch.randperm(len(train_datasets[i]), generator=g)[:target].tolist()
+                    logger.info(
+                        f"Allocated {target}/{len(train_datasets[i])} rows "
+                        f"from '{active_entries[i].datapath}'"
+                    )
+                    train_datasets[i] = Subset(train_datasets[i], indices)  # pyright: ignore[reportArgumentType]
+                else:
+                    logger.warning(
+                        f"Dataset '{active_entries[i].datapath}' has only "
+                        f"{len(train_datasets[i])} rows but {target} were requested"
+                    )
+            # After subsampling to target counts, use equal weights in MixedDataset
+            mix_weights: tuple[float, ...] = tuple(1.0 for _ in train_datasets)
+        else:
+            mix_weights = tuple(effective_weights)
+
+        # Compute exact per-dataset stats over all rows that will be used in training.
+        # This populates the per-dataset caches so training doesn't re-tokenize.
+        self.dataset_stats: list[dict[str, str | int]] = []
+        for i, ds in enumerate(train_datasets):
+            entry = active_entries[i]
+            n_rows = len(ds)
+            total_tokens = sum(len(ds[j]["input_ids"]) for j in range(n_rows)) # We're fine because this happens before padding
+            self.dataset_stats.append({
+                "type": entry.type,
+                "datapath": entry.datapath,
+                "rows": n_rows,
+                "total_tokens": total_tokens,
+            })
+            logger.info(f"Dataset '{entry.datapath}': {n_rows:,} rows, {total_tokens:,} tokens")
+
+        # Wrap in MixedDataset if multiple, otherwise use directly
+        if len(train_datasets) == 1:
+            train_final: SizedDataset[DatasetItem] = train_datasets[0]
+        else:
+            from training.dataset.MixedDataset import MixedDataset
+            train_final = MixedDataset(datasets=tuple(train_datasets), weights=mix_weights)
+            logger.info(f"Created mixed dataset, rows={len(train_final)}")
+
+        result: PredefinedDataset.LoadedDatasets = {"train": train_final}
+
+        if val_datasets:
+            if len(val_datasets) == 1:
+                result["val"] = val_datasets[0]
             else:
-                subsampled[split] = ds
-        return subsampled
+                from training.dataset.MixedDataset import MixedDataset
+                result["val"] = MixedDataset(datasets=tuple(val_datasets))
+
+        return result
 
     def _make_dataloader(self, datasets: LoadedDatasets) -> Dataloaders:
         """
@@ -201,7 +254,7 @@ class PredefinedDataset:
         assert "train" in datasets, (
             "Training split ('train') is required in loaded datasets"
         )
-        logger.info(f"Loading dataset for {self.dataset_type}, shuffling (seed={self.dataloader_seed})")
+        logger.info(f"Creating dataloaders, shuffling (seed={self.dataloader_seed})")
         dataloaders: PredefinedDataset.Dataloaders = {
             "train": DataLoader(
                 datasets["train"], # pyright: ignore[reportArgumentType]
@@ -238,16 +291,17 @@ class PredefinedDataset:
 
     def get_epoch_dataloaders(self, epoch: int) -> Dataloaders:
         """
-        Loads the dataset (if not already loaded), subsamples for the given epoch, and creates dataloaders.
+        Loads the dataset (if not already loaded) and creates dataloaders.
         """
         self._load_dataset()
         self.clear_caches()
-        epoch_datasets = self._subsample_for_epoch(epoch)
-        return self._make_dataloader(epoch_datasets)
+        assert self._loaded_datasets is not None
+        return self._make_dataloader(self._loaded_datasets)
 
     def load_datasets_and_dataloaders(self) -> tuple[LoadedDatasets, Dataloaders]:
         """
-        Loads the dataset (if not already loaded) and creates dataloaders for each split (without epoch-based subsampling). Returns a tuple of (loaded_datasets, dataloaders).
+        Loads the dataset (if not already loaded) and creates dataloaders for each split.
+        Returns a tuple of (loaded_datasets, dataloaders).
         """
         datasets = self._load_dataset()
         dataloaders = self._make_dataloader(datasets)
