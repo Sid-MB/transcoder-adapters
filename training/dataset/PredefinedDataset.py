@@ -148,13 +148,18 @@ class PredefinedDataset:
 
     @staticmethod
     def _estimate_avg_tokens(
-        datasets: Sequence[SizedDataset[DatasetItem]], sample_size: int = 500
+        datasets: Sequence[SizedDataset[DatasetItem]], seed: int, sample_size: int = 1000
     ) -> list[float]:
-        """Estimate average token count per row for each dataset by sampling."""
+        """Estimate average token count per row for each dataset by random sampling.
+
+        Uses seed+i per dataset, matching the allocation permutation so that
+        sampled rows are a subset of the final allocated rows (and get cached).
+        """
         avg_tokens: list[float] = []
-        for ds in datasets:
+        for i, ds in enumerate(datasets):
             n = min(sample_size, len(ds))
-            total_toks = sum(len(ds[i]["input_ids"]) for i in range(n))
+            indices = torch.randperm(len(ds), generator=TorchGenerator().manual_seed(seed + i))[:n].tolist()
+            total_toks = sum(len(ds[idx]["input_ids"]) for idx in indices)
             avg = total_toks / n
             avg_tokens.append(avg)
         logger.info(f"Estimated avg tokens per dataset: {[f'{t:.0f}' for t in avg_tokens]}")
@@ -182,7 +187,7 @@ class PredefinedDataset:
         # Compute effective weights (adjust for token length if needed)
         effective_weights = list(weights)
         if self.weight_by == "tokens" and len(train_datasets) > 1:
-            avg_tokens = self._estimate_avg_tokens(train_datasets)
+            avg_tokens = self._estimate_avg_tokens(train_datasets, seed=self.dataloader_seed)
             effective_weights = [w / t for w, t in zip(weights, avg_tokens)]
 
         # Allocate total_rows across datasets if set
