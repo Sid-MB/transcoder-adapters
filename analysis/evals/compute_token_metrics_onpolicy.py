@@ -8,6 +8,9 @@ Usage:
     python claude_scripts/compute_token_metrics_onpolicy.py --model <model_path>
     python claude_scripts/compute_token_metrics_onpolicy.py --model Qwen/Qwen2.5-Math-7B
 """
+from typing import TYPE_CHECKING
+
+from helpers.log import log_group, logger, setup_logging
 from pathlib import Path
 import sys
 sys.path.insert(0, '/juice2/u/nathu/sparse_adaptation')
@@ -21,7 +24,7 @@ import glob
 import re
 import torch
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 
@@ -43,7 +46,7 @@ class BenchmarkMetrics(TokenMetrics):
 
 @dataclass(frozen=True)
 class EvalResults(TokenMetrics):
-    per_benchmark: dict[str, BenchmarkMetrics] = None
+    per_benchmark: dict[str, BenchmarkMetrics] = field(default_factory=dict)
 
 # Output directory
 OUTPUT_DIR = "/nlp/scr/nathu/sparse-adaptation/token_recon_evals"
@@ -54,18 +57,10 @@ OUTPUT_DIR = "/nlp/scr/nathu/sparse-adaptation/token_recon_evals"
 # ============================================================================
 
 EVALCHEMY_DIR = Path("/nlp/scr/nathu/sparse-adaptation/evalchemy_v5")
+LMSYS_DATASET = "siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
 
-# Per-family configuration: reference model, eval directory, transcoder loader
-MODEL_FAMILIES = {
-    "qwen": {
-        "reference_model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        "eval_dir": EVALCHEMY_DIR / "deepseek-ai__DeepSeek-R1-Distill-Qwen-7B",
-    },
-    "gemma2": {
-        "reference_model": "google/gemma-2-2b-it",
-        "eval_dir": EVALCHEMY_DIR / "google__gemma-2-2b-it",
-    },
-}
+# Data source configurations
+DATA_SOURCES = ["evalchemy_qwen", "lmsys_chat"]
 
 # Prompt templates (matching evalchemy)
 MATH_PROMPT = """Problem: {problem}
@@ -125,9 +120,9 @@ def load_all_rollouts(eval_dir: str):
     for bm_name in benchmark_files:
         benchmark_files[bm_name] = sorted(benchmark_files[bm_name])[-1]
 
-    print(f"Loading rollouts from {eval_dir}:")
+    logger.info(f"Loading rollouts from {eval_dir}:")
     for bm_name, path in sorted(benchmark_files.items()):
-        print(f"  {bm_name}: {os.path.basename(path)}")
+        logger.info(f"  {bm_name}: {os.path.basename(path)}")
 
     # Load LiveCodeBench is_stdin mapping
     lcb_is_stdin = load_livecode_is_stdin_map()
@@ -200,14 +195,63 @@ def load_all_rollouts(eval_dir: str):
                         'question_id': f"LiveCodeBench_{task_id}",
                     })
 
-    print(f"\nLoaded {len(examples)} total rollouts")
+    logger.info(f"\nLoaded {len(examples)} total rollouts")
 
     # Print per-benchmark counts
     from collections import Counter
     bm_counts = Counter(ex['benchmark'] for ex in examples)
     for bm, count in sorted(bm_counts.items()):
-        print(f"  {bm}: {count}")
+        logger.info(f"  {bm}: {count}")
 
+    return examples
+
+
+def load_lmsys_examples(tokenizer) -> list[dict]:
+    """Load assistant turns from the LMSYS chat val split as prompt/response examples.
+
+    Each multi-turn conversation produces one example per assistant turn, using
+    the preceding messages as the prompt context.
+    """
+    from datasets import load_dataset, DatasetDict
+
+    ds = load_dataset(LMSYS_DATASET, trust_remote_code=True) # pyright: ignore[reportAssignmentType]
+    assert isinstance(ds, DatasetDict), f'Expected a DatasetDict with splits, got {type(ds)} for "{LMSYS_DATASET}"'
+
+    split = None
+    for candidate in ("val", "validation", "test"):
+        if candidate in ds:
+            split = ds[candidate]
+            break
+    if split is None:
+        raise ValueError(f"No val split found in {LMSYS_DATASET}. Available: {list(ds.keys())}")
+
+    logger.info(f"Loading LMSYS chat val split: {len(split)} conversations")
+
+    examples = []
+    for conv_idx, row in enumerate(split):
+        conversation = row["conversation"] # pyright: ignore[reportArgumentType, reportCallIssue]
+        for turn_idx, msg in enumerate(conversation):
+            if msg["role"] not in ("assistant", "model"):
+                continue
+            # Prompt = all messages before this assistant turn
+            prefix_messages = conversation[:turn_idx]
+            if not prefix_messages:
+                continue
+
+            # Tokenize prefix with generation prompt to get the prompt boundary
+            prompt_ids = tokenizer.apply_chat_template(
+                prefix_messages, tokenize=True, add_generation_prompt=True,
+            )
+            response_ids = tokenizer.encode(msg["content"], add_special_tokens=False)
+
+            examples.append({
+                'prompt_ids': prompt_ids,
+                'response_ids': response_ids,
+                'benchmark': 'lmsys_chat',
+                'question_id': f"lmsys_{conv_idx}_{turn_idx}",
+            })
+
+    logger.info(f"Extracted {len(examples)} assistant turns from {len(split)} conversations")
     return examples
 
 
@@ -252,15 +296,24 @@ def sample_deduplicated(examples: list, n_samples: int, seed: int):
 # TOKENIZATION
 # ============================================================================
 def tokenize_example(ex: dict, tokenizer, max_length: int):
-    """Tokenize a single example using DeepSeek chat format."""
-    messages = [{"role": "user", "content": ex['prompt']}]
-    prompt_ids = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-    )
+    """Tokenize a single example into input_ids and labels.
 
-    response_ids = tokenizer.encode(ex['response'], add_special_tokens=False)
+    Supports two formats:
+    - evalchemy: has 'prompt' and 'response' strings
+    - lmsys_chat: has pre-tokenized 'prompt_ids' and 'response_ids' lists
+    """
+    if 'prompt_ids' in ex:
+        prompt_ids = ex['prompt_ids']
+        response_ids = ex['response_ids']
+    else:
+        messages = [{"role": "user", "content": ex['prompt']}]
+        prompt_ids = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+        response_ids = tokenizer.encode(ex['response'], add_special_tokens=False)
+
     input_ids = prompt_ids + response_ids
 
     # Truncate if needed
@@ -335,7 +388,7 @@ def load_model(model_path: str, use_transcoder: bool = False):
             device_map="auto",
             trust_remote_code=True,
         )
-        print(f"  Loaded as transcoder model (auto-detected arch)")
+        logger.info(f"  Loaded as transcoder model (auto-detected arch)")
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -343,17 +396,41 @@ def load_model(model_path: str, use_transcoder: bool = False):
             device_map="auto",
             trust_remote_code=True,
         )
-        print(f"  Loaded as AutoModelForCausalLM")
+        logger.info(f"  Loaded as AutoModelForCausalLM")
 
     return model
 
 
-def evaluate_model(model_path: str, ref_model, tokenizer, examples, max_length: int, device: str, debug: bool = False, use_transcoder: bool = False):
-    """Evaluate a model against the reference."""
-    print(f"\nLoading model: {model_path}")
-    model = load_model(model_path, use_transcoder=use_transcoder)
-    model.eval()
+@log_group("Token-level evaluation")
+def run_token_metrics_eval(
+    eval_model,
+    ref_model,
+    tokenizer,
+    examples: list[dict],
+    max_length: int = MAX_SEQ_LENGTH,
+    device: str = DEVICE,
+    debug: bool = False,
+    save_output: bool = False,
+) -> EvalResults:
+    """Compute token-level KL divergence and top-1 agreement between two models.
 
+    This is the main callable API. Models must already be loaded and in eval mode.
+
+    Args:
+        eval_model: The model being evaluated.
+        ref_model: The reference model whose distribution is treated as ground truth.
+        tokenizer: Tokenizer (used for tokenizing examples and debug decoding).
+        examples: List of example dicts from load_all_rollouts() or load_lmsys_examples().
+        max_length: Max sequence length for tokenization.
+        device: Device string (e.g. "cuda").
+        debug: If True, log decoded tokens for the first few samples.
+        save_output: If True, save results to a JSON file in OUTPUT_DIR.
+
+    Returns:
+        EvalResults with aggregate and per-benchmark metrics.
+    """
+    model_name = getattr(eval_model.config, '_name_or_path', 'unknown_model')
+    reference_model_name = getattr(ref_model.config, '_name_or_path', 'unknown_ref')
     # Running sums for memory efficiency (no storing all tokens)
     total_kl = 0.0
     total_match = 0.0
@@ -379,7 +456,7 @@ def evaluate_model(model_path: str, ref_model, tokenizer, examples, max_length: 
 
         with torch.no_grad():
             logits_ref = ref_model(input_ids=input_ids).logits
-            logits_model = model(input_ids=input_ids).logits
+            logits_model = eval_model(input_ids=input_ids).logits
 
             metrics = compute_token_metrics(logits_model, logits_ref, input_ids, labels)
 
@@ -405,9 +482,9 @@ def evaluate_model(model_path: str, ref_model, tokenizer, examples, max_length: 
 
         # Debug: show first few samples
         if debug and i < DEBUG_SAMPLES:
-            print(f"\n{'='*60}")
-            print(f"DEBUG Sample {i+1} (benchmark: {ex['benchmark']})")
-            print(f"{'='*60}")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"DEBUG Sample {i+1} (benchmark: {ex['benchmark']})")
+            logger.info(f"{'='*60}")
 
             # Decode prompt and response
             prompt_len = (labels[0] == -100).sum().item()
@@ -415,28 +492,24 @@ def evaluate_model(model_path: str, ref_model, tokenizer, examples, max_length: 
             response_token_ids = input_ids[0, prompt_len:].tolist()
 
             # Show last few prompt tokens (should include <think>\n)
-            print(f"Prompt ({prompt_len} tokens) - last 5 tokens:")
+            logger.info(f"Prompt ({prompt_len} tokens) - last 5 tokens:")
             for tid in prompt_token_ids[-5:]:
-                print(f"  {tid}: {repr(tokenizer.decode([tid]))}")
+                logger.info(f"  {tid}: {repr(tokenizer.decode([tid]))}")
 
-            print(f"\nResponse ({len(response_token_ids)} tokens) - first 5 tokens:")
+            logger.info(f"\nResponse ({len(response_token_ids)} tokens) - first 5 tokens:")
             for tid in response_token_ids[:5]:
-                print(f"  {tid}: {repr(tokenizer.decode([tid]))}")
+                logger.info(f"  {tid}: {repr(tokenizer.decode([tid]))}")
 
-            print(f"\nResponse text preview:")
+            logger.info(f"\nResponse text preview:")
             response_text = tokenizer.decode(response_token_ids)
-            print(response_text[:500] + "..." if len(response_text) > 500 else response_text)
+            logger.info(response_text[:500] + "..." if len(response_text) > 500 else response_text)
 
             # Per-sample metrics
             n_int_sample = int_mask.sum()
-            print(f"\nMetrics for this sample ({len(metrics['kl'])} tokens, {n_int_sample} interesting):")
-            print(f"  All tokens:         KL={np.mean(metrics['kl']):.4f}, Top-1 agree={np.mean(metrics['top1_match']):.4f}")
+            logger.info(f"\nMetrics for this sample ({len(metrics['kl'])} tokens, {n_int_sample} interesting):")
+            logger.info(f"  All tokens:         KL={np.mean(metrics['kl']):.4f}, Top-1 agree={np.mean(metrics['top1_match']):.4f}")
             if n_int_sample > 0:
-                print(f"  Interesting tokens: KL={np.mean(metrics['kl'][int_mask]):.4f}, Top-1 agree={np.mean(metrics['top1_match'][int_mask]):.4f}")
-
-    # Cleanup
-    del model
-    torch.cuda.empty_cache()
+                logger.info(f"  Interesting tokens: KL={np.mean(metrics['kl'][int_mask]):.4f}, Top-1 agree={np.mean(metrics['top1_match'][int_mask]):.4f}")
 
     # Compute per-benchmark summaries
     per_benchmark = {}
@@ -444,8 +517,8 @@ def evaluate_model(model_path: str, ref_model, tokenizer, examples, max_length: 
         n = stats['n_tokens']
         n_int = stats['n_interesting']
         per_benchmark[bm] = BenchmarkMetrics(
-            n_samples=stats['n_samples'],
-            n_tokens=n,
+            n_samples=stats['n_samples'], # pyright: ignore[reportArgumentType]
+            n_tokens=n, # pyright: ignore[reportArgumentType]
             kl_mean=stats['total_kl'] / n if n > 0 else float('nan'),
             top1_agreement=stats['total_match'] / n if n > 0 else float('nan'),
             n_interesting=int(n_int),
@@ -453,8 +526,7 @@ def evaluate_model(model_path: str, ref_model, tokenizer, examples, max_length: 
             top1_agreement_interesting=stats['total_match_interesting'] / n_int if n_int > 0 else float('nan'),
         )
 
-    # Return summary stats
-    return EvalResults(
+    results = EvalResults(
         n_tokens=n_tokens,
         kl_mean=total_kl / n_tokens if n_tokens > 0 else float('nan'),
         top1_agreement=total_match / n_tokens if n_tokens > 0 else float('nan'),
@@ -464,13 +536,85 @@ def evaluate_model(model_path: str, ref_model, tokenizer, examples, max_length: 
         per_benchmark=per_benchmark,
     )
 
+    # Log results
+    logger.info("\n" + "="*70)
+    logger.info(f"RESULTS: {model_name}")
+    logger.info("="*70)
+    logger.info(f"  Samples:           {len(examples)}")
+    logger.info(f"  Total tokens:      {results.n_tokens:,}")
+    logger.info("")
+    logger.info("  ALL TOKENS:")
+    logger.info(f"    KL divergence:   {results.kl_mean:.4f}")
+    logger.info(f"    Top-1 agreement: {results.top1_agreement:.4f} ({results.top1_agreement*100:.2f}%)")
+    logger.info("")
+    frac_interesting = results.n_interesting / results.n_tokens * 100
+    logger.info(f"  INTERESTING TOKENS (ref max_prob <= {INTERESTING_THRESHOLD}):")
+    logger.info(f"    Count:           {results.n_interesting:,} ({frac_interesting:.1f}%)")
+    logger.info(f"    KL divergence:   {results.kl_mean_interesting:.4f}")
+    logger.info(f"    Top-1 agreement: {results.top1_agreement_interesting:.4f} ({results.top1_agreement_interesting*100:.2f}%)")
+
+    # Per-benchmark stats
+    logger.info("\n" + "-"*70)
+    logger.info("PER-BENCHMARK STATS:")
+    logger.info("-"*70)
+    logger.info(f"{'Benchmark':<20} {'Samples':>8} {'Tokens':>10} {'KL':>8} {'Top1':>8} {'KL_int':>8} {'Top1_int':>8}")
+    logger.info("-"*70)
+    for bm in sorted(results.per_benchmark.keys()):
+        stats = results.per_benchmark[bm]
+        logger.info(f"{bm:<20} {stats.n_samples:>8} {stats.n_tokens:>10,} {stats.kl_mean:>8.4f} {stats.top1_agreement:>8.2%} {stats.kl_mean_interesting:>8.4f} {stats.top1_agreement_interesting:>8.2%}")
+    logger.info("="*70)
+
+    # Save results to JSON
+    if save_output:
+        from dataclasses import asdict
+
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        clean_name = model_name.rstrip('/').replace('/', '__')
+        output_path = os.path.join(OUTPUT_DIR, f"{clean_name}.json")
+
+        per_benchmark_json = {bm: asdict(m) for bm, m in results.per_benchmark.items()}
+        output_data = {
+            'model': model_name,
+            'reference_model': reference_model_name,
+            'n_samples': len(examples),
+            'n_tokens': results.n_tokens,
+            'interesting_threshold': INTERESTING_THRESHOLD,
+            'all_tokens': {
+                'kl_mean': float(results.kl_mean),
+                'top1_agreement': float(results.top1_agreement),
+            },
+            'interesting_tokens': {
+                'n_tokens': int(results.n_interesting),
+                'frac_tokens': frac_interesting / 100,
+                'kl_mean': float(results.kl_mean_interesting),
+                'top1_agreement': float(results.top1_agreement_interesting),
+            },
+            'per_benchmark': per_benchmark_json,
+        }
+
+        with open(output_path, 'w') as f:
+            json.dump(output_data, f, indent=2)
+        logger.info(f"\nSaved token-level evaluation results to {output_path}")
+
+    return results
+
 
 #%%
 def main():
+    setup_logging()
     parser = argparse.ArgumentParser(description="Compute token-level metrics vs reference model")
-    parser.add_argument("--model", type=str, required=True, help="Model path to evaluate")
-    parser.add_argument("--model_family", type=str, default="qwen", choices=list(MODEL_FAMILIES.keys()),
-                        help="Model family (determines reference model and eval dir)")
+    parser.add_argument("--model", type=str, required=True,
+                        help="HF model path or local checkpoint to evaluate. "
+                             "Token-level KL and top-1 agreement are computed for this model's "
+                             "predictions against the reference model. Use --transcoder if this "
+                             "is a transcoder-adapted checkpoint.")
+    parser.add_argument("--reference_model", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+                        help="HF model path for the reference model whose output distribution "
+                             "is treated as ground truth. KL(reference || model) is computed "
+                             "per token. Also used as the tokenizer source. "
+                             "(e.g. deepseek-ai/DeepSeek-R1-Distill-Qwen-7B, google/gemma-2-2b-it)")
+    parser.add_argument("--data_source", type=str, default="evalchemy_qwen", choices=DATA_SOURCES,
+                        help="Validation data source: evalchemy_qwen or lmsys_chat")
     parser.add_argument("--n_samples", type=int, default=N_SAMPLES, help="Number of rollouts to sample")
     parser.add_argument("--max_length", type=int, default=MAX_SEQ_LENGTH, help="Max sequence length")
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed for sampling")
@@ -478,30 +622,34 @@ def main():
     parser.add_argument("--transcoder", action="store_true", help="Load model as transcoder (auto-detects arch)")
     args = parser.parse_args()
 
-    family_config = MODEL_FAMILIES[args.model_family]
-    reference_model = family_config["reference_model"]
-    eval_dir = family_config["eval_dir"]
+    reference_model = args.reference_model
 
     # Load tokenizer
-    print(f"Loading tokenizer from {reference_model}")
+    logger.info(f"Loading tokenizer from {reference_model}")
     tokenizer = AutoTokenizer.from_pretrained(reference_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Load all rollouts
-    all_examples = load_all_rollouts(eval_dir)
+    # Load examples from chosen data source
+    if args.data_source == "evalchemy_qwen":
+        eval_dir = EVALCHEMY_DIR / "deepseek-ai__DeepSeek-R1-Distill-Qwen-7B"
+        all_examples = load_all_rollouts(str(eval_dir))
+    elif args.data_source == "lmsys_chat":
+        all_examples = load_lmsys_examples(tokenizer)
+    else:
+        raise ValueError(f"Unknown data source: {args.data_source}")
 
     # Sample with deduplication (one rollout per question first)
     if args.n_samples < len(all_examples):
         examples = sample_deduplicated(all_examples, args.n_samples, args.seed)
         n_unique_questions = len(set(ex['question_id'] for ex in examples))
-        print(f"\nSampled {len(examples)} examples from {n_unique_questions} unique questions (seed={args.seed})")
+        logger.info(f"\nSampled {len(examples)} examples from {n_unique_questions} unique questions (seed={args.seed})")
     else:
         examples = all_examples
-        print(f"\nUsing all {len(examples)} examples")
+        logger.info(f"\nUsing all {len(examples)} examples")
 
-    # Load reference model
-    print(f"\nLoading reference model: {reference_model}")
+    # Load models
+    logger.info(f"\nLoading reference model: {reference_model}")
     ref_model = AutoModelForCausalLM.from_pretrained(
         reference_model,
         torch_dtype=torch.bfloat16,
@@ -510,73 +658,15 @@ def main():
     )
     ref_model.eval()
 
+    logger.info(f"\nLoading eval model: {args.model}")
+    eval_model = load_model(args.model, use_transcoder=args.transcoder)
+    eval_model.eval()
+
     # Evaluate
-    results = evaluate_model(
-        args.model, ref_model, tokenizer, examples, args.max_length, DEVICE,
-        debug=args.debug, use_transcoder=args.transcoder
+    run_token_metrics_eval(
+        eval_model, ref_model, tokenizer, examples, args.max_length, DEVICE,
+        debug=args.debug, save_output=True,
     )
-
-    # Print results
-    print("\n" + "="*70)
-    print(f"RESULTS: {args.model}")
-    print("="*70)
-    print(f"  Samples:           {len(examples)}")
-    print(f"  Total tokens:      {results.n_tokens:,}")
-    print()
-    print(f"  ALL TOKENS:")
-    print(f"    KL divergence:   {results.kl_mean:.4f}")
-    print(f"    Top-1 agreement: {results.top1_agreement:.4f} ({results.top1_agreement*100:.2f}%)")
-    print()
-    frac_interesting = results.n_interesting / results.n_tokens * 100
-    print(f"  INTERESTING TOKENS (ref max_prob <= {INTERESTING_THRESHOLD}):")
-    print(f"    Count:           {results.n_interesting:,} ({frac_interesting:.1f}%)")
-    print(f"    KL divergence:   {results.kl_mean_interesting:.4f}")
-    print(f"    Top-1 agreement: {results.top1_agreement_interesting:.4f} ({results.top1_agreement_interesting*100:.2f}%)")
-
-    # Per-benchmark stats
-    print("\n" + "-"*70)
-    print("PER-BENCHMARK STATS:")
-    print("-"*70)
-    print(f"{'Benchmark':<20} {'Samples':>8} {'Tokens':>10} {'KL':>8} {'Top1':>8} {'KL_int':>8} {'Top1_int':>8}")
-    print("-"*70)
-    for bm in sorted(results.per_benchmark.keys()):
-        stats = results.per_benchmark[bm]
-        print(f"{bm:<20} {stats.n_samples:>8} {stats.n_tokens:>10,} {stats.kl_mean:>8.4f} {stats.top1_agreement:>8.2%} {stats.kl_mean_interesting:>8.4f} {stats.top1_agreement_interesting:>8.2%}")
-    print("="*70)
-
-    # Save results to JSON
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    # Clean model name for filename
-    model_name = args.model.rstrip('/').replace('/', '__')
-    suffix = "_debug" if args.debug else ""
-    output_path = os.path.join(OUTPUT_DIR, f"{model_name}{suffix}.json")
-
-    # Convert per_benchmark to JSON-serializable dicts
-    from dataclasses import asdict
-    per_benchmark_json = {bm: asdict(m) for bm, m in results.per_benchmark.items()}
-
-    output_data = {
-        'model': args.model,
-        'reference_model': reference_model,
-        'n_samples': len(examples),
-        'n_tokens': results.n_tokens,
-        'interesting_threshold': INTERESTING_THRESHOLD,
-        'all_tokens': {
-            'kl_mean': float(results.kl_mean),
-            'top1_agreement': float(results.top1_agreement),
-        },
-        'interesting_tokens': {
-            'n_tokens': int(results.n_interesting),
-            'frac_tokens': frac_interesting / 100,
-            'kl_mean': float(results.kl_mean_interesting),
-            'top1_agreement': float(results.top1_agreement_interesting),
-        },
-        'per_benchmark': per_benchmark_json,
-    }
-
-    with open(output_path, 'w') as f:
-        json.dump(output_data, f, indent=2)
-    print(f"\nSaved results to {output_path}")
 
 
 #%%
