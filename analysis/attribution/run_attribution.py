@@ -31,6 +31,8 @@ from pathlib import Path
 
 import torch
 
+from helpers.log import logger, setup_logging
+
 from analysis.attribution.relp_model import RelPReplacementModel
 from analysis.attribution.attribute import attribute
 from circuit_tracer.utils.create_graph_files import create_graph_files
@@ -74,7 +76,7 @@ def load_prompts(prompts_dir: str, tokenizer) -> dict[str, dict]:
             "text": text,
         }
         target_str = tokenizer.decode([target])
-        print(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
+        logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
 
     if not prompts:
         raise ValueError(f"No .txt files found in {prompts_dir}")
@@ -97,7 +99,7 @@ def run_attribution_for_prompt(
     """Run attribution for a single prompt and save graph files."""
     import gc
 
-    print(f"  Running attribution (batch_size={batch_size})...")
+    logger.info(f"  Running attribution (batch_size={batch_size})...")
     raw_graph = attribute(
         prompt_tokens,
         model,
@@ -107,8 +109,8 @@ def run_attribution_for_prompt(
         verbose=True,
     )
 
-    print(f"  Graph: {raw_graph.active_features.shape[0]} active, "
-          f"{raw_graph.selected_features.shape[0]} selected")
+    logger.info(f"  Graph: {raw_graph.active_features.shape[0]} active, "
+               f"{raw_graph.selected_features.shape[0]} selected")
 
     # BOS zeroing is done inline in attribute.py
     graph = raw_graph
@@ -121,7 +123,7 @@ def run_attribution_for_prompt(
             layer.mlp.cached_features = None
     gc.collect()
     torch.cuda.empty_cache()
-    print(f"  GPU memory after cleanup: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+    logger.info(f"  GPU memory after cleanup: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
     # Save graph files - if pruning OOMs, save raw graph instead
     try:
@@ -138,9 +140,9 @@ def run_attribution_for_prompt(
             raise
         # Save raw graph so we don't lose the expensive backward passes
         raw_graph_path = Path(output_dir) / f"{slug}_raw.pt"
-        print(f"  OOM during pruning, saving raw graph to {raw_graph_path}")
+        logger.info(f"  OOM during pruning, saving raw graph to {raw_graph_path}")
         graph.to_pt(str(raw_graph_path))
-        print(f"  Raw graph saved. Prune later with: create_graph_files('{raw_graph_path}', ...)")
+        logger.info(f"  Raw graph saved. Prune later with: create_graph_files('{raw_graph_path}', ...)")
 
     return graph
 
@@ -172,54 +174,55 @@ def main():
     parser.add_argument("--device_map", type=str, default=None, help="Device map for multi-GPU. Use 'auto' to split layers across GPUs.")
 
     args = parser.parse_args()
+    setup_logging()
 
     # Default scan to run_name
     if args.scan is None:
         args.scan = args.run_name
 
     # Print config
-    print("=" * 60)
-    print("RelP Attribution")
-    print("=" * 60)
-    print(f"Run name:    {args.run_name}")
-    print(f"Checkpoint:  {args.checkpoint}")
-    print(f"Prompts:     {args.prompts}")
-    print(f"Output:      {args.output_dir}")
-    print(f"Scan:        {args.scan}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("RelP Attribution")
+    logger.info("=" * 60)
+    logger.info(f"Run name:    {args.run_name}")
+    logger.info(f"Checkpoint:  {args.checkpoint}")
+    logger.info(f"Prompts:     {args.prompts}")
+    logger.info(f"Output:      {args.output_dir}")
+    logger.info(f"Scan:        {args.scan}")
+    logger.info("=" * 60)
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Load model
-    print("\nLoading model...")
+    logger.info("\nLoading model...")
     model = RelPReplacementModel.from_pretrained(
         args.checkpoint,
         device=args.device,
         device_map=args.device_map,
         dtype=torch.bfloat16,
     )
-    print(f"Loaded: {model.cfg.n_layers} layers, {model.cfg.d_model} d_model, "
-          f"{model.cfg.n_features} features")
+    logger.info(f"Loaded: {model.cfg.n_layers} layers, {model.cfg.d_model} d_model, "
+               f"{model.cfg.n_features} features")
 
     # Load prompts (single file or directory)
-    print("\nLoading prompts...")
+    logger.info("\nLoading prompts...")
     prompts_path = Path(args.prompts)
     if prompts_path.is_file():
         slug = prompts_path.stem
         tokens, target, text = load_prompt_file(prompts_path, model.tokenizer)
         prompts = {slug: {"tokens": tokens, "target": target, "text": text}}
         target_str = model.tokenizer.decode([target])
-        print(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
+        logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
     else:
         prompts = load_prompts(args.prompts, model.tokenizer)
     prompt_items = list(prompts.items())
-    print(f"Found {len(prompt_items)} prompt(s)")
+    logger.info(f"Found {len(prompt_items)} prompt(s)")
 
     # Run attribution
-    print("\n" + "=" * 60)
-    print("Running Attribution")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("Running Attribution")
+    logger.info("=" * 60)
 
     results = {}
     for i, (prompt_name, data) in enumerate(prompt_items, 1):
@@ -228,15 +231,15 @@ def main():
 
         # Skip if graph already exists
         if graph_path.exists():
-            print(f"\n[{i}/{len(prompt_items)}] {slug} - SKIPPED (already exists)")
+            logger.info(f"\n[{i}/{len(prompt_items)}] {slug} - SKIPPED (already exists)")
             results[prompt_name] = "skipped"
             continue
 
-        print(f"\n[{i}/{len(prompt_items)}] {slug}")
+        logger.info(f"\n[{i}/{len(prompt_items)}] {slug}")
         prompt_text: str = data['text']  # type: ignore[assignment]
         prompt_tokens: list[int] = data["tokens"]  # type: ignore[assignment]
-        print(f"  Last 60 chars: ...{prompt_text[-60:]!r}")
-        print(f"  Target: {model.tokenizer.decode([data['target']])!r}")
+        logger.info(f"  Last 60 chars: ...{prompt_text[-60:]!r}")
+        logger.info(f"  Target: {model.tokenizer.decode([data['target']])!r}")
 
         try:
             graph = run_attribution_for_prompt(
@@ -252,32 +255,32 @@ def main():
                 edge_threshold=args.edge_threshold,
             )
             results[prompt_name] = "success"
-            print(f"  Done: {slug}.json")
+            logger.info(f"  Done: {slug}.json")
         except Exception as e:
             results[prompt_name] = f"error: {e}"
-            print(f"  Error: {e}")
+            logger.info(f"  Error: {e}")
             import traceback
             traceback.print_exc()
 
             # Clean up GPU memory after OOM to allow recovery
             if "CUDA" in str(e) or "out of memory" in str(e).lower():
-                print("  Attempting CUDA memory cleanup...")
+                logger.info("  Attempting CUDA memory cleanup...")
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
-                print(f"  GPU memory after cleanup: {torch.cuda.memory_allocated() / 1e9:.2f} GB allocated")
+                logger.info(f"  GPU memory after cleanup: {torch.cuda.memory_allocated() / 1e9:.2f} GB allocated")
 
     # Summary
-    print("\n" + "=" * 60)
-    print("Summary")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("Summary")
+    logger.info("=" * 60)
     success = sum(1 for v in results.values() if v == "success")
     skipped = sum(1 for v in results.values() if v == "skipped")
     errors = len(prompt_items) - success - skipped
-    print(f"Success: {success}, Skipped: {skipped}, Errors: {errors} (total: {len(prompt_items)})")
+    logger.info(f"Success: {success}, Skipped: {skipped}, Errors: {errors} (total: {len(prompt_items)})")
 
-    print(f"\nTo view graphs run:")
-    print(f"  circuit-tracer start-server --graph_file_dir {args.output_dir}")
+    logger.info(f"\nTo view graphs run:")
+    logger.info(f"  circuit-tracer start-server --graph_file_dir {args.output_dir}")
 
 
 #%%

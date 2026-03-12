@@ -13,6 +13,8 @@ import torch
 from torch import nn
 from transformers import AutoTokenizer
 
+from helpers.log import logger
+
 if TYPE_CHECKING:
     from torch import device
 
@@ -95,7 +97,7 @@ class RelPReplacementModel(nn.Module):
                     max_memory={i: "70GiB" for i in range(torch.cuda.device_count())},
                     no_split_module_classes=["Qwen2DecoderLayerRelP"],
                 )
-                print(f"Auto device_map: {device_map}")
+                logger.info(f"Auto device_map: {device_map}")
 
             model = dispatch_model(model, device_map=device_map) # pyright: ignore[reportArgumentType]
         else:
