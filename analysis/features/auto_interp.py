@@ -30,6 +30,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+from helpers.log import logger, setup_logging
 from openai import AsyncOpenAI
 from tqdm.asyncio import tqdm_asyncio
 from transformers import AutoTokenizer
@@ -188,7 +189,7 @@ def select_features(
         n_sample = min(n_per_layer, len(layer_feats))
         sampled = random.sample(layer_feats, n_sample)
         selected.extend(sampled)
-        print(f"  Layer {layer}: {len(layer_feats)} alive, sampled {n_sample}")
+        logger.info(f"  Layer {layer}: {len(layer_feats)} alive, sampled {n_sample}")
 
     return selected
 
@@ -356,7 +357,7 @@ async def process_feature(
         description = desc_result.get("description", "")
         reasoning = desc_result.get("reasoning", "")
     except Exception as e:
-        print(f"Description error L{feat_meta['layer']}F{feat_meta['feature']}: {e}")
+        logger.info(f"Description error L{feat_meta['layer']}F{feat_meta['feature']}: {e}")
         return None
 
     # === LLM Query 2a: Detection on top activating examples ===
@@ -423,6 +424,7 @@ async def process_features(
 # =============================================================================
 
 async def main():
+    setup_logging()
     parser = argparse.ArgumentParser(
         description="Auto-interpretability with detection-based evaluation"
     )
@@ -452,30 +454,30 @@ async def main():
     input_dir = Path(args.input_dir)
     data_path = Path(args.data_path)
 
-    print(f"Loading tokenizer {args.tokenizer}...")
+    logger.info(f"Loading tokenizer {args.tokenizer}...")
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
-    print(f"Loading random snippets from {data_path} (max {args.max_tokens} tokens)...")
+    logger.info(f"Loading random snippets from {data_path} (max {args.max_tokens} tokens)...")
     random_snippets = load_random_snippets(
         data_path, tokenizer, max_tokens=args.max_tokens, seed=args.seed
     )
-    print(f"  Loaded {len(random_snippets)} snippets for negatives")
+    logger.info(f"  Loaded {len(random_snippets)} snippets for negatives")
 
-    print(f"Loading metadata from {input_dir}...")
+    logger.info(f"Loading metadata from {input_dir}...")
     metadata = load_metadata(input_dir)
     all_features = metadata["features"]
-    print(f"  Total features: {len(all_features)}")
+    logger.info(f"  Total features: {len(all_features)}")
 
-    print(f"\nSelecting {args.n_per_layer} features per layer (min_freq={args.min_freq:.0e})...")
+    logger.info(f"\nSelecting {args.n_per_layer} features per layer (min_freq={args.min_freq:.0e})...")
     selected = select_features(
         metadata,
         n_per_layer=args.n_per_layer,
         min_activation_freq=args.min_freq,
         seed=args.seed,
     )
-    print(f"Selected {len(selected)} total features")
+    logger.info(f"Selected {len(selected)} total features")
 
-    print(f"\nProcessing with {args.model}...")
+    logger.info(f"\nProcessing with {args.model}...")
     client = AsyncOpenAI()
     results = await process_features(
         client, input_dir, selected, random_snippets,
@@ -483,34 +485,34 @@ async def main():
         max_concurrent=args.max_concurrent,
         seed=args.seed,
     )
-    print(f"Processed {len(results)} features")
+    logger.info(f"Processed {len(results)} features")
 
     if not results:
-        print("No results!")
+        logger.info("No results!")
         return
 
     # Stats
-    print("\n=== Detection on Top Activations ===")
+    logger.info("\n=== Detection on Top Activations ===")
     top_accs = [r.detection_top_accuracy for r in results if r.detection_top_accuracy is not None]
     if top_accs:
-        print(f"Accuracy:  mean={sum(top_accs)/len(top_accs):.2f}, min={min(top_accs):.2f}, max={max(top_accs):.2f}")
+        logger.info(f"Accuracy:  mean={sum(top_accs)/len(top_accs):.2f}, min={min(top_accs):.2f}, max={max(top_accs):.2f}")
     top_precs = [r.detection_top_precision for r in results if r.detection_top_precision is not None]
     if top_precs:
-        print(f"Precision: mean={sum(top_precs)/len(top_precs):.2f}")
+        logger.info(f"Precision: mean={sum(top_precs)/len(top_precs):.2f}")
     top_recs = [r.detection_top_recall for r in results if r.detection_top_recall is not None]
     if top_recs:
-        print(f"Recall:    mean={sum(top_recs)/len(top_recs):.2f}")
+        logger.info(f"Recall:    mean={sum(top_recs)/len(top_recs):.2f}")
 
-    print("\n=== Detection on Random Samples ===")
+    logger.info("\n=== Detection on Random Samples ===")
     rand_accs = [r.detection_random_accuracy for r in results if r.detection_random_accuracy is not None]
     if rand_accs:
-        print(f"Accuracy:  mean={sum(rand_accs)/len(rand_accs):.2f}, min={min(rand_accs):.2f}, max={max(rand_accs):.2f}")
+        logger.info(f"Accuracy:  mean={sum(rand_accs)/len(rand_accs):.2f}, min={min(rand_accs):.2f}, max={max(rand_accs):.2f}")
     rand_precs = [r.detection_random_precision for r in results if r.detection_random_precision is not None]
     if rand_precs:
-        print(f"Precision: mean={sum(rand_precs)/len(rand_precs):.2f}")
+        logger.info(f"Precision: mean={sum(rand_precs)/len(rand_precs):.2f}")
     rand_recs = [r.detection_random_recall for r in results if r.detection_random_recall is not None]
     if rand_recs:
-        print(f"Recall:    mean={sum(rand_recs)/len(rand_recs):.2f}")
+        logger.info(f"Recall:    mean={sum(rand_recs)/len(rand_recs):.2f}")
 
     # Save
     output = {
@@ -533,17 +535,17 @@ async def main():
     output_path = input_dir / args.output if not Path(args.output).is_absolute() else Path(args.output)
     with open(output_path, 'w') as f:
         json.dump(output, f, indent=2)
-    print(f"\nSaved to {output_path}")
+    logger.info(f"\nSaved to {output_path}")
 
     # Print samples
-    print("\n" + "=" * 60)
-    print("Sample results:")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("Sample results:")
+    logger.info("=" * 60)
     for r in results[:5]:
         top_acc = f"{r.detection_top_accuracy:.2f}" if r.detection_top_accuracy else "N/A"
         rand_acc = f"{r.detection_random_accuracy:.2f}" if r.detection_random_accuracy else "N/A"
-        print(f"\nL{r.layer}F{r.feature} (top_acc={top_acc}, rand_acc={rand_acc}):")
-        print(f"  {r.description}")
+        logger.info(f"\nL{r.layer}F{r.feature} (top_acc={top_acc}, rand_acc={rand_acc}):")
+        logger.info(f"  {r.description}")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import argparse
 import torch
 from transformers import AutoTokenizer, TextStreamer
 
+from helpers.log import logger, setup_logging
 from models import get_transcoder_classes, detect_architecture
 
 
@@ -50,7 +51,7 @@ def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | N
             tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         except OSError:
             base = model.config._name_or_path
-            print(f"No tokenizer in checkpoint, loading from base model: {base}")
+            logger.info(f"No tokenizer in checkpoint, loading from base model: {base}")
             tokenizer = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     else:
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
@@ -72,14 +73,14 @@ def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: 
     messages = []
 
     mode = "chat" if use_chat_template else "raw"
-    print(f"\nModel loaded (mode={mode}, show_special_tokens={show_special_tokens}).")
-    print("Type your message (Ctrl+C to exit, /clear to reset).\n")
+    logger.info(f"\nModel loaded (mode={mode}, show_special_tokens={show_special_tokens}).")
+    logger.info("Type your message (Ctrl+C to exit, /clear to reset).\n")
 
     while True:
         try:
             user_input = input(">>> ")
         except (KeyboardInterrupt, EOFError):
-            print()
+            logger.info("")
             break
 
         if not user_input.strip():
@@ -87,7 +88,7 @@ def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: 
 
         if user_input.strip() == "/clear":
             messages.clear()
-            print("Conversation cleared.\n")
+            logger.info("Conversation cleared.\n")
             continue
 
         if use_chat_template:
@@ -99,8 +100,8 @@ def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: 
             input_ids = tokenizer(user_input, return_tensors="pt").input_ids.to(model.device)
 
         if show_special_tokens:
-            print(f"\n[PROMPT] {tokenizer.decode(input_ids[0], skip_special_tokens=False)}")
-            print("[OUTPUT] ", end="")
+            logger.info(f"\n[PROMPT] {tokenizer.decode(input_ids[0], skip_special_tokens=False)}")
+            logger.info("[OUTPUT] ")
 
         with torch.no_grad():
             output_ids = model.generate(
@@ -119,7 +120,7 @@ def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: 
         if use_chat_template:
             messages.append({"role": "assistant", "content": response})
 
-        print()
+        logger.info("")
 
 
 def main():
@@ -134,6 +135,7 @@ def main():
                         help="Show special tokens in prompt and output")
     args = parser.parse_args()
 
+    setup_logging()
     model, tokenizer = load_model(args.model_path, args.tokenizer, args.arch)
     chat(model, tokenizer, use_chat_template=not args.raw, show_special_tokens=args.show_special_tokens)
 

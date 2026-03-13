@@ -44,6 +44,7 @@ from typing import Literal
 from dotenv import load_dotenv
 load_dotenv()
 
+from helpers.log import logger, setup_logging
 from openai import AsyncOpenAI
 from tqdm.asyncio import tqdm_asyncio
 
@@ -303,7 +304,7 @@ def select_features(
         n_sample = min(n_per_layer, len(layer_feats))
         sampled = random.sample(layer_feats, n_sample)
         selected.extend(sampled)
-        print(f"  Layer {layer}: {len(layer_feats)} alive, sampled {n_sample}")
+        logger.info(f"  Layer {layer}: {len(layer_feats)} alive, sampled {n_sample}")
 
     return selected
 
@@ -399,10 +400,10 @@ async def classify_feature(
             # JSON parsing error - retry might help if model gives different response
             if attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
-                print(f"JSON error L{feat_meta['layer']}F{feat_meta['feature']}, retry {attempt+1} in {delay}s: {e}")
+                logger.info(f"JSON error L{feat_meta['layer']}F{feat_meta['feature']}, retry {attempt+1} in {delay}s: {e}")
                 await asyncio.sleep(delay)
             else:
-                print(f"JSON error L{feat_meta['layer']}F{feat_meta['feature']} (final): {e}")
+                logger.info(f"JSON error L{feat_meta['layer']}F{feat_meta['feature']} (final): {e}")
                 return None
 
         except Exception as e:
@@ -412,10 +413,10 @@ async def classify_feature(
 
             if attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt) * (3 if is_rate_limit else 1)
-                print(f"API error L{feat_meta['layer']}F{feat_meta['feature']}, retry {attempt+1} in {delay}s: {e}")
+                logger.info(f"API error L{feat_meta['layer']}F{feat_meta['feature']}, retry {attempt+1} in {delay}s: {e}")
                 await asyncio.sleep(delay)
             else:
-                print(f"API error L{feat_meta['layer']}F{feat_meta['feature']} (final): {e}")
+                logger.info(f"API error L{feat_meta['layer']}F{feat_meta['feature']} (final): {e}")
                 return None
     else:
         return None  # All retries failed
@@ -472,10 +473,10 @@ async def process_features(
 
 def summarize_results(results: list[FeatureClassification]):
     """Print summary statistics."""
-    print(f"\n{'='*60}")
-    print("CLASSIFICATION SUMMARY")
-    print(f"{'='*60}")
-    print(f"Total classified: {len(results)}")
+    logger.info(f"\n{'='*60}")
+    logger.info("CLASSIFICATION SUMMARY")
+    logger.info(f"{'='*60}")
+    logger.info(f"Total classified: {len(results)}")
 
     # Level 1: Category counts
     language = [r for r in results if r.category == "language"]
@@ -483,60 +484,60 @@ def summarize_results(results: list[FeatureClassification]):
     reasoning = [r for r in results if r.category == "reasoning"]
     uninterpretable = [r for r in results if r.category == "uninterpretable"]
 
-    print(f"\n=== Level 1: Feature Domain ===")
-    print(f"  Language:        {len(language)} ({100*len(language)/len(results):.1f}%)")
-    print(f"  Domain:          {len(domain)} ({100*len(domain)/len(results):.1f}%)")
-    print(f"  Reasoning:       {len(reasoning)} ({100*len(reasoning)/len(results):.1f}%)")
-    print(f"  Uninterpretable: {len(uninterpretable)} ({100*len(uninterpretable)/len(results):.1f}%)")
+    logger.info(f"\n=== Level 1: Feature Domain ===")
+    logger.info(f"  Language:        {len(language)} ({100*len(language)/len(results):.1f}%)")
+    logger.info(f"  Domain:          {len(domain)} ({100*len(domain)/len(results):.1f}%)")
+    logger.info(f"  Reasoning:       {len(reasoning)} ({100*len(reasoning)/len(results):.1f}%)")
+    logger.info(f"  Uninterpretable: {len(uninterpretable)} ({100*len(uninterpretable)/len(results):.1f}%)")
 
     # Confidence
     high_conf = [r for r in results if r.confidence == "high"]
     med_conf = [r for r in results if r.confidence == "medium"]
     low_conf = [r for r in results if r.confidence == "low"]
 
-    print(f"\n=== Confidence ===")
-    print(f"  High:   {len(high_conf)} ({100*len(high_conf)/len(results):.1f}%)")
-    print(f"  Medium: {len(med_conf)} ({100*len(med_conf)/len(results):.1f}%)")
-    print(f"  Low:    {len(low_conf)} ({100*len(low_conf)/len(results):.1f}%)")
+    logger.info(f"\n=== Confidence ===")
+    logger.info(f"  High:   {len(high_conf)} ({100*len(high_conf)/len(results):.1f}%)")
+    logger.info(f"  Medium: {len(med_conf)} ({100*len(med_conf)/len(results):.1f}%)")
+    logger.info(f"  Low:    {len(low_conf)} ({100*len(low_conf)/len(results):.1f}%)")
 
     # Level 2a: Domain type breakdown (for domain features)
     if domain:
-        print(f"\n=== Level 2: Domain Types ===")
+        logger.info(f"\n=== Level 2: Domain Types ===")
         type_counts = {}
         for r in domain:
             t = r.domain_type or "unspecified"
             type_counts[t] = type_counts.get(t, 0) + 1
         for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
-            print(f"  {t}: {c} ({100*c/len(domain):.1f}%)")
+            logger.info(f"  {t}: {c} ({100*c/len(domain):.1f}%)")
 
     # Level 2b: Mechanism breakdown (for reasoning features)
     if reasoning:
-        print(f"\n=== Level 2: Reasoning Mechanisms ===")
+        logger.info(f"\n=== Level 2: Reasoning Mechanisms ===")
         mech_counts = {}
         for r in reasoning:
             m = r.mechanism or "unspecified"
             mech_counts[m] = mech_counts.get(m, 0) + 1
         for m, c in sorted(mech_counts.items(), key=lambda x: -x[1]):
-            print(f"  {m}: {c} ({100*c/len(reasoning):.1f}%)")
+            logger.info(f"  {m}: {c} ({100*c/len(reasoning):.1f}%)")
 
     # Sample features by category
     if language:
-        print(f"\n=== Sample Language Features ===")
+        logger.info(f"\n=== Sample Language Features ===")
         for r in language[:3]:
-            print(f"  L{r.layer}F{r.feature}: {r.category_description}")
+            logger.info(f"  L{r.layer}F{r.feature}: {r.category_description}")
 
     if domain:
-        print(f"\n=== Sample Domain Features ===")
+        logger.info(f"\n=== Sample Domain Features ===")
         for r in domain[:3]:
             dtype = f"[{r.domain_type}]" if r.domain_type else ""
-            print(f"  L{r.layer}F{r.feature} {dtype}: {r.category_description}")
+            logger.info(f"  L{r.layer}F{r.feature} {dtype}: {r.category_description}")
 
     if reasoning:
-        print(f"\n=== Sample Reasoning Features ===")
+        logger.info(f"\n=== Sample Reasoning Features ===")
         for r in reasoning[:5]:
             mech_str = f"[{r.mechanism}]" if r.mechanism else ""
             desc = r.mechanism_description or r.category_description
-            print(f"  L{r.layer}F{r.feature} {mech_str}: {desc}")
+            logger.info(f"  L{r.layer}F{r.feature} {mech_str}: {desc}")
 
 
 def load_results(path: Path) -> list[FeatureClassification]:
@@ -557,6 +558,7 @@ def load_results(path: Path) -> list[FeatureClassification]:
 # =============================================================================
 
 async def main():
+    setup_logging()
     parser = argparse.ArgumentParser(description="Classify features using LLM judge")
     parser.add_argument("--input_dir", type=str, required=True,
                        help="Directory with feature_metadata.json and features/*.json")
@@ -581,37 +583,37 @@ async def main():
     # Load mode
     if args.load:
         load_path = input_dir / args.load if not Path(args.load).is_absolute() else Path(args.load)
-        print(f"Loading results from {load_path}...")
+        logger.info(f"Loading results from {load_path}...")
         results = load_results(load_path)
         summarize_results(results)
         return
 
     # Compute mode
-    print(f"Loading metadata from {input_dir}...")
+    logger.info(f"Loading metadata from {input_dir}...")
     metadata = load_metadata(input_dir)
     all_features = metadata["features"]
-    print(f"  Total features: {len(all_features)}")
+    logger.info(f"  Total features: {len(all_features)}")
 
-    print(f"\nSelecting {args.n_per_layer} features per layer (min_freq={args.min_freq:.0e})...")
+    logger.info(f"\nSelecting {args.n_per_layer} features per layer (min_freq={args.min_freq:.0e})...")
     selected = select_features(
         metadata,
         n_per_layer=args.n_per_layer,
         min_activation_freq=args.min_freq,
         seed=args.seed,
     )
-    print(f"Selected {len(selected)} total features")
+    logger.info(f"Selected {len(selected)} total features")
 
-    print(f"\nClassifying with {args.model}...")
+    logger.info(f"\nClassifying with {args.model}...")
     client = AsyncOpenAI()
     results = await process_features(
         client, input_dir, selected,
         model=args.model,
         max_concurrent=args.max_concurrent,
     )
-    print(f"Classified {len(results)} features")
+    logger.info(f"Classified {len(results)} features")
 
     if not results:
-        print("No results!")
+        logger.info("No results!")
         return
 
     summarize_results(results)
@@ -632,7 +634,7 @@ async def main():
     output_path = input_dir / args.output if not Path(args.output).is_absolute() else Path(args.output)
     with open(output_path, 'w') as f:
         json.dump(output, f, indent=2)
-    print(f"\nSaved to {output_path}")
+    logger.info(f"\nSaved to {output_path}")
 
 
 if __name__ == "__main__":

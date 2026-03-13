@@ -25,6 +25,7 @@ import os
 import struct
 from typing import Any
 from tqdm import tqdm
+from helpers.log import logger, setup_logging
 
 
 def cantor_pair(layer, feat_idx):
@@ -60,6 +61,7 @@ def pack_layer(feature_dir, bin_path, layer, n_features):
 
 
 def main():
+    setup_logging()
     parser = argparse.ArgumentParser(description="Pack feature JSONs into binary format")
     parser.add_argument("--feature_dir", required=True, help="Directory of {cantor_id}.json files")
     parser.add_argument("--output_dir", required=True, help="Where to write packed output")
@@ -93,8 +95,8 @@ def main():
         json.dump(index, f)
 
     total_dead = total_possible - total_found
-    print(f"\nDone: {total_found}/{total_possible} features packed ({total_dead} dead)")
-    print(f"Output: {args.output_dir}")
+    logger.info(f"\nDone: {total_found}/{total_possible} features packed ({total_dead} dead)")
+    logger.info(f"Output: {args.output_dir}")
 
 
 if __name__ == "__main__":

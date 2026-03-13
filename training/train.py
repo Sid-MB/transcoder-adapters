@@ -18,7 +18,7 @@ import argparse
 import wandb
 
 from typing import Any
-from training.config import load_config, ExperimentConfig
+from training.config import CHECKPOINT_CONFIG_FILENAME, load_config, ExperimentConfig, save_config
 from training.dataset.PredefinedDataset import PredefinedDataset
 from training.forward_utils import forward_mixed, sample_cutoffs
 from training.losses import compute_kl_loss, compute_lm_loss, compute_nmse_loss
@@ -610,7 +610,7 @@ def train_epoch(
             # Save periodic checkpoint (overwrites previous latest)
             if config.save_checkpoints and global_step > 0 and global_step % config.checkpoint_frequency == 0:
                 logger.info(f"  Saving checkpoint at step {global_step}...")
-                save_latest_checkpoint(model, tokenizer, config.output_dir, global_step)
+                save_latest_checkpoint(model, tokenizer, config, config.output_dir, global_step)
 
             # Debug mode early exit
             if config.debug_mode and global_step >= DEBUG_MODE_EARLY_EXIT_STEPS:
@@ -797,15 +797,16 @@ def validate_layerwise(
     return results
 
 
-def save_checkpoint(model, tokenizer, output_dir):
+def save_checkpoint(model, tokenizer, config: ExperimentConfig, output_dir):
     """Save full model checkpoint (no conversion needed)."""
     os.makedirs(output_dir, exist_ok=True)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
+    save_config(config, os.path.join(output_dir, CHECKPOINT_CONFIG_FILENAME))
     logger.info(f"Checkpoint saved to {output_dir}")
 
 
-def save_latest_checkpoint(model, tokenizer, base_dir, step):
+def save_latest_checkpoint(model, tokenizer, config: ExperimentConfig, base_dir, step):
     """Save checkpoint to base_dir/latest_step_N, removing any previous latest_step_* dir."""
     import glob
     import shutil
@@ -813,7 +814,7 @@ def save_latest_checkpoint(model, tokenizer, base_dir, step):
     for old_dir in glob.glob(os.path.join(base_dir, "latest_step_*")):
         shutil.rmtree(old_dir)
     output_dir = os.path.join(base_dir, f"latest_step_{step}")
-    save_checkpoint(model, tokenizer, output_dir)
+    save_checkpoint(model, tokenizer, config, output_dir)
 
 
 def main():
@@ -1011,12 +1012,12 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         # Save checkpoint at end of epoch (overwrites previous latest)
         if config.save_checkpoints:
             logger.info(f"  Saving checkpoint at end of epoch {epoch}...")
-            save_latest_checkpoint(model, tokenizer, config.output_dir, current_step)
+            save_latest_checkpoint(model, tokenizer, config, config.output_dir, current_step)
 
     logger.info("Training complete!")
 
     # Always save final checkpoint
-    save_checkpoint(model, tokenizer, config.output_dir)
+    save_checkpoint(model, tokenizer, config, config.output_dir)
 
     # Push to Hugging Face Hub (hub_repo_id computed and verified before training)
     if hub_repo_id:

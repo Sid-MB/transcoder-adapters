@@ -2,9 +2,13 @@
 
 import re
 import tempfile
+from typing import TYPE_CHECKING
 
 from huggingface_hub import HfApi, ModelCard, ModelCardData
 from helpers.log import logger, log_group
+from ..config import CHECKPOINT_CONFIG_FILENAME
+if TYPE_CHECKING:
+    from ..config import ExperimentConfig
 
 
 HUB_NAME_PREFIX = "2026.TA"
@@ -14,7 +18,7 @@ MAX_REPO_NAME_LEN = 96
 @log_group("Push to Hub")
 def push_to_hub(
     model,
-    config,
+    config: "ExperimentConfig",
     repo_id: str,
     wandb_url: str | None = None,
 ):
@@ -50,7 +54,7 @@ def push_to_hub(
     logger.info(f"Model pushed to https://huggingface.co/{repo_id}")
 
 
-def _upload_training_config(api: HfApi, config, repo_id: str):
+def _upload_training_config(api: HfApi, config: "ExperimentConfig", repo_id: str):
     """Save and upload the training config YAML to the HF repo."""
     from training.config import save_config
 
@@ -60,7 +64,7 @@ def _upload_training_config(api: HfApi, config, repo_id: str):
 
     api.upload_file(
         path_or_fileobj=tmp_path,
-        path_in_repo="training-config.yaml",
+        path_in_repo=CHECKPOINT_CONFIG_FILENAME,
         repo_id=repo_id,
         commit_message="Add training config",
     )
@@ -167,7 +171,7 @@ def build_hub_repo_id(config) -> str:
 
 
 def _build_model_card(
-    config,
+    config: "ExperimentConfig",
     repo_id: str,
     full_name: str | None = None,
     wandb_url: str | None = None,
