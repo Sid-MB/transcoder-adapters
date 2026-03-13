@@ -1025,7 +1025,10 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
 
         logger.info(f"Pushing model to Hub: {hub_repo_id}")
         wandb_url = wandb.run.url if (config.use_wandb and wandb.run is not None) else None
-        push_to_hub(model, config, hub_repo_id, wandb_url=wandb_url)
+        try:
+            push_to_hub(model, config, hub_repo_id, wandb_url=wandb_url)
+        except Exception as e:
+            logger.exception(f"Failed to push model to Hub: {e}", exec_info=True, stack_info=True)
 
         if config.use_wandb and wandb.run is not None:
             wandb.run.summary["hf_model_url"] = f"https://huggingface.co/{hub_repo_id}"
