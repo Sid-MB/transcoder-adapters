@@ -94,6 +94,21 @@ def repo_id_from_checkpoint(checkpoint_dir: str, hub_org: str | None = None) -> 
     return f"{user}/{model_name}"
 
 
+def repo_exists_and_nonempty(repo_id: str) -> bool:
+    from huggingface_hub.errors import RepositoryNotFoundError
+    api = HfApi()
+    try:
+        files = api.list_repo_files(repo_id)
+        if len(files) <= 1:
+            logger.info(f"Repo {repo_id} already exists, but it has no content (files: {files})")
+            return False
+        else:
+            # Repo exists and has content
+            return True
+    except RepositoryNotFoundError:
+        # Does not exist
+        return False
+
 def _strip_checkpoint_suffix(name: str) -> str:
     """Strip the trailing _YYYY-MM-DD_HHMM_JOBID suffix from a checkpoint folder name.
 
@@ -207,7 +222,7 @@ def main():
 
     # Check for existing repos
     api = HfApi()
-    existing = [rid for rid in repo_ids if api.repo_exists(rid)]
+    existing = [rid for rid in repo_ids if repo_exists_and_nonempty(rid)]
     if existing:
         if args.exists == "skip":
             logger.info(f"Skipping {len(existing)} existing repo(s):")
