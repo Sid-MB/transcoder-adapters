@@ -392,3 +392,5 @@ def save_config(config: ExperimentConfig, output_path: str):
 
     with open(output_path, 'w') as f:
         yaml.dump(config_dict, f, indent=2, default_flow_style=False)
+
+CHECKPOINT_CONFIG_FILENAME = "train_config.yaml"

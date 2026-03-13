@@ -31,6 +31,7 @@ from concurrent.futures import Future
 from huggingface_hub import HfApi
 
 from helpers.log import logger
+from ..config import CHECKPOINT_CONFIG_FILENAME, load_config
 from .hub import verify_hub_access, _build_model_card, _upload_training_config, truncate_repo_name, HUB_NAME_PREFIX
 
 
@@ -130,11 +131,19 @@ def upload_checkpoint(
 
     Returns a Future for the upload_folder call (runs asynchronously).
     The model card is pushed synchronously since it's small.
+
+    If no config is provided, will try to find a config file within the checkpoint dir.
     """
     api = HfApi()
 
     # Create repo
     api.create_repo(repo_id, exist_ok=True)
+
+    if not config: # try to find config within checkpoint dir
+        try:
+            config = load_config(os.path.join(checkpoint_dir, CHECKPOINT_CONFIG_FILENAME))
+        except FileNotFoundError:
+            logger.warning(f"Config file not found in {checkpoint_dir}")
 
     # Add model card and training config (small, synchronous)
     if config is not None:
@@ -170,8 +179,8 @@ def main():
     )
     parser.add_argument(
         "--config",
-        help="Path to the training config YAML (for model card metadata). Optional.",
-        default="training/configs/gemma2_2b.yaml",
+        help=f'Path to the training config YAML (for model card metadata). Optional. If not given, will try to find a "{CHECKPOINT_CONFIG_FILENAME}" file within each checkpoint directory.',
+        default=None,
     )
     parser.add_argument(
         "--hub_org",
@@ -221,7 +230,6 @@ def main():
     verify_hub_access(repo_ids[0])
 
     # Check for existing repos
-    api = HfApi()
     existing = [rid for rid in repo_ids if repo_exists_and_nonempty(rid)]
     if existing:
         if args.exists == "skip":
