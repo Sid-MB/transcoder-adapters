@@ -258,9 +258,7 @@ def main():
             logger.info(f"  Done: {slug}.json")
         except Exception as e:
             results[prompt_name] = f"error: {e}"
-            logger.info(f"  Error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("  Error while running attribution for %s: %s", slug, e)
 
             # Clean up GPU memory after OOM to allow recovery
             if "CUDA" in str(e) or "out of memory" in str(e).lower():
