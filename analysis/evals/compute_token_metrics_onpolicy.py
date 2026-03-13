@@ -206,11 +206,17 @@ def load_all_rollouts(eval_dir: str):
     return examples
 
 
-def load_lmsys_examples(tokenizer) -> list[dict]:
+def load_lmsys_examples(tokenizer, max_examples: int | None = None) -> list[dict]:
     """Load assistant turns from the LMSYS chat val split as prompt/response examples.
 
     Each multi-turn conversation produces one example per assistant turn, using
     the preceding messages as the prompt context.
+
+    Args:
+        tokenizer: Tokenizer for encoding prompt/response pairs.
+        max_examples: If set, stop after collecting this many examples to avoid
+            tokenizing the entire dataset. Use ~2x n_samples to leave room for
+            deduplicated sampling.
     """
     from datasets import load_dataset, DatasetDict
 
@@ -228,6 +234,7 @@ def load_lmsys_examples(tokenizer) -> list[dict]:
     logger.info(f"Loading LMSYS chat val split: {len(split)} conversations")
 
     examples = []
+    conv_idx = -1
     for conv_idx, row in enumerate(split):
         conversation = row["conversation"] # pyright: ignore[reportArgumentType, reportCallIssue]
         for turn_idx, msg in enumerate(conversation):
@@ -250,8 +257,12 @@ def load_lmsys_examples(tokenizer) -> list[dict]:
                 'benchmark': 'lmsys_chat',
                 'question_id': f"lmsys_{conv_idx}_{turn_idx}",
             })
+            if max_examples is not None and len(examples) >= max_examples:
+                break
+        if max_examples is not None and len(examples) >= max_examples:
+            break
 
-    logger.info(f"Extracted {len(examples)} assistant turns from {len(split)} conversations")
+    logger.info(f"Extracted {len(examples)} assistant turns from {conv_idx + 1} conversations")
     return examples
 
 
@@ -335,7 +346,7 @@ def tokenize_example(ex: dict, tokenizer, max_length: int):
 # ============================================================================
 # METRICS
 # ============================================================================
-def compute_token_metrics(logits_model, logits_ref, input_ids, labels):
+def compute_token_metrics(logits_model, logits_ref, labels):
     """
     Compute per-token KL divergence and top-1 agreement.
     Returns metrics only for response tokens (labels != -100).
@@ -346,13 +357,15 @@ def compute_token_metrics(logits_model, logits_ref, input_ids, labels):
     logits_ref = logits_ref[:, :-1, :]
     labels_shifted = labels[:, 1:]
 
-    # Response token mask
-    response_mask = labels_shifted != -100
+    # Slice to response positions before expensive softmax/log_softmax
+    response_mask = labels_shifted[0] != -100
+    logits_ref_resp = logits_ref[0, response_mask].float()      # (n_resp, vocab)
+    logits_model_resp = logits_model[0, response_mask].float()  # (n_resp, vocab)
 
     # Softmax / log softmax
-    p_ref = torch.softmax(logits_ref.float(), dim=-1)
-    log_p_ref = torch.log_softmax(logits_ref.float(), dim=-1)
-    log_p_model = torch.log_softmax(logits_model.float(), dim=-1)
+    p_ref = torch.softmax(logits_ref_resp, dim=-1)
+    log_p_ref = torch.log_softmax(logits_ref_resp, dim=-1)
+    log_p_model = torch.log_softmax(logits_model_resp, dim=-1)
 
     # Reference model's max probability (for filtering interesting tokens)
     max_prob_ref = p_ref.max(dim=-1).values
@@ -361,16 +374,14 @@ def compute_token_metrics(logits_model, logits_ref, input_ids, labels):
     kl_per_token = (p_ref * (log_p_ref - log_p_model)).sum(dim=-1)
 
     # Top-1 agreement
-    top1_ref = logits_ref.argmax(dim=-1)
-    top1_model = logits_model.argmax(dim=-1)
+    top1_ref = logits_ref_resp.argmax(dim=-1)
+    top1_model = logits_model_resp.argmax(dim=-1)
     top1_match = (top1_ref == top1_model)
 
-    # Filter to response tokens
-    mask = response_mask[0]
     return {
-        'kl': kl_per_token[0, mask].cpu().numpy(),
-        'top1_match': top1_match[0, mask].cpu().numpy(),
-        'ref_max_prob': max_prob_ref[0, mask].cpu().numpy(),
+        'kl': kl_per_token.cpu().numpy(),
+        'top1_match': top1_match.cpu().numpy(),
+        'ref_max_prob': max_prob_ref.cpu().numpy(),
     }
 
 
@@ -458,7 +469,8 @@ def run_token_metrics_eval(
             logits_ref = ref_model(input_ids=input_ids).logits
             logits_model = eval_model(input_ids=input_ids).logits
 
-            metrics = compute_token_metrics(logits_model, logits_ref, input_ids, labels)
+            metrics = compute_token_metrics(logits_model, logits_ref, labels)
+            del logits_ref, logits_model
 
             # Update running sums
             total_kl += metrics['kl'].sum()
@@ -635,7 +647,7 @@ def main():
         eval_dir = EVALCHEMY_DIR / "deepseek-ai__DeepSeek-R1-Distill-Qwen-7B"
         all_examples = load_all_rollouts(str(eval_dir))
     elif args.data_source == "lmsys_chat":
-        all_examples = load_lmsys_examples(tokenizer)
+        all_examples = load_lmsys_examples(tokenizer, max_examples=args.n_samples * 2)
     else:
         raise ValueError(f"Unknown data source: {args.data_source}")
 
