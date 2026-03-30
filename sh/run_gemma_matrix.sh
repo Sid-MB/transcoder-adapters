@@ -5,5 +5,5 @@ BASE_CONFIG="training/configs/gemma2_2b.yaml"
 
 for override in training/configs/gemma-matrix/*.yaml; do
   echo "Submitting: $override"
-  ./slurm_batch_train.sh --config "$BASE_CONFIG" "$override"
+  ./sh/slurm_batch_train.sh --config "$BASE_CONFIG" "$override"
 done

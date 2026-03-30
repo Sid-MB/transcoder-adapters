@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ── Usage ────────────────────────────────────────────────────────────
-#   ./slurm_batch_collect_neurons.sh
+#   ./sh/slurm_batch_collect_neurons.sh
 #   Or: sbatch --export=ALL,HF_TOKEN=... ./slurm/run_collect_neurons.sh [args]
 #
 # Logs: logs/collect_neurons/<job_id>_<timestamp>.{out,err}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ── Usage ────────────────────────────────────────────────────────────
-#   ./slurm_batch_pack_features.sh
+#   ./sh/slurm_batch_pack_features.sh
 #   Or: sbatch --export=ALL,HF_TOKEN=... ./slurm/run_pack_features.sh [args]
 #
 # Logs: logs/pack_features/<job_id>_<timestamp>.{out,err}
