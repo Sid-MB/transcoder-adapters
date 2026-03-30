@@ -5,23 +5,21 @@ Compute token-level metrics (KL divergence, top-1 agreement) for a model
 against R1-Distill reference using on-policy rollouts from evalchemy.
 
 Usage:
-    python claude_scripts/compute_token_metrics_onpolicy.py --model <model_path>
-    python claude_scripts/compute_token_metrics_onpolicy.py --model Qwen/Qwen2.5-Math-7B
+    python -m analysis.evals.compute_token_metrics_onpolicy --model <model_path>
+    python -m analysis.evals.compute_token_metrics_onpolicy --model Qwen/Qwen2.5-Math-7B
 """
-from typing import TYPE_CHECKING
 
 from helpers.log import log_group, logger, setup_logging
 from pathlib import Path
-import sys
-sys.path.insert(0, '/juice2/u/nathu/sparse_adaptation')
 
 import os
+
+from helpers.paths import PRODUCTS_DIR
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 import argparse
 import json
 import glob
-import re
 import torch
 import numpy as np
 from dataclasses import dataclass, field
@@ -48,8 +46,10 @@ class BenchmarkMetrics(TokenMetrics):
 class EvalResults(TokenMetrics):
     per_benchmark: dict[str, BenchmarkMetrics] = field(default_factory=dict)
 
+
+
 # Output directory
-OUTPUT_DIR = "/nlp/scr/nathu/sparse-adaptation/token_recon_evals"
+OUTPUT_DIR = PRODUCTS_DIR / "token_recon_evals"
 
 #%%
 # ============================================================================
@@ -87,6 +87,9 @@ INTERESTING_THRESHOLD = 0.8
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Log device
+logger.info(f"Using device: {DEVICE}")
+
 #%%
 # ============================================================================
 # DATA LOADING (no filtering)
@@ -107,6 +110,11 @@ def load_all_rollouts(eval_dir: str):
 
     # Find newest file for each benchmark
     json_files = glob.glob(os.path.join(eval_dir, "*.json"))
+
+    if not json_files:
+        logger.error(f"No JSON files found in {eval_dir}")
+        raise FileNotFoundError(f"No JSON files found in {eval_dir}")
+
     benchmark_files = {}
     for json_path in json_files:
         filename = os.path.basename(json_path)

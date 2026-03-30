@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Example (gemma-2-2b):
+#   ./sh/slurm_batch_token_metrics.sh \
+#       --model siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 \
+#       --transcoder --reference_model google/gemma-2-2b-it --data_source lmsys_chat
+
+export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
+
+sbatch \
+  --account=nlp \
+  --gres=gpu:1 \
+  --constraint=48G \
+  --mem=128G \
+  --partition=jag-standard \
+  --job-name=token_metrics \
+  --time=1-00:00:00 \
+  --mail-user="$USER@cs.stanford.edu" \
+  --mail-type=END,FAIL \
+  ./slurm/run_token_metrics.sh "$@"
