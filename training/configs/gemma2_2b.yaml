@@ -29,7 +29,7 @@ datasets:
     max_seq_length: 1000
     length_excession_behavior: "truncate"
     weight: 0.5
-total_rows: 20000
+total_rows: 10000
 weight_by: "tokens"
 loss_on_prompt: true
 
