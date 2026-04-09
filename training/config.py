@@ -12,7 +12,7 @@ from pathlib import Path
 from .dataset.openthoughts.types import DataFormat
 
 
-class LengthExcessionBehavior(Enum):
+class LengthExcessionBehavior(str, Enum):
     TRUNCATE = "truncate"
     ERROR = "error"
     """Throw if any sequences are over the max length."""
