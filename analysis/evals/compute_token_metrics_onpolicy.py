@@ -640,6 +640,7 @@ def main():
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed for sampling")
     parser.add_argument("--debug", action="store_true", help="Show de-tokenized samples for debugging")
     parser.add_argument("--transcoder", action="store_true", help="Load model as transcoder (auto-detects arch)")
+    parser.add_argument("--hybrid", action="store_true", help="Disable transcoders (use hybrid model: ref attention + base MLP)")
     args = parser.parse_args()
 
     reference_model = args.reference_model
@@ -679,7 +680,18 @@ def main():
     ref_model.eval()
 
     logger.info(f"\nLoading eval model: {args.model}")
-    eval_model = load_model(args.model, use_transcoder=args.transcoder)
+    eval_model = load_model(args.model, use_transcoder=args.transcoder or args.hybrid)
+    
+    if args.hybrid:
+        logger.info("Disabling transcoders for hybrid model evaluation")
+        # Handle both Qwen2 and Gemma2 architectures via their common transcoder interface
+        if hasattr(eval_model, "model") and hasattr(eval_model.model, "layers"):
+            for layer in eval_model.model.layers:
+                if hasattr(layer, "mlp") and hasattr(layer.mlp, "disable_transcoder"):
+                    layer.mlp.disable_transcoder = True
+        else:
+            logger.warning("Could not find layers to disable transcoders. Is this a transcoder model?")
+
     eval_model.eval()
 
     # Evaluate

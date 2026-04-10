@@ -133,10 +133,22 @@ def main():
                         help="Send raw text without chat template")
     parser.add_argument("--show_special_tokens", action="store_true", default=True,
                         help="Show special tokens in prompt and output")
+    parser.add_argument("--hybrid", action="store_true",
+                        help="Disable transcoders (use hybrid model: ref attention + base MLP)")
     args = parser.parse_args()
 
     setup_logging()
     model, tokenizer = load_model(args.model_path, args.tokenizer, args.arch)
+
+    if args.hybrid:
+        logger.info("Disabling transcoders for hybrid model generation")
+        if hasattr(model, "model") and hasattr(model.model, "layers"):
+            for layer in model.model.layers:
+                if hasattr(layer, "mlp") and hasattr(layer.mlp, "disable_transcoder"):
+                    layer.mlp.disable_transcoder = True
+        else:
+            logger.warning("Could not find layers to disable transcoders. Is this a transcoder model?")
+
     chat(model, tokenizer, use_chat_template=not args.raw, show_special_tokens=args.show_special_tokens)
 
 
