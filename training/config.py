@@ -35,6 +35,7 @@ class DatasetEntryConfig:
 
     # open_thoughts-specific
     data_format: DataFormat | None = None  # "tokenizer", "deepseek", "qwen"
+    """For formatting the OpenThoughts dataset's reasoning traces. Ignored for other dataset types."""
     val_datapath: str | None = None
 
 
