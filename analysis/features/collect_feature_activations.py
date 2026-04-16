@@ -150,7 +150,7 @@ class FeatureCollector:
             with torch.no_grad():
                 pre_act = module.transcoder_enc(hidden_states)
                 features = torch.relu(pre_act)  # [batch, seq, n_features]
-            self._layer_activations[layer_idx] = features[0]  # [seq, n_features]
+            self._layer_activations[layer_idx] = features  # [batch, seq, n_features]
         return hook
 
     def register_hooks(self, model):
@@ -256,74 +256,85 @@ class FeatureCollector:
             else:
                 stats.random_examples[random_replace_idx] = example
 
-    def process_sequence(
+    def process_batch(
         self,
         model,
-        tokens: list[int],
-        domain: str,
-        markers: dict,
-        sequence_idx: int,
+        batch_tokens: list[list[int]],
+        batch_domains: list[str],
+        batch_markers: list[dict],
+        batch_seq_idxs: list[int],
+        pad_token_id: int = 0,
     ):
-        """Process a single sequence and update all feature stats."""
-        seq_len = len(tokens)
+        """Process a batch of sequences in one forward pass."""
+        B = len(batch_tokens)
+        seq_lens = [len(t) for t in batch_tokens]
+        max_len = max(seq_lens)
         self._layer_activations = {}
 
-        # Forward pass (hooks capture activations)
-        input_ids = torch.tensor([tokens], device=model.device)
+        # Right-pad to max length in batch
+        padded = torch.full((B, max_len), pad_token_id, dtype=torch.long, device=model.device)
+        attention_mask = torch.zeros(B, max_len, dtype=torch.long, device=model.device)
+        for b, tokens in enumerate(batch_tokens):
+            L = len(tokens)
+            padded[b, :L] = torch.tensor(tokens, dtype=torch.long)
+            attention_mask[b, :L] = 1
+
+        # Single forward pass for the whole batch (hooks capture activations)
         with torch.no_grad():
-            model(input_ids)
+            model(padded, attention_mask=attention_mask)
 
-        # Precompute regions for all positions
-        regions, thinking_positions = precompute_regions(tokens, markers)
+        # Process each item in the batch
+        for b in range(B):
+            tokens = batch_tokens[b]
+            seq_len = seq_lens[b]
+            domain = batch_domains[b]
+            markers = batch_markers[b]
+            sequence_idx = batch_seq_idxs[b]
 
-        # Update global token counts
-        self.total_tokens += seq_len
-        self.tokens_per_domain[domain] += seq_len
-        for pos in range(seq_len):
-            self.tokens_per_region[regions[pos]] += 1
-            think_pos_val = thinking_positions[pos]
-            if think_pos_val is not None:
-                bin_idx = min(9, int(think_pos_val * 10))
-                self.tokens_per_thinking_bin[bin_idx] += 1
+            regions, thinking_positions = precompute_regions(tokens, markers)
 
-        # Process each layer
-        for layer_idx in range(self.n_layers):
-            features_gpu = self._layer_activations[layer_idx]  # [seq_len, n_features] on GPU
+            self.total_tokens += seq_len
+            self.tokens_per_domain[domain] += seq_len
+            for pos in range(seq_len):
+                self.tokens_per_region[regions[pos]] += 1
+                think_pos_val = thinking_positions[pos]
+                if think_pos_val is not None:
+                    bin_idx = min(9, int(think_pos_val * 10))
+                    self.tokens_per_thinking_bin[bin_idx] += 1
 
-            # Find non-zero entries on GPU, transfer only sparse indices/values
-            nonzero = torch.nonzero(features_gpu > 0)  # [N, 2] on GPU
-            if len(nonzero) == 0:
-                continue
+            for layer_idx in range(self.n_layers):
+                # Slice out this item's real tokens (right-padded, so [:seq_len] is correct)
+                features_gpu = self._layer_activations[layer_idx][b, :seq_len]  # [seq_len, n_features]
 
-            active_positions = nonzero[:, 0].cpu().numpy()  # [N] int64
-            active_features = nonzero[:, 1].cpu().numpy()   # [N] int64
-            active_values = features_gpu[nonzero[:, 0], nonzero[:, 1]].float().cpu().numpy()  # [N] float32
+                nonzero = torch.nonzero(features_gpu > 0)  # [N, 2]
+                if len(nonzero) == 0:
+                    continue
 
-            # Process all activations
-            for i in range(len(active_positions)):
-                pos = int(active_positions[i])
-                feature_idx = int(active_features[i])
-                act = float(active_values[i])
+                active_positions = nonzero[:, 0].cpu().numpy()
+                active_features = nonzero[:, 1].cpu().numpy()
+                active_values = features_gpu[nonzero[:, 0], nonzero[:, 1]].float().cpu().numpy()
 
-                stats = self.stats[layer_idx][feature_idx]
-                region = regions[pos]
-                think_pos = thinking_positions[pos]
+                for i in range(len(active_positions)):
+                    pos = int(active_positions[i])
+                    feature_idx = int(active_features[i])
+                    act = float(active_values[i])
 
-                # Update counts
-                stats.activation_count += 1
-                stats.domain_counts[domain] += 1
-                stats.region_counts[region] += 1
-                if think_pos is not None:
-                    bin_idx = min(9, int(think_pos * 10))
-                    stats.thinking_position_counts[bin_idx] += 1
+                    stats = self.stats[layer_idx][feature_idx]
+                    region = regions[pos]
+                    think_pos = thinking_positions[pos]
 
-                # Maybe add to examples (fetch context from GPU only if needed)
-                self._maybe_add_example(
-                    stats, act, tokens, pos, features_gpu, feature_idx,
-                    domain, region, think_pos, sequence_idx
-                )
+                    stats.activation_count += 1
+                    stats.domain_counts[domain] += 1
+                    stats.region_counts[region] += 1
+                    if think_pos is not None:
+                        bin_idx = min(9, int(think_pos * 10))
+                        stats.thinking_position_counts[bin_idx] += 1
 
-        # Clear activations
+                    self._maybe_add_example(
+                        stats, act, tokens, pos, features_gpu, feature_idx,
+                        domain, region, think_pos, sequence_idx
+                    )
+
         self._layer_activations = {}
 
 
@@ -608,6 +619,8 @@ def main():
                         help="Context tokens before activating token")
     parser.add_argument("--context_after", type=int, default=20,
                         help="Context tokens after activating token")
+    parser.add_argument("--batch_size", type=int, default=16,
+                        help="Max sequences per forward pass (reduce if OOM on long sequences)")
     parser.add_argument("--tokenizer", type=str, default=None,
                         help="Explicit tokenizer path (default: resolved from model_type)")
     parser.add_argument("--max_length", type=int, default=10000,
@@ -679,12 +692,9 @@ def main():
         context_after=args.context_after,
     )
 
-    # Register hooks
-    collector.register_hooks(model)
-
-    # Process sequences across all data sources (sequence_idx is global)
+    # Pre-extract all items across sources, filtering malformed ones
+    items: list[tuple[list[int], str, dict]] = []
     skipped = 0
-    sequence_idx = 0
     for source_idx, (dataset, examples_meta) in enumerate(loaded_sources):
         domain_label = val_data_sources[source_idx][0]
         n_samples = len(dataset)
@@ -694,7 +704,7 @@ def main():
         if domain_label:
             source_desc += f" ({domain_label})"
 
-        for idx in tqdm(range(n_samples), desc=f"Processing {source_desc}"):
+        for idx in tqdm(range(n_samples), desc=f"Preparing {source_desc}"):
             item = dataset[idx]
             meta = examples_meta[idx] if examples_meta is not None else {}
 
@@ -702,24 +712,64 @@ def main():
             if isinstance(tokens, torch.Tensor):
                 tokens = tokens.tolist()
             domain = meta.get('domain', domain_label or 'unknown')
-
-            # Find special token markers
             markers = find_token_positions(tokens, special_tokens)
 
-            # For thinking models, skip malformed samples missing think tags
             if has_thinking and (markers['think_start'] is None or markers['think_end'] is None):
                 if skipped < 5:
                     logger.warning(f"Skipping sample {idx} (source {source_idx}) - missing <think> tags")
                 skipped += 1
                 continue
 
-            collector.process_sequence(model, tokens, domain, markers, sequence_idx)
-            sequence_idx += 1
-
-    collector.remove_hooks()
+            items.append((tokens, domain, markers))
 
     if skipped > 0:
         logger.warning(f"Skipped {skipped} samples due to missing <think> tags")
+
+    # Sort by length so similarly-sized sequences are batched together (less padding waste)
+    items.sort(key=lambda x: len(x[0]))
+    logger.info(f"Sorted {len(items)} sequences by length "
+                f"(shortest={len(items[0][0])}, longest={len(items[-1][0])})")
+
+    # Form batches with a token budget to avoid OOM on long sequences.
+    # Budget = batch_size * 2048: gives full batches for short sequences,
+    # automatically shrinks batch size for long ones.
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    max_batch_tokens = args.batch_size * 2048
+    batches: list[list[tuple[list[int], str, dict]]] = []
+    current_batch: list[tuple[list[int], str, dict]] = []
+    current_max_len = 0
+    for item in items:
+        item_len = len(item[0])
+        new_max_len = max(current_max_len, item_len)
+        padded_tokens = (len(current_batch) + 1) * new_max_len
+        if current_batch and (len(current_batch) >= args.batch_size or padded_tokens > max_batch_tokens):
+            batches.append(current_batch)
+            current_batch = [item]
+            current_max_len = item_len
+        else:
+            current_batch.append(item)
+            current_max_len = new_max_len
+    if current_batch:
+        batches.append(current_batch)
+
+    batch_sizes = [len(b) for b in batches]
+    logger.info(f"Formed {len(batches)} batches (sizes {min(batch_sizes)}-{max(batch_sizes)}, "
+                f"budget={max_batch_tokens} tokens)")
+
+    # Process batches
+    collector.register_hooks(model)
+    sequence_idx = 0
+    for batch in tqdm(batches, desc="Processing batches"):
+        batch_tokens = [t for t, _, _ in batch]
+        batch_domains = [d for _, d, _ in batch]
+        batch_markers = [m for _, _, m in batch]
+        batch_seq_idxs = list(range(sequence_idx, sequence_idx + len(batch)))
+
+        collector.process_batch(model, batch_tokens, batch_domains, batch_markers,
+                                batch_seq_idxs, pad_token_id)
+        sequence_idx += len(batch)
+
+    collector.remove_hooks()
 
     # Summary stats
     logger.info("Collection summary:")
