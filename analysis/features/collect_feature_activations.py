@@ -5,15 +5,23 @@ Runs the model on validation data and collects top-activating examples,
 logit lens, and activation statistics for each transcoder feature.
 Outputs per-feature JSONs compatible with the circuit-tracer frontend.
 
+Each --val_data entry is either a plain path or a 'domain:path' pair.
+When a domain label is given, the top-K max-activating examples for each
+domain are tracked separately and surfaced as their own quantile in the
+output JSON (for example: "Top activations (chat)", "Top activations (fineweb)").
+
 Usage:
+    # Single source (no domain label)
     python -m analysis.features.collect_feature_activations \
         --model_path nathu0/transcoder-adapters-R1-Distill-Qwen-7B-l1w0.001-l0-1.4 \
         --val_data hf://nathu0/transcoder-adapters-openthoughts3-stratified-55k/data/val.jsonl
 
+    # Two sources with domain labels (chat + fineweb)
     python -m analysis.features.collect_feature_activations \
-        --model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr10000_lr8e-04_bs4_sl14754432 \
-        --val_data siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits \
-        --max_samples 100
+        --model_path siddharthmb/2026.TA.gemma2_2b_... \
+        --val_data chat:siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits \
+                   fineweb:science-of-finetuning/fineweb-1m-sample \
+        --domain_top_k 10
 
 Output:
     {output_dir}/
@@ -38,9 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import torch
 from tqdm import tqdm
-from transformers import AutoTokenizer
-
-from models.auto import AutoModelForCausalLMWithTranscoder
+from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
 from analysis.features.load_val_data import load_val_data
 
@@ -80,6 +86,9 @@ class FeatureStats:
     random_examples: list = field(default_factory=list)
     random_seen_count: int = 0  # for reservoir sampling
 
+    # Per-domain top-k min-heaps: domain -> list (heap)
+    domain_top_k_examples: dict = field(default_factory=lambda: defaultdict(list))
+
     # Activation count
     activation_count: int = 0
 
@@ -106,6 +115,7 @@ class FeatureCollector:
         n_features: int,
         top_k: int = 20,
         n_random: int = 10,
+        domain_top_k: int = 10,
         context_before: int = 50,
         context_after: int = 20,
     ):
@@ -113,6 +123,7 @@ class FeatureCollector:
         self.n_features = n_features
         self.top_k = top_k
         self.n_random = n_random
+        self.domain_top_k = domain_top_k
         self.context_before = context_before
         self.context_after = context_after
 
@@ -174,11 +185,18 @@ class FeatureCollector:
         thinking_position: float | None,
         sequence_idx: int,
     ):
-        """Add example to top-k heap and/or random reservoir if appropriate."""
-        # Check if this could make it into top-k
+        """Add example to top-k heap, domain top-k heap, and/or random reservoir."""
+        # Check if this could make it into global top-k
         dominated_by_heap = (
             len(stats.top_k_examples) >= self.top_k
             and activation <= stats.top_k_examples[0].activation
+        )
+
+        # Check if this could make it into per-domain top-k
+        domain_heap = stats.domain_top_k_examples[domain]
+        dominated_by_domain_heap = (
+            len(domain_heap) >= self.domain_top_k
+            and activation <= domain_heap[0].activation
         )
 
         # Reservoir sampling decision for random
@@ -193,8 +211,8 @@ class FeatureCollector:
                 add_to_random = True
                 random_replace_idx = j
 
-        # Skip if not going into either buffer
-        if dominated_by_heap and not add_to_random:
+        # Skip if not going into any buffer
+        if dominated_by_heap and dominated_by_domain_heap and not add_to_random:
             return
 
         # Create example (only fetch context from GPU when actually keeping)
@@ -217,12 +235,19 @@ class FeatureCollector:
             sequence_idx=sequence_idx,
         )
 
-        # Add to top-k heap
+        # Add to global top-k heap
         if not dominated_by_heap:
             if len(stats.top_k_examples) < self.top_k:
                 heapq.heappush(stats.top_k_examples, example)
             else:
                 heapq.heapreplace(stats.top_k_examples, example)
+
+        # Add to per-domain top-k heap
+        if not dominated_by_domain_heap:
+            if len(domain_heap) < self.domain_top_k:
+                heapq.heappush(domain_heap, example)
+            else:
+                heapq.heapreplace(domain_heap, example)
 
         # Add to random reservoir
         if add_to_random:
@@ -418,6 +443,18 @@ def export_circuit_tracer_json(
             top_logits = [tokenizer.decode([tok_id]) for tok_id in layer_logit_lens['top_ids'][feature_idx]]
             bottom_logits = [tokenizer.decode([tok_id]) for tok_id in layer_logit_lens['bot_ids'][feature_idx]]
 
+            # Per-domain top examples (sorted by descending activation)
+            domain_quantiles = []
+            for domain_name, domain_heap in sorted(stats.domain_top_k_examples.items()):
+                domain_sorted = sorted(domain_heap, key=lambda x: -x.activation)
+                domain_formatted = [
+                    format_example_for_circuit_tracer(ex, tokenizer) for ex in domain_sorted
+                ]
+                domain_quantiles.append({
+                    "quantile_name": f"Top activations ({domain_name})",
+                    "examples": domain_formatted,
+                })
+
             # Build JSON
             feature_json = {
                 "top_logits": top_logits,
@@ -426,6 +463,7 @@ def export_circuit_tracer_json(
                 "act_max": act_max,
                 "examples_quantiles": [
                     {"quantile_name": "Top activations", "examples": top_formatted},
+                    *domain_quantiles,
                     {"quantile_name": "Random samples", "examples": random_formatted},
                 ],
                 "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
@@ -520,6 +558,25 @@ def export_metadata(collector: FeatureCollector, output_dir: Path):
 # Main
 # =============================================================================
 
+def _parse_val_data_entry(entry: str) -> tuple[str | None, str]:
+    """Parse a val_data entry of the form 'domain:path' or just 'path'.
+
+    Returns (domain, path). Domain is None if not specified.
+    Handles paths starting with hf://, http://, https:// without stripping the scheme.
+    """
+    # Don't split on ':' in URL schemes or Windows drive letters (single char before ':')
+    colon_idx = entry.find(':')
+    if colon_idx > 1:
+        prefix = entry[:colon_idx]
+        rest = entry[colon_idx + 1:]
+        # Only treat as domain:path if the prefix looks like a short domain label
+        # (no slashes, not a URL scheme like 'hf' which is length 2 but that's fine
+        # since hf:// has two slashes after)
+        if '/' not in prefix and not rest.startswith('//'):
+            return prefix, rest
+    return None, entry
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(
@@ -528,24 +585,31 @@ def main():
     )
     parser.add_argument("--model_path", type=str, required=True,
                         help="HF repo ID or local path to transcoder checkpoint")
-    parser.add_argument("--val_data", type=str, required=True,
-                        help="Path to validation data: JSONL (local or hf://), or HF dataset ID")
+    parser.add_argument("--val_data", type=str, nargs='+', required=True,
+                        help=(
+                            "Validation data source(s). Each entry is either 'path' or 'domain:path'. "
+                            "Examples: "
+                            "chat:siddharthmb/lmsys-splits "
+                            "fineweb:hf://org/dataset/data/val.jsonl"
+                        ))
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)")
 
     # Optional args
-    # parser.add_argument("--tokenizer", type=str, default=None,
-    #                     help="Tokenizer name/path (default: same as model_path)")
     parser.add_argument("--max_samples", type=int, default=None,
-                        help="Max samples to process (default: all)")
+                        help="Max samples to process per data source (default: all)")
     parser.add_argument("--top_k", type=int, default=20,
-                        help="Number of top activating examples per feature")
+                        help="Number of global top activating examples per feature")
+    parser.add_argument("--domain_top_k", type=int, default=10,
+                        help="Number of top activating examples per feature per domain")
     parser.add_argument("--n_random", type=int, default=10,
                         help="Number of random samples per feature")
     parser.add_argument("--context_before", type=int, default=50,
                         help="Context tokens before activating token")
     parser.add_argument("--context_after", type=int, default=20,
                         help="Context tokens after activating token")
+    parser.add_argument("--tokenizer", type=str, default=None,
+                        help="Explicit tokenizer path (default: resolved from model_type)")
     parser.add_argument("--max_length", type=int, default=10000,
                         help="Max sequence length (longer sequences truncated)")
 
@@ -563,9 +627,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
 
-    # Load tokenizer
-    logger.info(f"Loading tokenizer: {args.model_path}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    tokenizer = load_tokenizer(args.model_path, tokenizer_path=args.tokenizer)
 
     # Load model
     logger.info(f"Loading model: {args.model_path}")
@@ -589,14 +651,22 @@ def main():
     if not has_thinking:
         logger.info("Note: No <think> tags detected — thinking region analysis will be skipped")
 
-    # Load dataset
-    logger.info(f"Loading validation data: {args.val_data}")
-    dataset, examples_meta = load_val_data(args.val_data, tokenizer, args.max_length)
+    # Parse and load all val_data sources
+    val_data_sources: list[tuple[str | None, str]] = [
+        _parse_val_data_entry(entry) for entry in args.val_data
+    ]
+    logger.info(f"Loading {len(val_data_sources)} data source(s):")
+    loaded_sources: list[tuple[Any, list[dict] | None]] = []
+    for domain_label, path in val_data_sources:
+        logger.info(f"  {path!r} (domain={domain_label!r})")
+        dataset, examples_meta = load_val_data(path, tokenizer, args.max_length, domain=domain_label)
+        loaded_sources.append((dataset, examples_meta))
 
-    n_samples = len(dataset)
-    if args.max_samples:
-        n_samples = min(args.max_samples, n_samples)
-    logger.info(f"Processing {n_samples} samples")
+    total_samples = sum(
+        min(args.max_samples, len(ds)) if args.max_samples else len(ds)
+        for ds, _ in loaded_sources
+    )
+    logger.info(f"Processing {total_samples} samples total across {len(loaded_sources)} source(s)")
 
     # Create collector
     collector = FeatureCollector(
@@ -604,6 +674,7 @@ def main():
         n_features=n_features,
         top_k=args.top_k,
         n_random=args.n_random,
+        domain_top_k=args.domain_top_k,
         context_before=args.context_before,
         context_after=args.context_after,
     )
@@ -611,33 +682,44 @@ def main():
     # Register hooks
     collector.register_hooks(model)
 
-    # Process sequences
+    # Process sequences across all data sources (sequence_idx is global)
     skipped = 0
-    for idx in tqdm(range(n_samples), desc="Processing sequences"):
-        item = dataset[idx]
-        meta = examples_meta[idx] if examples_meta is not None else {}
+    sequence_idx = 0
+    for source_idx, (dataset, examples_meta) in enumerate(loaded_sources):
+        domain_label = val_data_sources[source_idx][0]
+        n_samples = len(dataset)
+        if args.max_samples:
+            n_samples = min(args.max_samples, n_samples)
+        source_desc = f"source {source_idx + 1}/{len(loaded_sources)}"
+        if domain_label:
+            source_desc += f" ({domain_label})"
 
-        tokens = item['input_ids']
-        if isinstance(tokens, torch.Tensor):
-            tokens = tokens.tolist()
-        domain = meta.get('domain', 'unknown')
+        for idx in tqdm(range(n_samples), desc=f"Processing {source_desc}"):
+            item = dataset[idx]
+            meta = examples_meta[idx] if examples_meta is not None else {}
 
-        # Find special token markers
-        markers = find_token_positions(tokens, special_tokens)
+            tokens = item['input_ids']
+            if isinstance(tokens, torch.Tensor):
+                tokens = tokens.tolist()
+            domain = meta.get('domain', domain_label or 'unknown')
 
-        # For thinking models, skip malformed samples missing think tags
-        if has_thinking and (markers['think_start'] is None or markers['think_end'] is None):
-            if skipped < 5:
-                logger.warning(f"Skipping sample {idx} - missing <think> tags")
-            skipped += 1
-            continue
+            # Find special token markers
+            markers = find_token_positions(tokens, special_tokens)
 
-        collector.process_sequence(model, tokens, domain, markers, idx)
+            # For thinking models, skip malformed samples missing think tags
+            if has_thinking and (markers['think_start'] is None or markers['think_end'] is None):
+                if skipped < 5:
+                    logger.warning(f"Skipping sample {idx} (source {source_idx}) - missing <think> tags")
+                skipped += 1
+                continue
+
+            collector.process_sequence(model, tokens, domain, markers, sequence_idx)
+            sequence_idx += 1
 
     collector.remove_hooks()
 
     if skipped > 0:
-        logger.warning(f"Skipped {skipped}/{n_samples} samples due to missing <think> tags")
+        logger.warning(f"Skipped {skipped} samples due to missing <think> tags")
 
     # Summary stats
     logger.info("Collection summary:")

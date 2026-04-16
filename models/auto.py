@@ -7,7 +7,56 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from helpers.log import logger
 from models.tokens import SpecialTokenIds, detect_special_tokens
+
+# Fallback tokenizer source for each model_type, used only for legacy
+# checkpoints that were uploaded without tokenizer files.
+_BASE_TOKENIZER: dict[str, str] = {
+    "gemma2": "google/gemma-2-2b-it",
+    "qwen2": "Qwen/Qwen2-0.5B",
+}
+
+
+def load_tokenizer(
+    model_path: str,
+    tokenizer_path: str | None = None,
+) -> "PreTrainedTokenizerBase":
+    """Load a tokenizer for a transcoder checkpoint.
+
+    Tries ``model_path`` first (works for checkpoints that include tokenizer
+    files).  Falls back to the canonical base-model tokenizer for the
+    architecture when the checkpoint lacks tokenizer files.
+
+    Args:
+        model_path: HF repo ID or local path to the transcoder checkpoint.
+        tokenizer_path: Explicit override — when set, loaded directly.
+    """
+    from transformers import AutoConfig, AutoTokenizer
+
+    if tokenizer_path is not None:
+        logger.info(f"Loading tokenizer from explicit path: {tokenizer_path}")
+        return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+    try:
+        logger.info(f"Loading tokenizer from checkpoint: {model_path}")
+        return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    except (OSError, AttributeError, KeyError):
+        pass
+
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model_type: str = getattr(config, "model_type", "")
+
+    if model_type not in _BASE_TOKENIZER:
+        raise RuntimeError(
+            f"Checkpoint {model_path!r} has no tokenizer files and model_type "
+            f"{model_type!r} has no known base tokenizer. "
+            f"Pass --tokenizer explicitly."
+        )
+
+    source = _BASE_TOKENIZER[model_type]
+    logger.info(f"No tokenizer in checkpoint, falling back to base model: {source}")
+    return AutoTokenizer.from_pretrained(source, trust_remote_code=True)
 
 
 class AutoModelForCausalLMWithTranscoder:

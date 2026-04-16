@@ -18,8 +18,16 @@ def load_val_data(
     val_data: str,
     tokenizer: Any,
     max_length: int,
+    domain: str | None = None,
 ) -> tuple[Any, list[dict] | None]:
     """Load validation data from JSONL (local/hf://) or HF dataset ID.
+
+    Args:
+        val_data: Path to data (local JSONL, hf:// URI, or HF dataset ID).
+        tokenizer: HuggingFace tokenizer.
+        max_length: Maximum sequence length in tokens.
+        domain: If provided and the dataset has no per-example domain metadata,
+                use this as the domain label for all examples.
 
     Returns:
         (dataset, examples_meta) where examples_meta is a list of dicts with
@@ -27,10 +35,16 @@ def load_val_data(
     """
     # Case 1: JSONL file (local path or hf:// URI)
     if val_data.endswith(".jsonl") or val_data.startswith("hf://"):
-        return _load_jsonl(val_data, tokenizer, max_length)
+        dataset, examples_meta = _load_jsonl(val_data, tokenizer, max_length)
+    else:
+        # Case 2: HF dataset ID
+        dataset, examples_meta = _load_hf_dataset(val_data, tokenizer, max_length)
 
-    # Case 2: HF dataset ID
-    return _load_hf_dataset(val_data, tokenizer, max_length)
+    # If a domain override is given and no per-example metadata exists, synthesize it
+    if domain is not None and examples_meta is None:
+        examples_meta = [{"domain": domain}] * len(dataset)
+
+    return dataset, examples_meta
 
 
 def _load_jsonl(

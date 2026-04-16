@@ -15,10 +15,11 @@ Usage:
 import argparse
 
 import torch
-from transformers import AutoTokenizer, TextStreamer
+from transformers import TextStreamer
 
 from helpers.log import logger, setup_logging
 from models import get_transcoder_classes, detect_architecture
+from models.auto import load_tokenizer
 
 
 def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | None = None):
@@ -27,8 +28,7 @@ def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | N
     Args:
         model_path: HF repo ID or local path to checkpoint.
         tokenizer_path: HF repo ID or local path for the tokenizer.
-            If None, tries loading from model_path first, then falls back
-            to the base model name from the config.
+            If None, resolved from model_type via the canonical base tokenizer.
         arch: Architecture name (e.g. "gemma2", "qwen2"). Auto-detected if None.
     """
     if arch is None:
@@ -45,16 +45,7 @@ def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | N
     )
     model.eval()
 
-    # Try loading tokenizer from checkpoint, fall back to base model
-    if tokenizer_path is None:
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        except OSError:
-            base = model.config._name_or_path
-            logger.info(f"No tokenizer in checkpoint, loading from base model: {base}")
-            tokenizer = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    tokenizer = load_tokenizer(model_path, tokenizer_path=tokenizer_path)
 
     return model, tokenizer
 
