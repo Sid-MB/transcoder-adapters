@@ -46,6 +46,9 @@ class Qwen2MLPWithTranscoder(Qwen2MLP):
         # Store prefix for weight loading
         self.prefix = prefix
 
+        # Flag to disable transcoder for hybrid model evaluation
+        self.disable_transcoder = False
+
         # Initialize transcoder weights to ensure zero initial contribution
         self._init_transcoder_weights()
 
@@ -63,6 +66,9 @@ class Qwen2MLPWithTranscoder(Qwen2MLP):
         """Forward pass with original MLP + transcoder branch."""
         # Original MLP computation (from parent class)
         original_output = super().forward(x)
+
+        if self.disable_transcoder:
+            return original_output
 
         # Transcoder computation: f = ReLU(W_enc * x + b_enc), y = W_dec * f
         pre_activations = self.transcoder_enc(x)       # [batch, seq, n_features]

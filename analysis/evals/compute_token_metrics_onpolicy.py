@@ -337,6 +337,13 @@ def tokenize_example(ex: dict, tokenizer, max_length: int):
 
     # Truncate if needed
     if len(input_ids) > max_length:
+        n_response_kept = max(0, max_length - len(prompt_ids))
+        if n_response_kept < len(response_ids):
+            logger.warning(
+                f"Truncating example '{ex.get('question_id', '?')}': "
+                f"sequence length {len(input_ids)} exceeds max_length {max_length}. "
+                f"Response truncated from {len(response_ids)} to {n_response_kept} tokens."
+            )
         input_ids = input_ids[:max_length]
 
     # Labels: -100 for prompt, actual ids for response
@@ -644,6 +651,27 @@ def main():
     args = parser.parse_args()
 
     reference_model = args.reference_model
+
+    # Validate data source / reference model pairing.
+    # evalchemy_qwen rollouts are DeepSeek-R1-Distill-Qwen outputs; their math/code
+    # prompt templates are only meaningful for Qwen/DeepSeek-family models.
+    # lmsys_chat uses apply_chat_template and targets general chat models (e.g. Gemma-it).
+    ref_lower = reference_model.lower()
+    is_qwen_ref = any(k in ref_lower for k in ("qwen", "deepseek"))
+    if args.data_source == "evalchemy_qwen" and not is_qwen_ref:
+        logger.error(
+            f"Data source 'evalchemy_qwen' requires a Qwen/DeepSeek reference model, "
+            f"but got: {reference_model}. "
+            f"Either pass --data_source lmsys_chat or use a Qwen/DeepSeek reference model."
+        )
+        raise SystemExit(1)
+    if args.data_source == "lmsys_chat" and is_qwen_ref:
+        logger.error(
+            f"Data source 'lmsys_chat' is intended for general chat models, "
+            f"but got a Qwen/DeepSeek reference model: {reference_model}. "
+            f"Either pass --data_source evalchemy_qwen or use a chat model (e.g. google/gemma-2-2b-it)."
+        )
+        raise SystemExit(1)
 
     # Load tokenizer
     logger.info(f"Loading tokenizer from {reference_model}")
