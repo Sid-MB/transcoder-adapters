@@ -493,6 +493,10 @@ def run_token_metrics_eval(
             logits_model_resp = logits_model[0, :-1][response_mask]
             del logits_ref, logits_model
 
+            if logits_ref_resp.shape[0] == 0:
+                logger.warning(f"Skipping example {i} ('{ex.get('question_id', '?')}'): no response tokens after masking.")
+                continue
+
             metrics = compute_token_metrics(logits_model_resp, logits_ref_resp)
             del logits_ref_resp, logits_model_resp
 
