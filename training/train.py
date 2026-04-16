@@ -1153,7 +1153,7 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         logger.info(f"Pushing model to Hub: {hub_repo_id}")
         wandb_url = wandb.run.url if (config.use_wandb and wandb.run is not None) else None
         try:
-            push_to_hub(model, config, hub_repo_id, wandb_url=wandb_url)
+            push_to_hub(model, tokenizer, config, hub_repo_id, wandb_url=wandb_url)
         except Exception as e:
             logger.exception(f"Failed to push model to Hub: {e}", exc_info=True, stack_info=True)
 
