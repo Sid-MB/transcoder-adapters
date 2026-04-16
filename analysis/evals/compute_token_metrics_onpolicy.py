@@ -361,42 +361,42 @@ def tokenize_example(ex: dict, tokenizer, max_length: int):
 # ============================================================================
 # METRICS
 # ============================================================================
-def compute_token_metrics(logits_model, logits_ref, labels):
+def compute_token_metrics(logits_model_resp, logits_ref_resp, chunk_size: int = 512):
     """
-    Compute per-token KL divergence and top-1 agreement.
-    Returns metrics only for response tokens (labels != -100).
-    Also returns ref model's max prob for filtering "interesting" tokens.
+    Compute per-token KL divergence and top-1 agreement for response tokens.
+
+    Args:
+        logits_model_resp: (n_resp, vocab) tensor of eval model logits, already
+            shifted and masked to response tokens only.
+        logits_ref_resp: (n_resp, vocab) tensor of reference model logits, same shape.
+
+    Processes in chunks to avoid materializing full (n_tokens, vocab) float32
+    tensors all at once.
     """
-    # Shift: logits[i] predicts token[i+1]
-    logits_model = logits_model[:, :-1, :]
-    logits_ref = logits_ref[:, :-1, :]
-    labels_shifted = labels[:, 1:]
+    n_resp = logits_ref_resp.shape[0]
+    kl_chunks = []
+    top1_match_chunks = []
+    ref_max_prob_chunks = []
 
-    # Slice to response positions before expensive softmax/log_softmax
-    response_mask = labels_shifted[0] != -100
-    logits_ref_resp = logits_ref[0, response_mask].float()      # (n_resp, vocab)
-    logits_model_resp = logits_model[0, response_mask].float()  # (n_resp, vocab)
+    for start in range(0, n_resp, chunk_size):
+        end = min(start + chunk_size, n_resp)
+        ref_chunk = logits_ref_resp[start:end].float()    # (chunk, vocab)
+        model_chunk = logits_model_resp[start:end].float()
 
-    # Softmax / log softmax
-    p_ref = torch.softmax(logits_ref_resp, dim=-1)
-    log_p_ref = torch.log_softmax(logits_ref_resp, dim=-1)
-    log_p_model = torch.log_softmax(logits_model_resp, dim=-1)
+        p_ref = torch.softmax(ref_chunk, dim=-1)
+        log_p_ref = torch.log_softmax(ref_chunk, dim=-1)
+        log_p_model = torch.log_softmax(model_chunk, dim=-1)
 
-    # Reference model's max probability (for filtering interesting tokens)
-    max_prob_ref = p_ref.max(dim=-1).values
+        kl_chunks.append((p_ref * (log_p_ref - log_p_model)).sum(dim=-1).cpu().numpy())
+        top1_match_chunks.append((ref_chunk.argmax(dim=-1) == model_chunk.argmax(dim=-1)).cpu().numpy())
+        ref_max_prob_chunks.append(p_ref.max(dim=-1).values.cpu().numpy())
 
-    # KL divergence: KL(ref || model)
-    kl_per_token = (p_ref * (log_p_ref - log_p_model)).sum(dim=-1)
-
-    # Top-1 agreement
-    top1_ref = logits_ref_resp.argmax(dim=-1)
-    top1_model = logits_model_resp.argmax(dim=-1)
-    top1_match = (top1_ref == top1_model)
+        del ref_chunk, model_chunk, p_ref, log_p_ref, log_p_model
 
     return {
-        'kl': kl_per_token.cpu().numpy(),
-        'top1_match': top1_match.cpu().numpy(),
-        'ref_max_prob': max_prob_ref.cpu().numpy(),
+        'kl': np.concatenate(kl_chunks),
+        'top1_match': np.concatenate(top1_match_chunks),
+        'ref_max_prob': np.concatenate(ref_max_prob_chunks),
     }
 
 
@@ -484,8 +484,17 @@ def run_token_metrics_eval(
             logits_ref = ref_model(input_ids=input_ids).logits
             logits_model = eval_model(input_ids=input_ids).logits
 
-            metrics = compute_token_metrics(logits_model, logits_ref, labels)
+            # Slice to response tokens and free full-sequence logits before
+            # the chunked softmax computation, which would otherwise hold both
+            # in memory simultaneously.
+            labels_shifted = labels[:, 1:]
+            response_mask = labels_shifted[0] != -100
+            logits_ref_resp = logits_ref[0, :-1][response_mask]
+            logits_model_resp = logits_model[0, :-1][response_mask]
             del logits_ref, logits_model
+
+            metrics = compute_token_metrics(logits_model_resp, logits_ref_resp)
+            del logits_ref_resp, logits_model_resp
 
             # Update running sums
             total_kl += metrics['kl'].sum()

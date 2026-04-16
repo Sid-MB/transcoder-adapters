@@ -119,6 +119,8 @@ class ExperimentConfig:
 
     val_frequency: int = 1000  # Run validation every N steps
     layerwise_val_frequency: int = 2000  # Run layerwise validation every N steps
+    token_metrics_n_samples: int = 0  # Samples for periodic token metrics eval, run alongside validation (0 = disabled)
+    token_metrics_final_n_samples: int = 200  # Samples for final post-training eval (0 = skip)
 
     # Output settings (auto-computed)
     output_dir: str | None = None  # Will be computed from hyperparameters
