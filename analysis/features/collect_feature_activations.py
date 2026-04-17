@@ -16,6 +16,12 @@ Usage:
         --model_path nathu0/transcoder-adapters-R1-Distill-Qwen-7B-l1w0.001-l0-1.4 \
         --val_data hf://nathu0/transcoder-adapters-openthoughts3-stratified-55k/data/val.jsonl
 
+    # Random subset (reproducible): --shuffle (default seed 60) or --shuffle_seed
+    python -m analysis.features.collect_feature_activations \
+        --model_path ... --val_data org/dataset --max_samples 1000 --shuffle
+    python -m analysis.features.collect_feature_activations \
+        --model_path ... --val_data org/dataset --max_samples 1000 --shuffle_seed 42
+
     # Two sources with domain labels (chat + fineweb)
     python -m analysis.features.collect_feature_activations \
         --model_path siddharthmb/2026.TA.gemma2_2b_... \
@@ -29,6 +35,9 @@ Output:
     │   ├── {cantor_id}.json   # cantor_pair(layer, feature) -> unique int
     │   └── ...
     └── feature_metadata.json  # Activation frequencies, domain/region breakdowns
+
+    Browse results locally:
+        python -m analysis.features.visualize.feature_dashboard --data_dir {output_dir}
 """
 
 from pathlib import Path
@@ -106,6 +115,29 @@ class FeatureStats:
 # Feature Collector
 # =============================================================================
 
+
+def _run_backbone_for_hooks(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> None:
+    """Run the transformer stack only (no ``lm_head``).
+
+    Feature hooks are registered on ``model.model.layers[*].mlp``.  A full
+    ``CausalLM`` forward also builds logits of shape ``[batch, seq, vocab]``,
+    which dominates memory and can OOM inside ``final_logit_softcapping`` even
+    when logits are unused for this analysis.
+    """
+    inner = getattr(model, "model", None)
+    if inner is None:
+        raise RuntimeError("Expected a HuggingFace CausalLM with a `.model` backbone.")
+    for layer in inner.layers:
+        mlp = getattr(layer, "mlp", None)
+        if mlp is not None and hasattr(mlp, "_attention_mask"):
+            mlp._attention_mask = attention_mask
+    inner(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+
+
 class FeatureCollector:
     """Collects feature activation statistics across sequences."""
 
@@ -144,20 +176,26 @@ class FeatureCollector:
         self._layer_activations: dict[int, torch.Tensor] = {}
 
     def _make_hook(self, layer_idx: int):
-        """Create a forward hook that captures transcoder activations."""
+        """Create a forward hook that captures transcoder activations.
+
+        Hooks ``mlp.transcoder_enc`` (the Linear), not the full MLP.  The MLP
+        forward already runs ``transcoder_enc`` once; a hook on ``mlp`` would
+        re-run the encoder and double matmul cost per layer.
+        """
         def hook(module, input, output):
-            hidden_states = input[0]  # [batch, seq, d_model]
+            # module is transcoder_enc; output is pre-ReLU [batch, seq, n_features]
             with torch.no_grad():
-                pre_act = module.transcoder_enc(hidden_states)
-                features = torch.relu(pre_act)  # [batch, seq, n_features]
-            self._layer_activations[layer_idx] = features  # [batch, seq, n_features]
+                features = torch.relu(output)
+            self._layer_activations[layer_idx] = features
+
         return hook
 
     def register_hooks(self, model):
-        """Register forward hooks on all MLP layers."""
+        """Register forward hooks on all transcoder encoder linears."""
         self._hooks = []
         for layer_idx, layer in enumerate(model.model.layers):
-            hook = layer.mlp.register_forward_hook(self._make_hook(layer_idx))
+            enc = layer.mlp.transcoder_enc
+            hook = enc.register_forward_hook(self._make_hook(layer_idx))
             self._hooks.append(hook)
 
     def remove_hooks(self):
@@ -279,9 +317,9 @@ class FeatureCollector:
             padded[b, :L] = torch.tensor(tokens, dtype=torch.long)
             attention_mask[b, :L] = 1
 
-        # Single forward pass for the whole batch (hooks capture activations)
-        with torch.no_grad():
-            model(padded, attention_mask=attention_mask)
+        # Single backbone forward (hooks capture activations; skip lm_head logits)
+        with torch.inference_mode():
+            _run_backbone_for_hooks(model, padded, attention_mask)
 
         # Process each item in the batch
         for b in range(B):
@@ -396,6 +434,7 @@ def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
         "tokens": tokens,
         "tokens_acts_list": ex.context_activations,
         "train_token_ind": ex.position_in_context,
+        "peak_activation": ex.activation,
         "is_repeated_datapoint": False,
     }
 
@@ -569,6 +608,35 @@ def export_metadata(collector: FeatureCollector, output_dir: Path):
 # Main
 # =============================================================================
 
+# Default seed when --shuffle is passed without --shuffle_seed (reproducible subset).
+DEFAULT_SHUFFLE_SEED = 60
+
+# Default seed for reordering formed batches (execution order only; independent of row shuffle).
+DEFAULT_BATCH_SHUFFLE_SEED = 72
+
+
+def _dataset_indices_to_process(
+    n_dataset: int,
+    max_samples: int | None,
+    shuffle_seed: int | None,
+    source_idx: int,
+) -> list[int]:
+    """Row indices to load from a val source: sequential prefix, or seeded shuffle.
+
+    When ``shuffle_seed`` is set, indices are ``torch.randperm(n_dataset)[:n_take]``
+    with a ``torch.Generator`` seeded per-source so different ``--val_data`` sources
+    do not share the same permutation when split sizes coincide.
+    """
+    n_take = min(max_samples, n_dataset) if max_samples is not None else n_dataset
+    if shuffle_seed is None:
+        return list(range(n_take))
+    per_source_seed = int(shuffle_seed) + source_idx * 100_003
+    g = torch.Generator()
+    g.manual_seed(per_source_seed)
+    perm = torch.randperm(n_dataset, generator=g)
+    return perm[:n_take].tolist()
+
+
 def _parse_val_data_entry(entry: str) -> tuple[str | None, str]:
     """Parse a val_data entry of the form 'domain:path' or just 'path'.
 
@@ -609,6 +677,18 @@ def main():
     # Optional args
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Max samples to process per data source (default: all)")
+    parser.add_argument("--shuffle", action="store_true",
+                        help=(
+                            "Shuffle which rows are used (torch.Generator + torch.randperm). "
+                            f"Uses seed {DEFAULT_SHUFFLE_SEED} unless --shuffle_seed is set."
+                        ))
+    parser.add_argument("--shuffle_seed", type=int, default=None,
+                        help=(
+                            "If set, sample rows with this seed instead of sequential order "
+                            "(same mechanism as --shuffle). Overrides the default seed from "
+                            f"--shuffle ({DEFAULT_SHUFFLE_SEED}). "
+                            "Each --val_data source uses an independent seed offset."
+                        ))
     parser.add_argument("--top_k", type=int, default=20,
                         help="Number of global top activating examples per feature")
     parser.add_argument("--domain_top_k", type=int, default=10,
@@ -619,14 +699,47 @@ def main():
                         help="Context tokens before activating token")
     parser.add_argument("--context_after", type=int, default=20,
                         help="Context tokens after activating token")
-    parser.add_argument("--batch_size", type=int, default=16,
-                        help="Max sequences per forward pass (reduce if OOM on long sequences)")
+    parser.add_argument("--batch_size", type=int, default=40,
+                        help=(
+                            "Max sequences per forward pass. GPU memory budget is auto-computed; "
+                            "this caps CPU-side work (per-token bookkeeping) per batch. "
+                            "Lower if the CPU bottleneck stalls the GPU on short sequences."
+                        ))
+    parser.add_argument(
+        "--shuffle_batches",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "After length-sorting and packing into batches (padding-efficient), randomly reorder "
+            "**which batch runs first** using torch.randperm with --shuffle_batches_seed. "
+            "Total compute is identical; only iteration order changes, so per-step progress/time "
+            "estimates (e.g. tqdm) are less skewed by many cheap short batches at the start. "
+            "Default: on. Use --no-shuffle_batches to run batches in strict length order (shortest "
+            "batches first)."
+        ),
+    )
+    parser.add_argument(
+        "--shuffle_batches_seed",
+        type=int,
+        default=DEFAULT_BATCH_SHUFFLE_SEED,
+        help=(
+            "Seed for --shuffle_batches (ignored with --no-shuffle_batches). "
+            f"Default: {DEFAULT_BATCH_SHUFFLE_SEED}."
+        ),
+    )
     parser.add_argument("--tokenizer", type=str, default=None,
                         help="Explicit tokenizer path (default: resolved from model_type)")
     parser.add_argument("--max_length", type=int, default=10000,
                         help="Max sequence length (longer sequences truncated)")
 
     args = parser.parse_args()
+
+    if args.shuffle_seed is not None:
+        shuffle_seed: int | None = args.shuffle_seed
+    elif args.shuffle:
+        shuffle_seed = DEFAULT_SHUFFLE_SEED
+    else:
+        shuffle_seed = None
 
     if args.output_dir is None:
         from helpers.paths import PRODUCTS_DIR, SLURM_JOB_ID
@@ -679,6 +792,31 @@ def main():
         min(args.max_samples, len(ds)) if args.max_samples else len(ds)
         for ds, _ in loaded_sources
     )
+
+    if args.max_samples is not None:
+        logger.info(f"Subset: --max_samples={args.max_samples} (per --val_data source):")
+        for source_idx, (dataset, _) in enumerate(loaded_sources):
+            path = val_data_sources[source_idx][1]
+            n_dataset = len(dataset)
+            n_take = min(args.max_samples, n_dataset)
+            if n_take < n_dataset:
+                logger.info(
+                    f"  [{source_idx + 1}] {path!r}: using {n_take} of {n_dataset} rows"
+                )
+            else:
+                logger.info(
+                    f"  [{source_idx + 1}] {path!r}: using all {n_dataset} rows "
+                    f"(split size ≤ --max_samples)"
+                )
+
+    if shuffle_seed is not None:
+        seed_src = "--shuffle_seed" if args.shuffle_seed is not None else "--shuffle (default seed)"
+        logger.info(
+            "Shuffling: row indices are a seeded random permutation (torch.randperm), "
+            "not sequential dataset order. "
+            f"seed={shuffle_seed} ({seed_src}); each source adds an independent offset to this seed."
+        )
+
     logger.info(f"Processing {total_samples} samples total across {len(loaded_sources)} source(s)")
 
     # Create collector
@@ -697,14 +835,15 @@ def main():
     skipped = 0
     for source_idx, (dataset, examples_meta) in enumerate(loaded_sources):
         domain_label = val_data_sources[source_idx][0]
-        n_samples = len(dataset)
-        if args.max_samples:
-            n_samples = min(args.max_samples, n_samples)
+        n_dataset = len(dataset)
+        indices = _dataset_indices_to_process(
+            n_dataset, args.max_samples, shuffle_seed, source_idx
+        )
         source_desc = f"source {source_idx + 1}/{len(loaded_sources)}"
         if domain_label:
             source_desc += f" ({domain_label})"
 
-        for idx in tqdm(range(n_samples), desc=f"Preparing {source_desc}"):
+        for idx in tqdm(indices, desc=f"Preparing {source_desc}"):
             item = dataset[idx]
             meta = examples_meta[idx] if examples_meta is not None else {}
 
@@ -730,11 +869,24 @@ def main():
     logger.info(f"Sorted {len(items)} sequences by length "
                 f"(shortest={len(items[0][0])}, longest={len(items[-1][0])})")
 
-    # Form batches with a token budget to avoid OOM on long sequences.
-    # Budget = batch_size * 2048: gives full batches for short sequences,
-    # automatically shrinks batch size for long ones.
+    # Token budget from GPU memory.  Collection uses the transformer backbone only
+    # (no lm_head logits), so the dominant term is hook tensors: each layer keeps a
+    # bf16 [batch, seq, n_features] activation until the forward finishes.
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-    max_batch_tokens = args.batch_size * 2048
+    bytes_per_element = 2  # bf16
+    hook_bytes_per_token = n_layers * n_features * bytes_per_element
+    hidden = int(getattr(model.config, "hidden_size", 0) or 0)
+    # Small slack for attention / scratch (far smaller than full vocab logits).
+    scratch_bytes_per_token = max(4096, hidden * 16)
+    slack = 1.35
+    total_bytes_per_token = int(hook_bytes_per_token * slack) + scratch_bytes_per_token
+    free_bytes = torch.cuda.mem_get_info(model.device)[0]
+    safety_margin = 0.55
+    max_batch_tokens = int(free_bytes * safety_margin / total_bytes_per_token)
+    logger.info(f"GPU free memory: {free_bytes / 1e9:.1f} GB, "
+                f"per-token budget: {total_bytes_per_token / 1e6:.1f} MB "
+                f"(hooks {hook_bytes_per_token / 1e6:.1f} × {slack:.2f} + scratch {scratch_bytes_per_token / 1e6:.1f}), "
+                f"token budget: {max_batch_tokens:,}")
     batches: list[list[tuple[list[int], str, dict]]] = []
     current_batch: list[tuple[list[int], str, dict]] = []
     current_max_len = 0
@@ -754,7 +906,26 @@ def main():
 
     batch_sizes = [len(b) for b in batches]
     logger.info(f"Formed {len(batches)} batches (sizes {min(batch_sizes)}-{max(batch_sizes)}, "
-                f"budget={max_batch_tokens} tokens)")
+                f"token budget={max_batch_tokens:,})")
+
+    if args.shuffle_batches:
+        g = torch.Generator()
+        g.manual_seed(int(args.shuffle_batches_seed))
+        order = torch.randperm(len(batches), generator=g).tolist()
+        batches = [batches[i] for i in order]
+        logger.info(
+            "Shuffling batch execution order: %s batches permuted with torch.randperm "
+            "(seed=%s). Batch membership is unchanged; only run order differs so step times are "
+            "mixed. Disable with --no-shuffle_batches for shortest-batches-first order.",
+            len(batches),
+            args.shuffle_batches_seed,
+        )
+    else:
+        logger.info(
+            "Batch execution order: sequential after length-aware packing (shortest batches "
+            "first; progress may look fast early then slow). Enable default --shuffle_batches to "
+            "interleave cheap and expensive steps."
+        )
 
     # Process batches
     collector.register_hooks(model)

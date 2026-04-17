@@ -12,9 +12,8 @@ sbatch \
   --gres=gpu:1 \
   --constraint=48G \
   --mem=128G \
-  --partition=jag-hi \
+  --partition=jag-standard \
   --job-name=collect_features \
-  --time=1-00:00:00 \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
   ./slurm/run_collect_features.sh "$@"

@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Feature activations</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #58a6ff;
+      --bar-bg: #243044;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.15rem; font-weight: 600; margin: 0 0 0.5rem 0; }
+    h2 { font-size: 0.95rem; font-weight: 600; color: var(--muted); margin: 1rem 0 0.4rem 0; }
+    a { color: var(--accent); }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(320px, 42vw) 1fr;
+      min-height: 100vh;
+    }
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+    .pane {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .pane:last-child { border-right: none; }
+    .scroll { overflow: auto; flex: 1; }
+    header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .overview {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #121922;
+    }
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0;
+      font-size: 12px;
+    }
+    .bar-label { width: 100px; flex-shrink: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+    .bar-track {
+      flex: 1;
+      height: 10px;
+      background: var(--bar-bg);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .bar-fill { height: 100%; background: linear-gradient(90deg, #388bfd, #a371f7); border-radius: 4px; }
+    .controls {
+      padding: 10px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    input[type="search"], select, input[type="text"] {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    input[type="search"] { min-width: 180px; flex: 1; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    th, td {
+      padding: 6px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: #151c28;
+      z-index: 1;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    th:hover { background: #1c2636; }
+    tr:hover td { background: rgba(88, 166, 255, 0.06); }
+    tr.selected td { background: rgba(88, 166, 255, 0.12); }
+    .num { text-align: right; }
+    .pager {
+      padding: 8px 16px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .detail {
+      padding: 16px;
+    }
+    .detail-empty { color: var(--muted); padding: 24px; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--bar-bg);
+      font-size: 12px;
+      margin-right: 6px;
+    }
+    .logit-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    @media (max-width: 700px) { .logit-grid { grid-template-columns: 1fr; } }
+    .logit-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow: auto;
+    }
+    .quantile-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 12px 0 8px 0;
+    }
+    .quantile-tabs button {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .quantile-tabs button.active {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, 0.12);
+    }
+    .example-block {
+      margin-bottom: 16px;
+      padding: 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .tok-line {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .tok-line span { border-radius: 2px; padding: 1px 0; }
+    .meta-mini { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .err { color: #f85149; }
+    .act-scale-wrap {
+      margin: 6px 0 10px 0;
+      font-size: 11px;
+    }
+    .act-scale-row {
+      display: flex;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .act-scale-side {
+      flex: 0 0 auto;
+      min-width: 72px;
+      max-width: 28%;
+    }
+    .act-scale-side-right { text-align: right; }
+    .act-scale-tag { color: var(--muted); font-size: 10px; text-transform: lowercase; letter-spacing: 0.02em; }
+    .act-scale-num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; margin-top: 2px; word-break: break-all; }
+    .act-scale-center { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+    .act-scale-track-wrap { position: relative; padding-top: 22px; }
+    .act-scale-peak-lbl {
+      position: absolute;
+      top: 0;
+      transform: translateX(-50%);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .act-scale-track {
+      position: relative;
+      height: 14px;
+      background: var(--bar-bg);
+      border-radius: 7px;
+      border: 1px solid var(--border);
+    }
+    .act-scale-dot {
+      position: absolute;
+      top: 50%;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--text);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.3);
+      transform: translate(-50%, -50%);
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="pane">
+      <header>
+        <h1>Feature activations</h1>
+        <div style="font-size:12px;color:var(--muted)">Loaded from <code id="src-hint">…</code></div>
+      </header>
+      <div class="overview" id="overview"></div>
+      <div class="controls">
+        <input type="search" id="q" placeholder="Search layer, feature, cantor…" />
+        <label style="font-size:12px;color:var(--muted)">Layer <input type="number" id="layer-min" style="width:56px" placeholder="min" /> – <input type="number" id="layer-max" style="width:56px" placeholder="max" /></label>
+        <label style="font-size:12px;color:var(--muted)">Sort
+          <select id="sort-key"></select>
+        </label>
+        <select id="sort-dir">
+          <option value="desc">Desc</option>
+          <option value="asc">Asc</option>
+        </select>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr id="thead-row"></tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button type="button" id="prev">Prev</button>
+        <span id="page-info"></span>
+        <button type="button" id="next">Next</button>
+      </div>
+    </div>
+    <div class="pane">
+      <header>
+        <h1>Feature detail</h1>
+      </header>
+      <div class="scroll detail" id="detail">
+        <div class="detail-empty">Select a feature from the table.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+(function () {
+  const PAGE = 80;
+  let rawMeta = null;
+  let domainKeys = [];
+  let rows = [];
+  let filtered = [];
+  let sortKey = 'freq';
+  let sortDir = 'desc';
+  let page = 0;
+  let selectedCantor = null;
+
+  function el(id) { return document.getElementById(id); }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function domainSkew(f) {
+    const fr = f.domain_fraction || {};
+    const vals = domainKeys.map((k) => fr[k]).filter((v) => v != null && !Number.isNaN(v));
+    if (vals.length < 2) return 0;
+    return Math.max(...vals) - Math.min(...vals);
+  }
+
+  function buildRows(meta) {
+    domainKeys = Object.keys(meta.tokens_per_domain || {}).sort();
+    return (meta.features || []).map((f) => ({
+      ...f,
+      _skew: domainSkew(f),
+    }));
+  }
+
+  function renderOverview(meta) {
+    const total = meta.total_tokens || 1;
+    const od = el('overview');
+    let h = '<h2>Validation mix</h2>';
+    const tpd = meta.tokens_per_domain || {};
+    for (const [name, n] of Object.entries(tpd).sort((a, b) => b[1] - a[1])) {
+      const pct = (100 * n / total).toFixed(1);
+      h += `<div class="bar-row"><span class="bar-label" title="${escapeHtml(name)}">${escapeHtml(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
+    }
+    h += '<h2>Regions (all tokens)</h2>';
+    const tpr = meta.tokens_per_region || {};
+    const tr = Object.values(tpr).reduce((a, b) => a + b, 0) || 1;
+    for (const [name, n] of Object.entries(tpr).sort((a, b) => b[1] - a[1])) {
+      const pct = (100 * n / tr).toFixed(1);
+      h += `<div class="bar-row"><span class="bar-label">${escapeHtml(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
+    }
+    const ttb = meta.tokens_per_thinking_bin || [];
+    const tsum = ttb.reduce((a, b) => a + b, 0);
+    if (tsum > 0) {
+      h += '<h2>Thinking position bins</h2>';
+      for (let i = 0; i < ttb.length; i++) {
+        const pct = (100 * ttb[i] / tsum).toFixed(1);
+        h += `<div class="bar-row"><span class="bar-label">${i / 10}-${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
+      }
+    }
+    od.innerHTML = h;
+  }
+
+  function thead() {
+    const tr = el('thead-row');
+    let h = '<th>L</th><th>F</th><th>Cantor</th><th>Freq</th><th>Skew</th>';
+    for (const dk of domainKeys) {
+      h += `<th title="${escapeHtml(dk)}">${escapeHtml(dk.length > 10 ? dk.slice(0, 9) + '…' : dk)}</th>`;
+    }
+    tr.innerHTML = h;
+  }
+
+  function cmp(a, b) {
+    let va; let vb;
+    if (sortKey === 'freq') { va = a.activation_freq ?? 0; vb = b.activation_freq ?? 0; }
+    else if (sortKey === 'layer') { va = a.layer; vb = b.layer; }
+    else if (sortKey === 'skew') { va = a._skew; vb = b._skew; }
+    else if (sortKey === 'cantor') { va = a.cantor_id; vb = b.cantor_id; }
+    else if (sortKey.startsWith('d_')) {
+      const k = decodeURIComponent(sortKey.slice(2));
+      va = (a.domain_density || {})[k] ?? 0;
+      vb = (b.domain_density || {})[k] ?? 0;
+    } else {
+      va = a.activation_freq ?? 0;
+      vb = b.activation_freq ?? 0;
+    }
+    const m = sortDir === 'desc' ? -1 : 1;
+    if (va < vb) return -1 * m;
+    if (va > vb) return 1 * m;
+    return a.cantor_id - b.cantor_id;
+  }
+
+  function applyFilter() {
+    const q = el('q').value.trim().toLowerCase();
+    const lmin = el('layer-min').value;
+    const lmax = el('layer-max').value;
+    sortKey = el('sort-key').value;
+    sortDir = el('sort-dir').value;
+
+    filtered = rows.filter((f) => {
+      if (lmin !== '' && f.layer < Number(lmin)) return false;
+      if (lmax !== '' && f.layer > Number(lmax)) return false;
+      if (!q) return true;
+      const hay = `${f.layer} ${f.feature} ${f.cantor_id}`.toLowerCase();
+      return hay.includes(q);
+    });
+    filtered.sort(cmp);
+    page = 0;
+    renderTable();
+  }
+
+  function renderTable() {
+    const tbody = el('tbody');
+    const start = page * PAGE;
+    const slice = filtered.slice(start, start + PAGE);
+    tbody.innerHTML = slice.map((f) => {
+      const sel = f.cantor_id === selectedCantor ? ' class="selected"' : '';
+      const dens = domainKeys.map((k) => {
+        const d = (f.domain_density || {})[k];
+        return `<td class="num">${d != null ? d.toExponential(2) : '–'}</td>`;
+      }).join('');
+      return `<tr data-cantor="${f.cantor_id}"${sel}>
+        <td class="num">${f.layer}</td>
+        <td class="num">${f.feature}</td>
+        <td class="num">${f.cantor_id}</td>
+        <td class="num">${f.activation_freq != null ? f.activation_freq.toExponential(3) : ''}</td>
+        <td class="num">${f._skew.toFixed(3)}</td>
+        ${dens}
+      </tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('tr').forEach((tr) => {
+      tr.onclick = () => {
+        const id = Number(tr.getAttribute('data-cantor'));
+        selectedCantor = id;
+        tbody.querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
+        tr.classList.add('selected');
+        loadDetail(id);
+      };
+    });
+
+    el('page-info').textContent = `${filtered.length === 0 ? 0 : start + 1}–${Math.min(start + slice.length, filtered.length)} of ${filtered.length}`;
+  }
+
+  function tokenStyle(act, lo, hi) {
+    if (hi <= lo) return 'transparent';
+    const t = Math.max(0, Math.min(1, (act - lo) / (hi - lo)));
+    const r = Math.round(40 + t * 200);
+    const g = Math.round(80 + (1 - t) * 120);
+    const b = Math.round(180 + t * 60);
+    return `rgba(${r},${g},${b},0.45)`;
+  }
+
+  function peakActivation(ex) {
+    if (ex.peak_activation != null && !Number.isNaN(ex.peak_activation)) return ex.peak_activation;
+    const idx = ex.train_token_ind;
+    const acts = ex.tokens_acts_list || [];
+    if (idx != null && acts[idx] != null && !Number.isNaN(acts[idx])) return acts[idx];
+    return null;
+  }
+
+  function formatScalar(v) {
+    if (v == null || Number.isNaN(v)) return '—';
+    const a = Math.abs(v);
+    if (a >= 1e-4 && a < 1e6) return v.toLocaleString(undefined, { maximumFractionDigits: 6 });
+    return v.toExponential(4);
+  }
+
+  function renderActScaleBar(peak, actMin, actMax) {
+    if (peak == null || Number.isNaN(peak)) return '';
+    if (actMin == null || actMax == null || !Number.isFinite(actMin) || !Number.isFinite(actMax)) {
+      return `<div class="meta-mini">Highlighted token activation: <strong>${escapeHtml(formatScalar(peak))}</strong> <span style="color:var(--muted)">(no act_min/act_max in JSON)</span></div>`;
+    }
+    let pct;
+    if (actMax > actMin) {
+      const t = (peak - actMin) / (actMax - actMin);
+      pct = 100 * Math.max(0, Math.min(1, t));
+    } else {
+      pct = 50;
+    }
+    return `<div class="act-scale-wrap" title="Heatmap colors use act_min–act_max from global Top + Random examples only.">
+      <div class="act-scale-row">
+        <div class="act-scale-side">
+          <div class="act-scale-tag">act_min</div>
+          <div class="act-scale-num">${escapeHtml(formatScalar(actMin))}</div>
+        </div>
+        <div class="act-scale-center">
+          <div class="act-scale-track-wrap">
+            <div class="act-scale-peak-lbl" style="left:${pct}%">${escapeHtml(formatScalar(peak))}</div>
+            <div class="act-scale-track">
+              <div class="act-scale-dot" style="left:${pct}%"></div>
+            </div>
+          </div>
+        </div>
+        <div class="act-scale-side act-scale-side-right">
+          <div class="act-scale-tag">act_max</div>
+          <div class="act-scale-num">${escapeHtml(formatScalar(actMax))}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderExample(ex, actMin, actMax) {
+    const idx = ex.train_token_ind;
+    const toks = ex.tokens || [];
+    const acts = ex.tokens_acts_list || [];
+    const peak = peakActivation(ex);
+    const meta = renderActScaleBar(peak, actMin, actMax);
+    let html = meta + '<div class="tok-line">';
+    for (let i = 0; i < toks.length; i++) {
+      const bg = tokenStyle(acts[i] ?? 0, actMin, actMax);
+      const mark = i === idx ? ' font-weight:700;border-bottom:2px solid #58a6ff' : '';
+      const actHint = acts[i] != null ? ` title="act=${formatScalar(acts[i])}"` : '';
+      html += `<span style="background:${bg};${mark}"${actHint}>${escapeHtml(toks[i])}</span>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
+  async function loadDetail(cantorId) {
+    const detail = el('detail');
+    const metaRow = rows.find((r) => r.cantor_id === cantorId);
+    detail.innerHTML = '<div class="detail-empty">Loading…</div>';
+    let feat;
+    try {
+      const res = await fetch('/api/feature/' + cantorId);
+      if (!res.ok) throw new Error(await res.text());
+      feat = await res.json();
+    } catch (e) {
+      detail.innerHTML = `<p class="err">Failed to load feature JSON: ${escapeHtml(e.message)}</p>`;
+      return;
+    }
+
+    let h = '';
+    h += `<p><span class="pill">layer ${feat.layer}</span><span class="pill">feature ${feat.feature}</span><span class="pill">freq ${feat.activation_frequency != null ? feat.activation_frequency.toExponential(4) : '–'}</span></p>`;
+
+    if (metaRow) {
+      const dd = metaRow.domain_density || {};
+      const maxDom = domainKeys.length
+        ? Math.max(...domainKeys.map((k) => dd[k] || 0), 1e-30)
+        : 1e-30;
+      h += '<h2>Per-domain activation density</h2><p class="meta-mini">Active feature tokens ÷ all tokens in that domain. Bars normalized within this feature.</p>';
+      for (const k of domainKeys) {
+        const d = dd[k];
+        const frac = (metaRow.domain_fraction || {})[k];
+        if (d == null && frac == null) continue;
+        const pct = d != null ? (d * 100).toFixed(4) + '% of domain tokens' : '';
+        const fr = frac != null ? (frac * 100).toFixed(1) + '% of this feature\'s fires' : '';
+        const w = Math.min(100, ((d || 0) / maxDom) * 100);
+        h += `<div class="bar-row"><span class="bar-label" title="${escapeHtml(k)}">${escapeHtml(k)}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><span>${pct} · ${fr}</span></div>`;
+      }
+      h += '<h2>Regions</h2>';
+      const rd = metaRow.region_density || {};
+      const rk = Object.keys(rd);
+      const maxR = rk.length ? Math.max(...rk.map((k) => rd[k] || 0), 1e-30) : 1e-30;
+      for (const k of [...rk].sort()) {
+        const w = Math.min(100, ((rd[k] || 0) / maxR) * 100);
+        h += `<div class="bar-row"><span class="bar-label">${escapeHtml(k)}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><span>${((rd[k] || 0) * 100).toFixed(4)}% density</span></div>`;
+      }
+      h += '<h2>Thinking bins (within thinking tokens)</h2>';
+      const td = metaRow.thinking_position_density || [];
+      const maxT = td.length ? Math.max(...td.map((x) => x || 0), 1e-30) : 1e-30;
+      for (let i = 0; i < td.length; i++) {
+        const w = Math.min(100, ((td[i] || 0) / maxT) * 100);
+        h += `<div class="bar-row"><span class="bar-label">${i / 10}–${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div></div>`;
+      }
+    }
+
+    const tops = feat.top_logits || [];
+    const bots = feat.bottom_logits || [];
+    h += '<h2>Logit lens</h2><div class="logit-grid"><div class="logit-box"><strong>Top</strong><br/>' + tops.map(escapeHtml).join(' · ') + '</div><div class="logit-box"><strong>Bottom</strong><br/>' + bots.map(escapeHtml).join(' · ') + '</div></div>';
+
+    const quants = feat.examples_quantiles || [];
+    h += '<div class="quantile-tabs" id="qtabs"></div><div id="qbody"></div>';
+
+    detail.innerHTML = h;
+
+    const qtabs = el('qtabs');
+    const qbody = el('qbody');
+    let qi = 0;
+
+    function renderQuant() {
+      const q = quants[qi];
+      if (!q) { qbody.innerHTML = ''; return; }
+      const exs = q.examples || [];
+      const lo = feat.act_min ?? 0;
+      const hi = feat.act_max ?? 1;
+      qbody.innerHTML = exs.map((ex, j) =>
+        `<div class="example-block"><div class="meta-mini">${escapeHtml(q.quantile_name)} · #${j + 1}</div>${renderExample(ex, lo, hi)}</div>`
+      ).join('');
+    }
+
+    quants.forEach((q, i) => {
+      const b = document.createElement('button');
+      b.textContent = q.quantile_name || ('Quantile ' + i);
+      if (i === 0) b.classList.add('active');
+      b.onclick = () => {
+        qi = i;
+        qtabs.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
+        b.classList.add('active');
+        renderQuant();
+      };
+      qtabs.appendChild(b);
+    });
+    renderQuant();
+  }
+
+  async function boot() {
+    el('src-hint').textContent = '(metadata from server)';
+    const res = await fetch('/api/metadata');
+    if (!res.ok) {
+      el('overview').innerHTML = `<p class="err">Could not load metadata: HTTP ${res.status}</p>`;
+      return;
+    }
+    rawMeta = await res.json();
+    if (rawMeta.error) {
+      el('overview').innerHTML = `<p class="err">${escapeHtml(rawMeta.error)}</p>`;
+      return;
+    }
+    rows = buildRows(rawMeta);
+    renderOverview(rawMeta);
+    thead();
+
+    el('sort-key').innerHTML = [
+      '<option value="freq">Activation freq</option>',
+      '<option value="layer">Layer</option>',
+      '<option value="skew">Domain skew (max−min fraction)</option>',
+      '<option value="cantor">Cantor id</option>',
+      ...domainKeys.map((k) => `<option value="d_${encodeURIComponent(k)}">Density · ${escapeHtml(k)}</option>`),
+    ].join('');
+
+    el('q').oninput = applyFilter;
+    el('layer-min').oninput = applyFilter;
+    el('layer-max').oninput = applyFilter;
+    el('sort-key').onchange = applyFilter;
+    el('sort-dir').onchange = applyFilter;
+    el('prev').onclick = () => { if (page > 0) { page--; renderTable(); } };
+    el('next').onclick = () => {
+      if ((page + 1) * PAGE < filtered.length) { page++; renderTable(); }
+    };
+
+    applyFilter();
+  }
+
+  boot();
+})();
+  </script>
+</body>
+</html>
