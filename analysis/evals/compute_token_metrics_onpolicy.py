@@ -428,6 +428,15 @@ def load_model(model_path: str, use_transcoder: bool = False):
 
 
 @log_group("Token-level evaluation")
+def _output_file_tag(transcoder: bool, hybrid: bool) -> str:
+    """Stable filename segment so base / transcoder / hybrid runs do not clobber each other."""
+    if hybrid:
+        return "hybrid"
+    if transcoder:
+        return "transcoder"
+    return "base"
+
+
 def run_token_metrics_eval(
     eval_model,
     ref_model,
@@ -437,6 +446,7 @@ def run_token_metrics_eval(
     device: str = DEVICE,
     debug: bool = False,
     save_output: bool = False,
+    output_file_tag: str | None = None,
 ) -> EvalResults:
     """Compute token-level KL divergence and top-1 agreement between two models.
 
@@ -451,6 +461,8 @@ def run_token_metrics_eval(
         device: Device string (e.g. "cuda").
         debug: If True, log decoded tokens for the first few samples.
         save_output: If True, save results to a JSON file in OUTPUT_DIR.
+        output_file_tag: If set and save_output is True, filename is
+            ``{model}__{tag}.json``; if None, ``{model}.json`` (legacy).
 
     Returns:
         EvalResults with aggregate and per-benchmark metrics.
@@ -610,7 +622,10 @@ def run_token_metrics_eval(
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         clean_name = model_name.rstrip('/').replace('/', '__')
-        output_path = os.path.join(OUTPUT_DIR, f"{clean_name}.json")
+        if output_file_tag:
+            output_path = os.path.join(OUTPUT_DIR, f"{clean_name}__{output_file_tag}.json")
+        else:
+            output_path = os.path.join(OUTPUT_DIR, f"{clean_name}.json")
 
         per_benchmark_json = {bm: asdict(m) for bm, m in results.per_benchmark.items()}
         output_data = {
@@ -738,7 +753,9 @@ def main():
     # Evaluate
     run_token_metrics_eval(
         eval_model, ref_model, tokenizer, examples, args.max_length, DEVICE,
-        debug=args.debug, save_output=True,
+        debug=args.debug,
+        save_output=True,
+        output_file_tag=_output_file_tag(args.transcoder, args.hybrid),
     )
 
 
