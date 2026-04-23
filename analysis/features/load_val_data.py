@@ -42,7 +42,7 @@ def load_val_data(
 
     # If a domain override is given and no per-example metadata exists, synthesize it
     if domain is not None and examples_meta is None:
-        examples_meta = [{"domain": domain}] * len(dataset)
+        examples_meta = [{"domain": domain} for _ in range(len(dataset))]
 
     return dataset, examples_meta
 

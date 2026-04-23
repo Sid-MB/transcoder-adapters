@@ -864,6 +864,13 @@ def main():
     if skipped > 0:
         logger.warning(f"Skipped {skipped} samples due to missing <think> tags")
 
+    if not items:
+        logger.error(
+            "No sequences left to process after filtering "
+            f"(has_thinking={has_thinking}, skipped={skipped}). Exiting."
+        )
+        return
+
     # Sort by length so similarly-sized sequences are batched together (less padding waste)
     items.sort(key=lambda x: len(x[0]))
     logger.info(f"Sorted {len(items)} sequences by length "

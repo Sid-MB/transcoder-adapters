@@ -176,7 +176,7 @@ def compute_stats(lengths: list[int], max_new_tokens: int) -> LengthStats:
     )
 
 
-def log_stats(label: str, stats: LengthStats) -> None:
+def log_stats(label: str, stats: LengthStats, max_new_tokens: int) -> None:
     logger.info(f"\n{'='*60}")
     logger.info(f"Response length stats: {label}")
     logger.info(f"{'='*60}")
@@ -186,7 +186,7 @@ def log_stats(label: str, stats: LengthStats) -> None:
     logger.info(f"  std       : {stats.std:.1f}")
     logger.info(f"  [p10, p90]: [{stats.p10:.0f}, {stats.p90:.0f}]")
     logger.info(f"  [min, max]: [{stats.min}, {stats.max}]")
-    logger.info(f"  truncated : {stats.n_truncated} (hit max_new_tokens={stats.n})")
+    logger.info(f"  truncated : {stats.n_truncated} (hit max_new_tokens={max_new_tokens})")
 
 
 def log_comparison(base_stats: LengthStats, eval_stats: LengthStats) -> None:
@@ -276,7 +276,7 @@ def main():
     logger.info("Generating responses with base model …")
     base_lengths = generate_response_lengths(base_model, prompts, args.max_new_tokens)
     base_stats = compute_stats(base_lengths, args.max_new_tokens)
-    log_stats(f"base ({args.base_model})", base_stats)
+    log_stats(f"base ({args.base_model})", base_stats, args.max_new_tokens)
 
     del base_model
     torch.cuda.empty_cache()
@@ -289,7 +289,7 @@ def main():
     logger.info("Generating responses with trained model …")
     eval_lengths = generate_response_lengths(eval_model, prompts, args.max_new_tokens)
     eval_stats = compute_stats(eval_lengths, args.max_new_tokens)
-    log_stats(f"trained ({args.model})", eval_stats)
+    log_stats(f"trained ({args.model})", eval_stats, args.max_new_tokens)
 
     del eval_model
     torch.cuda.empty_cache()
