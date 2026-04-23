@@ -422,6 +422,7 @@
   }
 
   function tokenStyle(act, lo, hi) {
+    if (act == null || Number.isNaN(act) || act <= 0) return 'transparent';
     if (hi <= lo) return 'transparent';
     const t = Math.max(0, Math.min(1, (act - lo) / (hi - lo)));
     const r = Math.round(40 + t * 200);
