@@ -9,9 +9,10 @@ Relies on collect_feature_activations.py run beforehand to generate the JSON fil
 Usage:
     python -m analysis.features.pack_features \
         --feature_dir /nlp/scr/nathu/sparse-adaptation/circuit_tracing/r1_distil_7b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_lr8e-04_bs1_2025-12-29_1408/features \
-        --output_dir /nlp/scr/nathu/sparse-adaptation/circuit_tracing/r1_distil_7b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_lr8e-04_bs1_2025-12-29_1408/packed_features \
         --n_layers 28 \
         --n_features 8192
+
+    # Default output is <parent of feature_dir>/packed_features; override with --output_dir if needed.
 
 and to upload to hf:
     huggingface-cli upload nathu0/transcoder-adapters-R1-Distill-Qwen-7B-l1w0.001-l0-1.4 path/to/packed_features features --repo-type model
@@ -64,10 +65,19 @@ def main():
     setup_logging()
     parser = argparse.ArgumentParser(description="Pack feature JSONs into binary format")
     parser.add_argument("--feature_dir", required=True, help="Directory of {cantor_id}.json files")
-    parser.add_argument("--output_dir", required=True, help="Where to write packed output")
+    parser.add_argument(
+        "--output_dir",
+        default=None,
+        help="Where to write packed output (default: <parent of feature_dir>/packed_features)",
+    )
     parser.add_argument("--n_layers", type=int, default=28)
     parser.add_argument("--n_features", type=int, default=8192)
     args = parser.parse_args()
+
+    if args.output_dir is None:
+        args.output_dir = os.path.normpath(
+            os.path.join(os.path.abspath(args.feature_dir), os.pardir, "packed_features")
+        )
 
     os.makedirs(args.output_dir, exist_ok=True)
     index: dict[str, Any] = {"version": "1.0", "format": "variable_chunks"}

@@ -5,23 +5,21 @@ Compute token-level metrics (KL divergence, top-1 agreement) for a model
 against R1-Distill reference using on-policy rollouts from evalchemy.
 
 Usage:
-    python claude_scripts/compute_token_metrics_onpolicy.py --model <model_path>
-    python claude_scripts/compute_token_metrics_onpolicy.py --model Qwen/Qwen2.5-Math-7B
+    python -m analysis.evals.compute_token_metrics_onpolicy --model <model_path>
+    python -m analysis.evals.compute_token_metrics_onpolicy --model Qwen/Qwen2.5-Math-7B
 """
-from typing import TYPE_CHECKING
 
 from helpers.log import log_group, logger, setup_logging
 from pathlib import Path
-import sys
-sys.path.insert(0, '/juice2/u/nathu/sparse_adaptation')
 
 import os
+
+from helpers.paths import PRODUCTS_DIR
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 import argparse
 import json
 import glob
-import re
 import torch
 import numpy as np
 from dataclasses import dataclass, field
@@ -48,8 +46,10 @@ class BenchmarkMetrics(TokenMetrics):
 class EvalResults(TokenMetrics):
     per_benchmark: dict[str, BenchmarkMetrics] = field(default_factory=dict)
 
+
+
 # Output directory
-OUTPUT_DIR = "/nlp/scr/nathu/sparse-adaptation/token_recon_evals"
+OUTPUT_DIR = PRODUCTS_DIR / "token_recon_evals"
 
 #%%
 # ============================================================================
@@ -87,6 +87,9 @@ INTERESTING_THRESHOLD = 0.8
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Log device
+logger.info(f"Using device: {DEVICE}")
+
 #%%
 # ============================================================================
 # DATA LOADING (no filtering)
@@ -107,6 +110,11 @@ def load_all_rollouts(eval_dir: str):
 
     # Find newest file for each benchmark
     json_files = glob.glob(os.path.join(eval_dir, "*.json"))
+
+    if not json_files:
+        logger.error(f"No JSON files found in {eval_dir}")
+        raise FileNotFoundError(f"No JSON files found in {eval_dir}")
+
     benchmark_files = {}
     for json_path in json_files:
         filename = os.path.basename(json_path)
@@ -329,6 +337,13 @@ def tokenize_example(ex: dict, tokenizer, max_length: int):
 
     # Truncate if needed
     if len(input_ids) > max_length:
+        n_response_kept = max(0, max_length - len(prompt_ids))
+        if n_response_kept < len(response_ids):
+            logger.warning(
+                f"Truncating example '{ex.get('question_id', '?')}': "
+                f"sequence length {len(input_ids)} exceeds max_length {max_length}. "
+                f"Response truncated from {len(response_ids)} to {n_response_kept} tokens."
+            )
         input_ids = input_ids[:max_length]
 
     # Labels: -100 for prompt, actual ids for response
@@ -346,42 +361,42 @@ def tokenize_example(ex: dict, tokenizer, max_length: int):
 # ============================================================================
 # METRICS
 # ============================================================================
-def compute_token_metrics(logits_model, logits_ref, labels):
+def compute_token_metrics(logits_model_resp, logits_ref_resp, chunk_size: int = 512):
     """
-    Compute per-token KL divergence and top-1 agreement.
-    Returns metrics only for response tokens (labels != -100).
-    Also returns ref model's max prob for filtering "interesting" tokens.
+    Compute per-token KL divergence and top-1 agreement for response tokens.
+
+    Args:
+        logits_model_resp: (n_resp, vocab) tensor of eval model logits, already
+            shifted and masked to response tokens only.
+        logits_ref_resp: (n_resp, vocab) tensor of reference model logits, same shape.
+
+    Processes in chunks to avoid materializing full (n_tokens, vocab) float32
+    tensors all at once.
     """
-    # Shift: logits[i] predicts token[i+1]
-    logits_model = logits_model[:, :-1, :]
-    logits_ref = logits_ref[:, :-1, :]
-    labels_shifted = labels[:, 1:]
+    n_resp = logits_ref_resp.shape[0]
+    kl_chunks = []
+    top1_match_chunks = []
+    ref_max_prob_chunks = []
 
-    # Slice to response positions before expensive softmax/log_softmax
-    response_mask = labels_shifted[0] != -100
-    logits_ref_resp = logits_ref[0, response_mask].float()      # (n_resp, vocab)
-    logits_model_resp = logits_model[0, response_mask].float()  # (n_resp, vocab)
+    for start in range(0, n_resp, chunk_size):
+        end = min(start + chunk_size, n_resp)
+        ref_chunk = logits_ref_resp[start:end].float()    # (chunk, vocab)
+        model_chunk = logits_model_resp[start:end].float()
 
-    # Softmax / log softmax
-    p_ref = torch.softmax(logits_ref_resp, dim=-1)
-    log_p_ref = torch.log_softmax(logits_ref_resp, dim=-1)
-    log_p_model = torch.log_softmax(logits_model_resp, dim=-1)
+        p_ref = torch.softmax(ref_chunk, dim=-1)
+        log_p_ref = torch.log_softmax(ref_chunk, dim=-1)
+        log_p_model = torch.log_softmax(model_chunk, dim=-1)
 
-    # Reference model's max probability (for filtering interesting tokens)
-    max_prob_ref = p_ref.max(dim=-1).values
+        kl_chunks.append((p_ref * (log_p_ref - log_p_model)).sum(dim=-1).cpu().numpy())
+        top1_match_chunks.append((ref_chunk.argmax(dim=-1) == model_chunk.argmax(dim=-1)).cpu().numpy())
+        ref_max_prob_chunks.append(p_ref.max(dim=-1).values.cpu().numpy())
 
-    # KL divergence: KL(ref || model)
-    kl_per_token = (p_ref * (log_p_ref - log_p_model)).sum(dim=-1)
-
-    # Top-1 agreement
-    top1_ref = logits_ref_resp.argmax(dim=-1)
-    top1_model = logits_model_resp.argmax(dim=-1)
-    top1_match = (top1_ref == top1_model)
+        del ref_chunk, model_chunk, p_ref, log_p_ref, log_p_model
 
     return {
-        'kl': kl_per_token.cpu().numpy(),
-        'top1_match': top1_match.cpu().numpy(),
-        'ref_max_prob': max_prob_ref.cpu().numpy(),
+        'kl': np.concatenate(kl_chunks),
+        'top1_match': np.concatenate(top1_match_chunks),
+        'ref_max_prob': np.concatenate(ref_max_prob_chunks),
     }
 
 
@@ -413,6 +428,15 @@ def load_model(model_path: str, use_transcoder: bool = False):
 
 
 @log_group("Token-level evaluation")
+def _output_file_tag(transcoder: bool, hybrid: bool) -> str:
+    """Stable filename segment so base / transcoder / hybrid runs do not clobber each other."""
+    if hybrid:
+        return "hybrid"
+    if transcoder:
+        return "transcoder"
+    return "base"
+
+
 def run_token_metrics_eval(
     eval_model,
     ref_model,
@@ -422,6 +446,7 @@ def run_token_metrics_eval(
     device: str = DEVICE,
     debug: bool = False,
     save_output: bool = False,
+    output_file_tag: str | None = None,
 ) -> EvalResults:
     """Compute token-level KL divergence and top-1 agreement between two models.
 
@@ -436,6 +461,8 @@ def run_token_metrics_eval(
         device: Device string (e.g. "cuda").
         debug: If True, log decoded tokens for the first few samples.
         save_output: If True, save results to a JSON file in OUTPUT_DIR.
+        output_file_tag: If set and save_output is True, filename is
+            ``{model}__{tag}.json``; if None, ``{model}.json`` (legacy).
 
     Returns:
         EvalResults with aggregate and per-benchmark metrics.
@@ -469,8 +496,21 @@ def run_token_metrics_eval(
             logits_ref = ref_model(input_ids=input_ids).logits
             logits_model = eval_model(input_ids=input_ids).logits
 
-            metrics = compute_token_metrics(logits_model, logits_ref, labels)
+            # Slice to response tokens and free full-sequence logits before
+            # the chunked softmax computation, which would otherwise hold both
+            # in memory simultaneously.
+            labels_shifted = labels[:, 1:]
+            response_mask = labels_shifted[0] != -100
+            logits_ref_resp = logits_ref[0, :-1][response_mask]
+            logits_model_resp = logits_model[0, :-1][response_mask]
             del logits_ref, logits_model
+
+            if logits_ref_resp.shape[0] == 0:
+                logger.warning(f"Skipping example {i} ('{ex.get('question_id', '?')}'): no response tokens after masking.")
+                continue
+
+            metrics = compute_token_metrics(logits_model_resp, logits_ref_resp)
+            del logits_ref_resp, logits_model_resp
 
             # Update running sums
             total_kl += metrics['kl'].sum()
@@ -582,7 +622,10 @@ def run_token_metrics_eval(
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         clean_name = model_name.rstrip('/').replace('/', '__')
-        output_path = os.path.join(OUTPUT_DIR, f"{clean_name}.json")
+        if output_file_tag:
+            output_path = os.path.join(OUTPUT_DIR, f"{clean_name}__{output_file_tag}.json")
+        else:
+            output_path = os.path.join(OUTPUT_DIR, f"{clean_name}.json")
 
         per_benchmark_json = {bm: asdict(m) for bm, m in results.per_benchmark.items()}
         output_data = {
@@ -632,9 +675,31 @@ def main():
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed for sampling")
     parser.add_argument("--debug", action="store_true", help="Show de-tokenized samples for debugging")
     parser.add_argument("--transcoder", action="store_true", help="Load model as transcoder (auto-detects arch)")
+    parser.add_argument("--hybrid", action="store_true", help="Disable transcoders (use hybrid model: ref attention + base MLP)")
     args = parser.parse_args()
 
     reference_model = args.reference_model
+
+    # Validate data source / reference model pairing.
+    # evalchemy_qwen rollouts are DeepSeek-R1-Distill-Qwen outputs; their math/code
+    # prompt templates are only meaningful for Qwen/DeepSeek-family models.
+    # lmsys_chat uses apply_chat_template and targets general chat models (e.g. Gemma-it).
+    ref_lower = reference_model.lower()
+    is_qwen_ref = any(k in ref_lower for k in ("qwen", "deepseek"))
+    if args.data_source == "evalchemy_qwen" and not is_qwen_ref:
+        logger.error(
+            f"Data source 'evalchemy_qwen' requires a Qwen/DeepSeek reference model, "
+            f"but got: {reference_model}. "
+            f"Either pass --data_source lmsys_chat or use a Qwen/DeepSeek reference model."
+        )
+        raise SystemExit(1)
+    if args.data_source == "lmsys_chat" and is_qwen_ref:
+        logger.error(
+            f"Data source 'lmsys_chat' is intended for general chat models, "
+            f"but got a Qwen/DeepSeek reference model: {reference_model}. "
+            f"Either pass --data_source evalchemy_qwen or use a chat model (e.g. google/gemma-2-2b-it)."
+        )
+        raise SystemExit(1)
 
     # Load tokenizer
     logger.info(f"Loading tokenizer from {reference_model}")
@@ -671,13 +736,26 @@ def main():
     ref_model.eval()
 
     logger.info(f"\nLoading eval model: {args.model}")
-    eval_model = load_model(args.model, use_transcoder=args.transcoder)
+    eval_model = load_model(args.model, use_transcoder=args.transcoder or args.hybrid)
+    
+    if args.hybrid:
+        logger.info("Disabling transcoders for hybrid model evaluation")
+        # Handle both Qwen2 and Gemma2 architectures via their common transcoder interface
+        if hasattr(eval_model, "model") and hasattr(eval_model.model, "layers"):
+            for layer in eval_model.model.layers:
+                if hasattr(layer, "mlp") and hasattr(layer.mlp, "disable_transcoder"):
+                    layer.mlp.disable_transcoder = True
+        else:
+            logger.warning("Could not find layers to disable transcoders. Is this a transcoder model?")
+
     eval_model.eval()
 
     # Evaluate
     run_token_metrics_eval(
         eval_model, ref_model, tokenizer, examples, args.max_length, DEVICE,
-        debug=args.debug, save_output=True,
+        debug=args.debug,
+        save_output=True,
+        output_file_tag=_output_file_tag(args.transcoder, args.hybrid),
     )
 
 

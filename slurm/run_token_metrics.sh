@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 
 # ── Usage ────────────────────────────────────────────────────────────
-#   Run ./sh/slurm_batch_sweep.sh, or sbatch with env vars set manually.
+#   ./sh/slurm_batch_token_metrics.sh --model <model_path> [--transcoder] [...]
+#   Or: sbatch --export=ALL,HF_TOKEN=... ./slurm/run_token_metrics.sh [args]
 #
-# Logs: logs/sweep/<job_id>_<timestamp>.{out,err}
+# Logs: logs/token_metrics/<job_id>_<timestamp>.{out,err}
 # ─────────────────────────────────────────────────────────────────────
 
-SLURM_LOG_DIR="logs/sweep"
+SLURM_LOG_DIR="logs/token_metrics"
 source slurm/common.sh
 
-run slurm/run_sweep.sh \
-    --config training/configs/gemma2_2b.yaml \
-    --sweep training/configs/sweeps/lr.yaml \
-    --sweep_count 4 \
-    "$@"
+run uv run python -m analysis.evals.compute_token_metrics_onpolicy "$@"

@@ -482,6 +482,7 @@ def train_epoch(
     total_steps: int,
     total_samples_seen: int,
     val_dataloader=None,
+    token_metrics_examples: list | None = None,
 ):
     """Train for one epoch."""
     model.train()
@@ -599,6 +600,12 @@ def train_epoch(
                     logger.info(f"  Val total: {val_metrics['val/total_loss']:.4f}, LM: {val_metrics['val/language_modeling_loss']:.4f}, KL: {val_metrics['val/kl_to_ref']:.4f}")
                 if config.use_wandb:
                     wandb.log(val_metrics, step=global_step)
+
+                # Run token metrics alongside validation (bridging mode only, needs ref_model)
+                if token_metrics_examples is not None and ref_model is not None:
+                    _run_and_log_token_metrics(
+                        model, ref_model, tokenizer, token_metrics_examples, config, global_step,
+                    )
 
             # Run comprehensive layerwise validation (bridging only)
             if config.bridging and val_dataloader is not None and global_step % config.layerwise_val_frequency == 0:
@@ -797,6 +804,87 @@ def validate_layerwise(
     return results
 
 
+def _load_token_metrics_all_examples(config: ExperimentConfig, tokenizer) -> list | None:
+    """Load all available token metrics evaluation examples.
+
+    Auto-selects the data source based on the reference model: evalchemy_qwen for
+    Qwen/DeepSeek reference models, lmsys_chat for others.
+
+    Returns None if data cannot be loaded (logs a warning in that case).
+    """
+    from analysis.evals.compute_token_metrics_onpolicy import (
+        EVALCHEMY_DIR, load_all_rollouts, load_lmsys_examples,
+    )
+
+    ref_path = config.bridging.reference_model_path if config.bridging else ""
+    is_qwen_ref = any(k in ref_path.lower() for k in ("qwen", "deepseek"))
+
+    try:
+        if is_qwen_ref:
+            eval_dir = EVALCHEMY_DIR / "deepseek-ai__DeepSeek-R1-Distill-Qwen-7B"
+            return load_all_rollouts(str(eval_dir))
+        else:
+            return load_lmsys_examples(tokenizer)
+    except Exception as e:
+        logger.warning(f"Could not load token metrics examples: {e}. Token metrics eval will be skipped.")
+        return None
+
+
+def _run_and_log_token_metrics(
+    model,
+    ref_model,
+    tokenizer,
+    examples: list,
+    config: ExperimentConfig,
+    global_step: int,
+):
+    """Run token metrics evaluation and log all results to wandb.
+
+    Temporarily sets the model to eval mode, runs KL divergence and top-1 agreement
+    evaluation, then restores the original training mode.
+
+    Returns the EvalResults, or None if the eval failed.
+    """
+    from analysis.evals.compute_token_metrics_onpolicy import run_token_metrics_eval
+
+    logger.info(f"Running token metrics eval on {len(examples)} examples...")
+    was_training = model.training
+    model.eval()
+
+    try:
+        results = run_token_metrics_eval(
+            eval_model=model,
+            ref_model=ref_model,
+            tokenizer=tokenizer,
+            examples=examples,
+            save_output=False,
+        )
+    finally:
+        if was_training:
+            model.train()
+        torch.cuda.empty_cache()
+
+    if not config.use_wandb or wandb.run is None:
+        return results
+
+    log_dict: dict[str, float] = {
+        "token_metrics/kl_mean": results.kl_mean,
+        "token_metrics/top1_agreement": results.top1_agreement,
+        "token_metrics/kl_mean_interesting": results.kl_mean_interesting,
+        "token_metrics/top1_agreement_interesting": results.top1_agreement_interesting,
+        "token_metrics/n_tokens": float(results.n_tokens),
+        "token_metrics/n_interesting": float(results.n_interesting),
+    }
+    for bm, bm_metrics in results.per_benchmark.items():
+        log_dict[f"token_metrics/{bm}/kl_mean"] = bm_metrics.kl_mean
+        log_dict[f"token_metrics/{bm}/top1_agreement"] = bm_metrics.top1_agreement
+        log_dict[f"token_metrics/{bm}/kl_mean_interesting"] = bm_metrics.kl_mean_interesting
+        log_dict[f"token_metrics/{bm}/top1_agreement_interesting"] = bm_metrics.top1_agreement_interesting
+
+    wandb.log(log_dict, step=global_step)
+    return results
+
+
 def save_checkpoint(model, tokenizer, config: ExperimentConfig, output_dir):
     """Save full model checkpoint (no conversion needed)."""
     os.makedirs(output_dir, exist_ok=True)
@@ -992,6 +1080,27 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
     logger.info(f"  - Total steps: {total_steps}")
     logger.info(f"  - Warmup steps: {warmup_steps}")
 
+    # Pre-load token metrics examples (once, reused across epochs/evals)
+    periodic_token_examples: list | None = None
+    final_token_examples: list | None = None
+    if ref_model is not None and not config.debug_mode:
+        needs_periodic = config.token_metrics_n_samples > 0
+        needs_final = config.token_metrics_final_n_samples > 0
+        if needs_periodic or needs_final:
+            from analysis.evals.compute_token_metrics_onpolicy import sample_deduplicated
+            all_token_examples = _load_token_metrics_all_examples(config, tokenizer)
+            if all_token_examples is not None:
+                if needs_periodic:
+                    periodic_token_examples = sample_deduplicated(
+                        all_token_examples, config.token_metrics_n_samples, config.seed,
+                    )
+                    logger.info(f"Token metrics: {len(periodic_token_examples)} examples for periodic eval (alongside validation every {config.val_frequency} steps)")
+                if needs_final:
+                    final_token_examples = sample_deduplicated(
+                        all_token_examples, config.token_metrics_final_n_samples, config.seed,
+                    )
+                    logger.info(f"Token metrics: {len(final_token_examples)} examples for final post-training eval")
+
     # Training loop
     current_step = 0
     total_samples_seen = 0
@@ -1007,6 +1116,7 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
             config,
             epoch, current_step, total_steps, total_samples_seen,
             val_dataloader=val_dataloader,
+            token_metrics_examples=periodic_token_examples,
         )
 
         # Save checkpoint at end of epoch (overwrites previous latest)
@@ -1015,6 +1125,23 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
             save_latest_checkpoint(model, tokenizer, config, config.output_dir, current_step)
 
     logger.info("Training complete!")
+
+    # Final post-training token metrics eval
+    if final_token_examples is not None and ref_model is not None:
+        logger.info("Running final post-training token metrics eval...")
+        final_results = _run_and_log_token_metrics(
+            model, ref_model, tokenizer, final_token_examples, config, current_step,
+        )
+        if final_results is not None and config.use_wandb and wandb.run is not None:
+            wandb.run.summary["token_metrics_final/kl_mean"] = final_results.kl_mean
+            wandb.run.summary["token_metrics_final/top1_agreement"] = final_results.top1_agreement
+            wandb.run.summary["token_metrics_final/kl_mean_interesting"] = final_results.kl_mean_interesting
+            wandb.run.summary["token_metrics_final/top1_agreement_interesting"] = final_results.top1_agreement_interesting
+            for bm, bm_metrics in final_results.per_benchmark.items():
+                wandb.run.summary[f"token_metrics_final/{bm}/kl_mean"] = bm_metrics.kl_mean
+                wandb.run.summary[f"token_metrics_final/{bm}/top1_agreement"] = bm_metrics.top1_agreement
+                wandb.run.summary[f"token_metrics_final/{bm}/kl_mean_interesting"] = bm_metrics.kl_mean_interesting
+                wandb.run.summary[f"token_metrics_final/{bm}/top1_agreement_interesting"] = bm_metrics.top1_agreement_interesting
 
     # Always save final checkpoint
     save_checkpoint(model, tokenizer, config, config.output_dir)
@@ -1026,9 +1153,9 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         logger.info(f"Pushing model to Hub: {hub_repo_id}")
         wandb_url = wandb.run.url if (config.use_wandb and wandb.run is not None) else None
         try:
-            push_to_hub(model, config, hub_repo_id, wandb_url=wandb_url)
+            push_to_hub(model, tokenizer, config, hub_repo_id, wandb_url=wandb_url)
         except Exception as e:
-            logger.exception(f"Failed to push model to Hub: {e}", exec_info=True, stack_info=True)
+            logger.exception(f"Failed to push model to Hub: {e}", exc_info=True, stack_info=True)
 
         if config.use_wandb and wandb.run is not None:
             wandb.run.summary["hf_model_url"] = f"https://huggingface.co/{hub_repo_id}"

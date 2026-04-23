@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ── Usage ────────────────────────────────────────────────────────────
-#   Run ./slurm_batch.sh, or sbatch with env vars set manually.
+#   Run ./sh/slurm_batch_train.sh, or sbatch with env vars set manually.
 #
 # Logs: logs/train/<job_id>_<timestamp>.{out,err}
 # ─────────────────────────────────────────────────────────────────────

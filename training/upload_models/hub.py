@@ -18,17 +18,16 @@ MAX_REPO_NAME_LEN = 96
 @log_group("Push to Hub")
 def push_to_hub(
     model,
+    tokenizer,
     config: "ExperimentConfig",
     repo_id: str,
     wandb_url: str | None = None,
 ):
-    """Push trained model to Hugging Face Hub with metadata.
-
-    The tokenizer is not pushed — it comes from the base or reference model
-    and is referenced in the model card.
+    """Push trained model and tokenizer to Hugging Face Hub with metadata.
 
     Args:
         model: The trained model.
+        tokenizer: The tokenizer used during training.
         config: ExperimentConfig used for training.
         repo_id: Full repo ID (e.g., "nathu0/2026.TA.gemma2_2b_...").
         wandb_url: Optional W&B run URL to include in the model card.
@@ -38,8 +37,9 @@ def push_to_hub(
     logger.info(f"Creating repo {repo_id}...")
     api.create_repo(repo_id, exist_ok=True)
 
-    logger.info("Pushing model weights and config...")
+    logger.info("Pushing model weights, config, and tokenizer...")
     model.push_to_hub(repo_id, verbose=True)
+    tokenizer.push_to_hub(repo_id)
 
     logger.info("Uploading training config YAML...")
     _upload_training_config(api, config, repo_id)
