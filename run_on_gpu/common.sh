@@ -4,7 +4,7 @@
 #
 # Usage (in a job script):
 #   SLURM_LOG_DIR="logs/train"   # subfolder within logs/
-#   source slurm/common.sh
+#   source run_on_gpu/common.sh
 #   run uv run python -m training.train --config training/configs/gemma2_2b.yaml "$@"
 #
 # Provides:
@@ -12,9 +12,9 @@
 #   - uv sync
 #   - run() function that executes a command with set -xe
 
-# Assert that we're in the root of the repo (where slurm/ is) for consistent log paths and uv sync
-if [ ! -d "slurm" ]; then
-    echo "ERROR: common.sh must be sourced from the root of the repository (the parent folder of slurm/), so that log paths, Python calls and other run commands are consistent" >&2
+# Assert that we're in the root of the repo (where run_on_gpu/ is) for consistent log paths and uv sync
+if [ ! -d "run_on_gpu" ]; then
+    echo "ERROR: common.sh must be sourced from the root of the repository (the parent folder of run_on_gpu/), so that log paths, Python calls and other run commands are consistent" >&2
     exit 1
 fi
 
@@ -25,10 +25,9 @@ if [ -z "$SLURM_LOG_DIR" ]; then
 fi
 
 # ── Logging ───────────────────────────────────────────────────────────
-mkdir -p "$SLURM_LOG_DIR"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOGFILE="${SLURM_LOG_DIR}/${SLURM_JOB_ID:-local}_${TIMESTAMP}"
-exec > >(tee "${LOGFILE}.out") 2> >(tee "${LOGFILE}.err" >&2)
+LOG_DIR="$SLURM_LOG_DIR"
+LOG_PREFIX="${SLURM_JOB_ID:-local}"
+source sh/common_logging.sh
 
 # ── Setup ─────────────────────────────────────────────────────────────
 echo "[Slurm] Setting up (uv sync)..."

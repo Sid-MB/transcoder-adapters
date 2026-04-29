@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+# If you run with SBATCH_WAIT=1, then sbatch will wait until the job finishes before returning.
+WAIT_ARGS=()
+if [[ "${SBATCH_WAIT:-}" == "1" ]]; then
+  WAIT_ARGS+=(--wait)
+fi
+
+exec sbatch \
+  --account=nlp \
+  --mail-user="$USER@cs.stanford.edu" \
+  --mail-type=END,FAIL \
+  "${WAIT_ARGS[@]}" \
+  "$@"

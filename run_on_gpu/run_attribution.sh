@@ -9,7 +9,7 @@
 #     --max_feature_nodes 64 \
 #     --batch_size 4
 #
-#   Or: sbatch --export=ALL,HF_TOKEN=... ./slurm/run_attribution.sh [args]
+#   Or: sbatch --export=ALL,HF_TOKEN=... ./run_on_gpu/run_attribution.sh [args]
 #
 # Logs: logs/attribution/<job_id>_<timestamp>.{out,err}
 #
@@ -18,6 +18,6 @@
 # ─────────────────────────────────────────────────────────────────────
 
 SLURM_LOG_DIR="logs/attribution"
-source slurm/common.sh
+source run_on_gpu/common.sh
 
 run uv run --extra viz python -m analysis.attribution.run_attribution "$@"

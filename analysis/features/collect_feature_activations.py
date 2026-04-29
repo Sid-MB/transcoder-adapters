@@ -744,8 +744,8 @@ def main():
     if args.output_dir is None:
         from helpers.paths import PRODUCTS_DIR, SLURM_JOB_ID
         from datetime import datetime
-        # Truncate model path: take last component, cap at 80 chars
-        model_slug = args.model_path.rstrip("/").split("/")[-1][:80]
+        # Truncate model path: take last component
+        model_slug = args.model_path.rstrip("/").split("/")[-1]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.output_dir = str(PRODUCTS_DIR / "feature_data" / f"{model_slug}_{timestamp}_{SLURM_JOB_ID}")
 

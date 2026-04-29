@@ -85,6 +85,27 @@
       border-radius: 6px;
       font-size: 13px;
     }
+    textarea {
+      width: 100%;
+      min-height: 96px;
+      resize: vertical;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font: inherit;
+      font-size: 13px;
+    }
+    button {
+      background: var(--bar-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
     input[type="search"] { min-width: 180px; flex: 1; }
     table {
       width: 100%;
@@ -130,6 +151,25 @@
       background: var(--bar-bg);
       font-size: 12px;
       margin-right: 6px;
+      margin-bottom: 4px;
+    }
+    .annotation-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      margin: 12px 0;
+    }
+    .annotation-row {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .tag-cell {
+      max-width: 180px;
+      white-space: normal;
     }
     .logit-grid {
       display: grid;
@@ -243,6 +283,9 @@
       <div class="overview" id="overview"></div>
       <div class="controls">
         <input type="search" id="q" placeholder="Search layer, feature, cantor…" />
+        <label style="font-size:12px;color:var(--muted)">Tag
+          <select id="tag-filter"><option value="">All</option></select>
+        </label>
         <label style="font-size:12px;color:var(--muted)">Layer <input type="number" id="layer-min" style="width:56px" placeholder="min" /> – <input type="number" id="layer-max" style="width:56px" placeholder="max" /></label>
         <label style="font-size:12px;color:var(--muted)">Sort
           <select id="sort-key"></select>
@@ -282,6 +325,7 @@
   let domainKeys = [];
   let rows = [];
   let filtered = [];
+  let annotations = {};
   let sortKey = 'freq';
   let sortDir = 'desc';
   let page = 0;
@@ -310,6 +354,32 @@
       ...f,
       _skew: domainSkew(f),
     }));
+  }
+
+  function annotationFor(cantorId) {
+    return annotations[String(cantorId)] || { tags: [], notes: '' };
+  }
+
+  function allTags() {
+    const tags = new Set();
+    for (const ann of Object.values(annotations)) {
+      for (const tag of (ann.tags || [])) tags.add(tag);
+    }
+    return [...tags].sort();
+  }
+
+  function renderTagFilter() {
+    const current = el('tag-filter').value;
+    const options = ['<option value="">All</option>'].concat(
+      allTags().map((tag) => `<option value="${escapeHtml(tag)}">${escapeHtml(tag)}</option>`)
+    );
+    el('tag-filter').innerHTML = options.join('');
+    el('tag-filter').value = allTags().includes(current) ? current : '';
+  }
+
+  function tagsHtml(tags) {
+    if (!tags || tags.length === 0) return '<span class="meta-mini">–</span>';
+    return tags.map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`).join('');
   }
 
   function renderOverview(meta) {
@@ -342,7 +412,7 @@
 
   function thead() {
     const tr = el('thead-row');
-    let h = '<th>L</th><th>F</th><th>Cantor</th><th>Freq</th><th>Skew</th>';
+    let h = '<th>L</th><th>F</th><th>Cantor</th><th>Tags</th><th>Freq</th><th>Skew</th>';
     for (const dk of domainKeys) {
       h += `<th title="${escapeHtml(dk)}">${escapeHtml(dk.length > 10 ? dk.slice(0, 9) + '…' : dk)}</th>`;
     }
@@ -371,6 +441,7 @@
 
   function applyFilter() {
     const q = el('q').value.trim().toLowerCase();
+    const tagFilter = el('tag-filter').value;
     const lmin = el('layer-min').value;
     const lmax = el('layer-max').value;
     sortKey = el('sort-key').value;
@@ -379,8 +450,10 @@
     filtered = rows.filter((f) => {
       if (lmin !== '' && f.layer < Number(lmin)) return false;
       if (lmax !== '' && f.layer > Number(lmax)) return false;
+      const ann = annotationFor(f.cantor_id);
+      if (tagFilter && !(ann.tags || []).includes(tagFilter)) return false;
       if (!q) return true;
-      const hay = `${f.layer} ${f.feature} ${f.cantor_id}`.toLowerCase();
+      const hay = `${f.layer} ${f.feature} ${f.cantor_id} ${(ann.tags || []).join(' ')} ${ann.notes || ''}`.toLowerCase();
       return hay.includes(q);
     });
     filtered.sort(cmp);
@@ -402,6 +475,7 @@
         <td class="num">${f.layer}</td>
         <td class="num">${f.feature}</td>
         <td class="num">${f.cantor_id}</td>
+        <td class="tag-cell">${tagsHtml(annotationFor(f.cantor_id).tags || [])}</td>
         <td class="num">${f.activation_freq != null ? f.activation_freq.toExponential(3) : ''}</td>
         <td class="num">${f._skew.toFixed(3)}</td>
         ${dens}
@@ -525,7 +599,18 @@
     }
 
     let h = '';
+    const ann = annotationFor(cantorId);
     h += `<p><span class="pill">layer ${feat.layer}</span><span class="pill">feature ${feat.feature}</span><span class="pill">freq ${feat.activation_frequency != null ? feat.activation_frequency.toExponential(4) : '–'}</span></p>`;
+    h += `<div class="annotation-box">
+      <h2 style="margin-top:0">Annotations</h2>
+      <div id="ann-tags-view">${tagsHtml(ann.tags || [])}</div>
+      <div class="annotation-row">
+        <input type="text" id="ann-tags" value="${escapeHtml((ann.tags || []).join(', '))}" placeholder="assistant_response, assistant_token" />
+        <button type="button" id="ann-save">Save</button>
+      </div>
+      <textarea id="ann-notes" placeholder="Notes">${escapeHtml(ann.notes || '')}</textarea>
+      <div class="meta-mini" id="ann-status">Tags are comma-separated and saved to the annotations JSON file.</div>
+    </div>`;
 
     if (metaRow) {
       const dd = metaRow.domain_density || {};
@@ -568,6 +653,30 @@
 
     detail.innerHTML = h;
 
+    el('ann-save').onclick = async () => {
+      const tags = el('ann-tags').value.split(',').map((x) => x.trim()).filter(Boolean);
+      const notes = el('ann-notes').value;
+      el('ann-status').textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/annotations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cantor_id: cantorId, tags, notes }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const payload = await res.json();
+        annotations[String(cantorId)] = payload.annotation;
+        el('ann-tags-view').innerHTML = tagsHtml(payload.annotation.tags || []);
+        el('ann-status').textContent = 'Saved.';
+        renderTagFilter();
+        applyFilter();
+        selectedCantor = cantorId;
+        renderTable();
+      } catch (e) {
+        el('ann-status').innerHTML = `<span class="err">Save failed: ${escapeHtml(e.message)}</span>`;
+      }
+    };
+
     const qtabs = el('qtabs');
     const qbody = el('qbody');
     let qi = 0;
@@ -600,11 +709,15 @@
 
   async function boot() {
     el('src-hint').textContent = '(metadata from server)';
-    const res = await fetch('/api/metadata');
+    const [res, annRes] = await Promise.all([
+      fetch('/api/metadata'),
+      fetch('/api/annotations'),
+    ]);
     if (!res.ok) {
       el('overview').innerHTML = `<p class="err">Could not load metadata: HTTP ${res.status}</p>`;
       return;
     }
+    if (annRes.ok) annotations = await annRes.json();
     rawMeta = await res.json();
     if (rawMeta.error) {
       el('overview').innerHTML = `<p class="err">${escapeHtml(rawMeta.error)}</p>`;
@@ -612,6 +725,7 @@
     }
     rows = buildRows(rawMeta);
     renderOverview(rawMeta);
+    renderTagFilter();
     thead();
 
     el('sort-key').innerHTML = [
@@ -623,6 +737,7 @@
     ].join('');
 
     el('q').oninput = applyFilter;
+    el('tag-filter').onchange = applyFilter;
     el('layer-min').oninput = applyFilter;
     el('layer-max').oninput = applyFilter;
     el('sort-key').onchange = applyFilter;

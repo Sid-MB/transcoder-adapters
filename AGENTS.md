@@ -11,3 +11,6 @@ logger.info("message")
 logger.warning("message")
 logger.error("message")
 ```
+
+## Tools
+Use `uv run python` for Python.

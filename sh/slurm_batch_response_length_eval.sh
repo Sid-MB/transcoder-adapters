@@ -24,14 +24,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-sbatch \
-  --account=nlp \
+./sh/sbatch \
   --gres=gpu:1 \
   --constraint=48G \
   --mem=128G \
   --partition=jag-hi \
   --job-name="$JOB_NAME" \
   --time=1-00:00:00 \
-  --mail-user="$USER@cs.stanford.edu" \
-  --mail-type=END,FAIL \
-  ./slurm/run_response_length_eval.sh "${OTHER_ARGS[@]}"
+  ./run_on_gpu/run_response_length_eval.sh "${OTHER_ARGS[@]}"
