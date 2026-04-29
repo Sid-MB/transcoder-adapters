@@ -12,7 +12,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from torch.optim import AdamW
-from transformers import AutoTokenizer, AutoModelForCausalLM, get_cosine_schedule_with_warmup
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, get_cosine_schedule_with_warmup
 from tqdm import tqdm
 import argparse
 import wandb
@@ -35,6 +35,30 @@ def move_batch_to(device, batch):
         else:
             out[k] = v
     return out
+
+
+def _align_config_token_ids_with_tokenizer(hf_config, tokenizer) -> None:
+    """Keep saved model config token IDs consistent with the tokenizer files."""
+    for config_attr, tokenizer_attr in (
+        ("bos_token_id", "bos_token_id"),
+        ("eos_token_id", "eos_token_id"),
+        ("pad_token_id", "pad_token_id"),
+    ):
+        token_id = getattr(tokenizer, tokenizer_attr, None)
+        if token_id is not None:
+            setattr(hf_config, config_attr, token_id)
+
+
+def _copy_generation_config_from(source: str, model) -> None:
+    """Copy generation metadata from the tokenizer/reference model source if present."""
+    try:
+        model.generation_config = GenerationConfig.from_pretrained(source)
+        for attr in ("bos_token_id", "eos_token_id", "pad_token_id"):
+            token_id = getattr(model.generation_config, attr, None)
+            if token_id is not None:
+                setattr(model.config, attr, token_id)
+    except OSError:
+        logger.info(f"No generation_config found at {source}; using model defaults")
 
 
 def setup_models_bridging(config: ExperimentConfig):
@@ -76,6 +100,7 @@ def setup_models_bridging(config: ExperimentConfig):
         transcoder_n_features=tc_config.n_features,
         transcoder_dec_bias=tc_config.dec_bias,
     )
+    _align_config_token_ids_with_tokenizer(hf_config, tokenizer)
 
     # Load transcoder model. from_pretrained loads standard weights from the
     # checkpoint; transcoder_enc/dec are not in the checkpoint and stay at __init__
@@ -91,6 +116,7 @@ def setup_models_bridging(config: ExperimentConfig):
             device_map="auto",
             trust_remote_code=True,
         )
+        _copy_generation_config_from(bridging_config.reference_model_path, model)
         logger.info(f"Swapping in base model MLP weights from: {config.model_name}")
         base_model = AutoModelForCausalLM.from_pretrained(
             config.model_name,
@@ -116,6 +142,7 @@ def setup_models_bridging(config: ExperimentConfig):
             device_map="auto",
             trust_remote_code=True,
         )
+        _copy_generation_config_from(tokenizer_path, model)
 
     # Re-initialize transcoder weights. from_pretrained with device_map="auto" creates
     # meta tensors first, so our __init__ zero-initialization of dec is overwritten by
@@ -182,6 +209,7 @@ def setup_models_direct(config: ExperimentConfig):
         transcoder_n_features=tc_config.n_features,
         transcoder_dec_bias=tc_config.dec_bias,
     )
+    _align_config_token_ids_with_tokenizer(hf_config, tokenizer)
     logger.info(f"Loading base model: {config.model_name}")
     model = ModelWithTranscoder.from_pretrained(
         config.model_name,

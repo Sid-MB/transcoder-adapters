@@ -785,7 +785,13 @@ def main():
     loaded_sources: list[tuple[Any, list[dict] | None]] = []
     for domain_label, path in val_data_sources:
         logger.info(f"  {path!r} (domain={domain_label!r})")
-        dataset, examples_meta = load_val_data(path, tokenizer, args.max_length, domain=domain_label)
+        dataset, examples_meta = load_val_data(
+            path,
+            tokenizer,
+            args.max_length,
+            domain=domain_label,
+            model_type=model_type,
+        )
         loaded_sources.append((dataset, examples_meta))
 
     total_samples = sum(

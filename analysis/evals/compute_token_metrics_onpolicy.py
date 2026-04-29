@@ -253,11 +253,11 @@ def load_lmsys_examples(tokenizer, max_examples: int | None = None) -> list[dict
             if not prefix_messages:
                 continue
 
-            # Tokenize prefix with generation prompt to get the prompt boundary
-            prompt_ids = tokenizer.apply_chat_template(
-                prefix_messages, tokenize=True, add_generation_prompt=True,
+            prompt_ids, response_ids = tokenize_chat_prompt_response(
+                tokenizer,
+                prefix_messages,
+                msg["content"],
             )
-            response_ids = tokenizer.encode(msg["content"], add_special_tokens=False)
 
             examples.append({
                 'prompt_ids': prompt_ids,
@@ -314,6 +314,38 @@ def sample_deduplicated(examples: list, n_samples: int, seed: int):
 # ============================================================================
 # TOKENIZATION
 # ============================================================================
+def tokenize_chat_prompt_response(
+    tokenizer,
+    prompt_messages: list[dict],
+    response: str,
+) -> tuple[list[int], list[int]]:
+    """Tokenize a chat prompt and assistant response, including stop markers.
+
+    The response span is computed from the tokenizer's chat template so model
+    family-specific assistant end markers (for example Gemma's <end_of_turn>)
+    are included in the evaluated response tokens.
+    """
+    prompt_ids = tokenizer.apply_chat_template(
+        prompt_messages,
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    full_ids = tokenizer.apply_chat_template(
+        [*prompt_messages, {"role": "assistant", "content": response}],
+        tokenize=True,
+        add_generation_prompt=False,
+    )
+
+    if full_ids[:len(prompt_ids)] == prompt_ids:
+        return list(prompt_ids), list(full_ids[len(prompt_ids):])
+
+    logger.warning(
+        "Chat template prefix mismatch while tokenizing response; falling back "
+        "to content-only response tokens without template stop markers."
+    )
+    return list(prompt_ids), tokenizer.encode(response, add_special_tokens=False)
+
+
 def tokenize_example(ex: dict, tokenizer, max_length: int):
     """Tokenize a single example into input_ids and labels.
 
@@ -326,12 +358,11 @@ def tokenize_example(ex: dict, tokenizer, max_length: int):
         response_ids = ex['response_ids']
     else:
         messages = [{"role": "user", "content": ex['prompt']}]
-        prompt_ids = tokenizer.apply_chat_template(
+        prompt_ids, response_ids = tokenize_chat_prompt_response(
+            tokenizer,
             messages,
-            tokenize=True,
-            add_generation_prompt=True,
+            ex['response'],
         )
-        response_ids = tokenizer.encode(ex['response'], add_special_tokens=False)
 
     input_ids = prompt_ids + response_ids
 
