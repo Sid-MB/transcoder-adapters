@@ -675,11 +675,6 @@ def main():
                         help="Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)")
 
     # Optional args
-<<<<<<< HEAD
-=======
-    parser.add_argument("--tokenizer", type=str, default=None,
-                        help="Tokenizer name/path (default: load from model_path)")
->>>>>>> a7effef (Clean up feature collection script: load tokenizer from checkpoint, add data_format arg)
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Max samples to process per data source (default: all)")
     parser.add_argument("--shuffle", action="store_true",
@@ -777,7 +772,6 @@ def main():
     model_type = model.config.model_type
     logger.info(f"Model: {n_layers} layers, {n_features} features per layer, arch={model_type}")
 
-<<<<<<< HEAD
     # Detect special tokens for this architecture/tokenizer
     special_tokens = detect_special_tokens(tokenizer, model_type=model_type)
     has_thinking = special_tokens.think_start is not None and special_tokens.think_end is not None
