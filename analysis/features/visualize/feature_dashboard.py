@@ -215,7 +215,7 @@ def main() -> None:
         "--annotations_file",
         type=str,
         default=None,
-        help="JSON file for persistent feature annotations. Defaults to data_dir/feature_annotations.json",
+        help="JSON file for persistent feature annotations. Defaults to [data_dir]/feature_annotations.json",
     )
     parser.add_argument(
         "--no-open",

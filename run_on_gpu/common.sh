@@ -25,10 +25,9 @@ if [ -z "$SLURM_LOG_DIR" ]; then
 fi
 
 # ── Logging ───────────────────────────────────────────────────────────
-mkdir -p "$SLURM_LOG_DIR"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOGFILE="${SLURM_LOG_DIR}/${SLURM_JOB_ID:-local}_${TIMESTAMP}"
-exec > >(tee "${LOGFILE}.out") 2> >(tee "${LOGFILE}.err" >&2)
+LOG_DIR="$SLURM_LOG_DIR"
+LOG_PREFIX="${SLURM_JOB_ID:-local}"
+source sh/common_logging.sh
 
 # ── Setup ─────────────────────────────────────────────────────────────
 echo "[Slurm] Setting up (uv sync)..."
