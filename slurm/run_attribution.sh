@@ -12,9 +12,12 @@
 #   Or: sbatch --export=ALL,HF_TOKEN=... ./slurm/run_attribution.sh [args]
 #
 # Logs: logs/attribution/<job_id>_<timestamp>.{out,err}
+#
+# Attribution uses circuit-tracer, which is declared in the project's "viz"
+# optional dependency group, so this runner uses `uv run --extra viz`.
 # ─────────────────────────────────────────────────────────────────────
 
 SLURM_LOG_DIR="logs/attribution"
 source slurm/common.sh
 
-run uv run python -m analysis.attribution.run_attribution "$@"
+run uv run --extra viz python -m analysis.attribution.run_attribution "$@"
