@@ -1,0 +1,4 @@
+interface:
+  display_name: "Slurm Run Workflow"
+  short_description: "Submit and inspect repo Slurm jobs"
+  default_prompt: "Use $slurm-run-workflow to submit a repo Slurm job and inspect its logs."
