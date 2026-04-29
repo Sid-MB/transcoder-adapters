@@ -12,6 +12,9 @@ from transformers import PreTrainedTokenizerBase
 
 TokenPattern = tuple[int, ...]
 TokenPatterns = tuple[TokenPattern, ...]
+TokenSpan = tuple[int, int]
+TokenMarkerValue = int | list[int] | list[TokenSpan] | None
+TokenMarkers = dict[str, TokenMarkerValue]
 
 
 @dataclass
@@ -57,6 +60,9 @@ def _safe_encode_patterns(
     texts = [text_or_texts] if isinstance(text_or_texts, str) else text_or_texts
     patterns: list[TokenPattern] = []
     for text in texts:
+        if text.strip().lower() in {"user", "model", "assistant"}:
+            continue
+
         ids = tokenizer.encode(text, add_special_tokens=False)
         if ids and not (len(ids) == 1 and ids[0] == tokenizer.unk_token_id):
             patterns.append(tuple(ids))
@@ -75,13 +81,16 @@ def _single_pattern(token_id: int | None) -> TokenPatterns | None:
     return ((token_id,),)
 
 
-def _patterns_match(tokens: list[int], position: int, patterns: TokenPatterns) -> bool:
-    """Return True if any marker pattern starts at ``position``."""
+def _matched_pattern_length(
+    tokens: list[int], position: int, patterns: TokenPatterns
+) -> int | None:
+    """Return the longest marker pattern length matching at ``position``."""
+    matched_lengths = []
     for pattern in patterns:
         end = position + len(pattern)
         if end <= len(tokens) and tuple(tokens[position:end]) == pattern:
-            return True
-    return False
+            matched_lengths.append(len(pattern))
+    return max(matched_lengths) if matched_lengths else None
 
 
 # Architecture-specific token detection strategies
@@ -163,34 +172,58 @@ def detect_special_tokens(
     return result
 
 
-def find_token_positions(tokens: list[int], special: SpecialTokenIds) -> dict[str, int | None]:
-    """Find first positions of special tokens in a sequence."""
+def find_token_positions(tokens: list[int], special: SpecialTokenIds) -> TokenMarkers:
+    """Find first positions, all start positions, and spans of special tokens."""
     patterns_by_name = special.as_dict()
-    positions: dict[str, int | None] = {k: None for k in patterns_by_name}
+    positions: TokenMarkers = {k: None for k in patterns_by_name}
     all_positions: dict[str, list[int]] = {k: [] for k in patterns_by_name}
+    all_spans: dict[str, list[TokenSpan]] = {k: [] for k in patterns_by_name}
 
     for i in range(len(tokens)):
-        matched = [
-            k for k, patterns in patterns_by_name.items()
-            if patterns_by_name[k] is not None and _patterns_match(tokens, i, patterns_by_name[k])
-        ]
-        for k in matched:
+        for k, patterns in patterns_by_name.items():
+            if patterns is None:
+                continue
+            matched_length = _matched_pattern_length(tokens, i, patterns)
+            if matched_length is None:
+                continue
             if positions[k] is None:
                 positions[k] = i
             all_positions[k].append(i)
+            all_spans[k].append((i, i + matched_length))
 
     for key, values in all_positions.items():
-        positions[f"{key}_positions"] = values  # type: ignore[assignment]
+        positions[f"{key}_positions"] = values
+    for key, values in all_spans.items():
+        positions[f"{key}_spans"] = values
 
     return positions
 
 
-def _marker_positions(markers: dict[str, int | None], name: str) -> list[int]:
+def _marker_positions(markers: TokenMarkers, name: str) -> list[int]:
     positions = markers.get(f"{name}_positions")
     if isinstance(positions, list):
-        return positions
+        return [p for p in positions if isinstance(p, int)]
     first = markers.get(name)
     return [first] if isinstance(first, int) else []
+
+
+def _marker_spans(markers: TokenMarkers, name: str) -> list[TokenSpan]:
+    spans = markers.get(f"{name}_spans")
+    if isinstance(spans, list):
+        return [
+            span for span in spans
+            if (
+                isinstance(span, tuple)
+                and len(span) == 2
+                and isinstance(span[0], int)
+                and isinstance(span[1], int)
+            )
+        ]
+    return [(position, position + 1) for position in _marker_positions(markers, name)]
+
+
+def _in_marker_span(position: int, spans: list[TokenSpan]) -> bool:
+    return any(start <= position < end for start, end in spans)
 
 
 def _last_before(positions: list[int], position: int) -> int | None:
@@ -198,7 +231,7 @@ def _last_before(positions: list[int], position: int) -> int | None:
     return max(prior) if prior else None
 
 
-def classify_position(position: int, markers: dict[str, int | None]) -> tuple[str, float | None]:
+def classify_position(position: int, markers: TokenMarkers) -> tuple[str, float | None]:
     """Classify which region a token position belongs to.
 
     Returns: (region_name, thinking_position_or_none)
@@ -206,22 +239,26 @@ def classify_position(position: int, markers: dict[str, int | None]) -> tuple[st
         - Regions: bos, user_marker, assistant_marker, think_start, think_end,
                    question, thinking, answer, unknown
     """
-    # Single-token special markers
+    # Special marker spans. Gemma role markers span multiple tokens, e.g.
+    # <start_of_turn>, role text, and sometimes the following newline.
     for marker_name in ('bos', 'user_marker', 'assistant_marker', 'think_start', 'think_end'):
-        if position in _marker_positions(markers, marker_name):
+        if _in_marker_span(position, _marker_spans(markers, marker_name)):
             return marker_name, None
 
     user_positions = _marker_positions(markers, 'user_marker')
     assistant_positions = _marker_positions(markers, 'assistant_marker')
-    think_start_positions = _marker_positions(markers, 'think_start')
-    think_end_positions = _marker_positions(markers, 'think_end')
+    think_start_spans = _marker_spans(markers, 'think_start')
+    think_end_spans = _marker_spans(markers, 'think_end')
 
     # Inside thinking tags. Pair each start with the first following end.
-    for think_start_pos in think_start_positions:
-        think_end_pos = next((p for p in think_end_positions if p > think_start_pos), None)
-        if think_end_pos is not None and think_start_pos < position < think_end_pos:
-            thinking_content_start = think_start_pos + 1
-            thinking_content_end = think_end_pos - 1
+    for think_start_span in think_start_spans:
+        think_end_span = next(
+            (span for span in think_end_spans if span[0] > think_start_span[0]),
+            None,
+        )
+        if think_end_span is not None and think_start_span[1] <= position < think_end_span[0]:
+            thinking_content_start = think_start_span[1]
+            thinking_content_end = think_end_span[0] - 1
             thinking_length = thinking_content_end - thinking_content_start + 1
             if thinking_length > 0:
                 relative_pos = (position - thinking_content_start) / thinking_length
@@ -244,7 +281,7 @@ def classify_position(position: int, markers: dict[str, int | None]) -> tuple[st
 
 
 def precompute_regions(
-    tokens: list[int], markers: dict[str, int | None]
+    tokens: list[int], markers: TokenMarkers
 ) -> tuple[list[str], list[float | None]]:
     """Precompute region classification for all positions in a sequence."""
     regions = []
