@@ -53,7 +53,10 @@ uv run python -m analysis.features.annotate_assistant_response_features --data_d
 ```
 
 It tags features that concentrate on `assistant_marker` or `answer` regions and
-merges them into `feature_annotations.json`. The dashboard loads that file,
+stores them in `feature_annotations.json`. By default, if that file already
+exists, the annotator archives it under `<data_dir>/archive/` with a timestamped
+name before writing fresh annotations. Pass `--merge` to merge newly
+detected tags into the existing annotations file instead. The dashboard loads that file,
 lets you filter by tag, and lets you edit tags and notes from the feature detail
 pane. Manual edits are saved back to the same JSON file.
 

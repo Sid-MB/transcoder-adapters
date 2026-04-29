@@ -3,8 +3,10 @@ Annotate features that concentrate around the assistant response boundary.
 
 This is a lightweight post-processing step for ``collect_feature_activations.py``
 outputs. It reads ``feature_metadata.json`` only, scores existing feature stats,
-and merges tags into a persistent ``feature_annotations.json`` file consumable by
-the local dashboard.
+and writes a persistent ``feature_annotations.json`` file consumable by the local
+dashboard. By default, an existing annotations file is moved into an ``archive/``
+subdirectory before fresh annotations are written. Pass ``--merge`` to merge new
+tags into an existing annotations file instead.
 
 Example:
     python -m analysis.features.annotate_assistant_response_features \
@@ -15,8 +17,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from helpers.log import logger, setup_logging
 
 ASSISTANT_MARKER_REGION = "assistant_marker"
 ANSWER_REGION = "answer"
@@ -31,9 +37,22 @@ def _save_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
+        json.dump(data, f, separators=(",", ":"))
         f.write("\n")
     tmp_path.replace(path)
+
+
+def _archive_existing_annotations(path: Path) -> Path:
+    archive_dir = path.parent / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_path = archive_dir / f"{path.stem}_{timestamp}{path.suffix}"
+    suffix = 1
+    while archive_path.exists():
+        archive_path = archive_dir / f"{path.stem}_{timestamp}_{suffix}{path.suffix}"
+        suffix += 1
+    shutil.move(str(path), str(archive_path))
+    return archive_path
 
 
 def _region_fraction(feature: dict, region: str) -> float:
@@ -167,6 +186,7 @@ def annotate_features(
 
 
 def main() -> None:
+    setup_logging()
     parser = argparse.ArgumentParser(
         description="Find and persist annotations for assistant-response features",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -176,7 +196,11 @@ def main() -> None:
         "--annotations_file",
         type=Path,
         default=None,
-        help="Defaults to data_dir/feature_annotations.json",
+        help=(
+            "JSON file to write. Defaults to <data_dir>/feature_annotations.json. "
+            "Unless --merge is passed, an existing file is archived next to itself "
+            "under archive/ before the new file is written."
+        ),
     )
     parser.add_argument(
         "--assistant_fraction_threshold",
@@ -196,13 +220,32 @@ def main() -> None:
         default=2.0,
         help="Minimum assistant-region density lift over non-assistant regions",
     )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "Preserve the existing annotations file and merge newly detected tags "
+            "into it. By default, an existing annotations file is archived to "
+            "<annotations_dir>/archive/<stem>_<timestamp><suffix> and replaced with "
+            "a fresh file so threshold changes produce a clean result."
+        ),
+    )
     parser.add_argument("--top_k", type=int, default=25, help="Number of hits to print")
     args = parser.parse_args()
 
     metadata_path = args.data_dir / "feature_metadata.json"
     annotations_path = args.annotations_file or (args.data_dir / "feature_annotations.json")
     metadata = _load_json(metadata_path)
-    annotations = _load_json(annotations_path) if annotations_path.is_file() else {}
+    if not args.merge and annotations_path.is_file():
+        archive_path = _archive_existing_annotations(annotations_path)
+        logger.info(
+            "Overwriting annotations: archived existing %s to %s",
+            annotations_path,
+            archive_path,
+        )
+        annotations = {}
+    else:
+        annotations = _load_json(annotations_path) if annotations_path.is_file() else {}
     annotations, hits = annotate_features(
         metadata,
         annotations,
