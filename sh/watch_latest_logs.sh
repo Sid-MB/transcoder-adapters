@@ -2,7 +2,7 @@
 
 LOG_DIR="logs"
 
-# 1. Find the most recent .out file (handles both <digits>.out and <jobid>_<timestamp>.out)
+# 1. Find the most recent .out file (handles both <digits>.out and <timestamp>_<jobid>.out)
 OUT_FILE=$(ls -t "$LOG_DIR"/[0-9]*.out 2>/dev/null | head -1)
 
 # 2. Check if a log was actually found

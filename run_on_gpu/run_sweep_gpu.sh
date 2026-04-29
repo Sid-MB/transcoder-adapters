@@ -3,7 +3,7 @@
 # ── Usage ────────────────────────────────────────────────────────────
 #   Run ./sh/slurm_batch_sweep.sh, or sbatch with env vars set manually.
 #
-# Logs: logs/sweep/<job_id>_<timestamp>.{out,err}
+# Logs: logs/sweep/<timestamp>_<job_id>.{out,err}
 # ─────────────────────────────────────────────────────────────────────
 
 SLURM_LOG_DIR="logs/sweep"

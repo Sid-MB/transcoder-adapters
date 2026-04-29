@@ -4,7 +4,7 @@
 #   ./sh/slurm_batch_collect_features.sh
 #   Or: sbatch --export=ALL,HF_TOKEN=... ./run_on_gpu/run_collect_features.sh [args]
 #
-# Logs: logs/collect_features/<job_id>_<timestamp>.{out,err}
+# Logs: logs/collect_features/<timestamp>_<job_id>.{out,err}
 # ─────────────────────────────────────────────────────────────────────
 
 SLURM_LOG_DIR="logs/collect_features"

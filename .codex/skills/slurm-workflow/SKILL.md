@@ -16,52 +16,18 @@ Prefer the bundled helper scripts because they encode the local-vs-cluster rule,
 - `.codex/skills/slurm-workflow/scripts/find_job_logs.sh <job-id>`: find matching `.out` and `.err` files recursively under `logs/`.
 - `.codex/skills/slurm-workflow/scripts/summarize_job.sh [--tail N] <job-id>`: show `squeue`, `sacct`, matching logs, failure markers, and log tails.
 
-## Always Detect Location First
+## Checking if we're on the local machine or the cluster
 
-Run this before any Slurm command:
+To figure out if you're on the cluster or a local machine, check if `sbatch` is available with `command -v sbatch`: if it finds it, you're on the cluster.
 
-```bash
-command -v sbatch
-```
-
-If it prints a path, run commands on the current machine, but first make sure the command executes from the cluster checkout:
-
-```bash
-cd /nlp/u/siddharth/transcoder-adapters && <command>
-```
-
-If it does not print a path, assume the current machine is local. Run every Slurm, `sh/`, `logs/`, `squeue`, and `sacct` command through ssh:
+If you're not on the cluster, you'll need to ssh into the cluster to read logs and start Slurm runs. Use:
 
 ```bash
 ssh sc.stanford.edu 'cd /nlp/u/siddharth/transcoder-adapters && <command>'
 ```
 
-Do not inspect local `logs/` files or run local `sh/` scripts when `sbatch` is unavailable locally.
+If you can't find logs, make sure you're looking on the cluster in the right place.
 
-## Sync Code Before Submitting
-
-If you made code or config changes locally, do not start a Slurm run until the cluster checkout has those changes. The cluster runs `/nlp/u/siddharth/transcoder-adapters`, so a local unpushed or unfetched edit means Slurm will run old code.
-
-Before submitting:
-
-1. Commit the local changes.
-2. Push the commit if the cluster needs to fetch it from a remote.
-3. Fetch and fast-forward the same branch on the cluster.
-4. Verify the cluster checkout is at the intended commit before launching Slurm.
-
-Useful command pattern from the local repo:
-
-```bash
-branch=$(git branch --show-current)
-sha=$(git rev-parse HEAD)
-git push origin "$branch"
-.codex/skills/slurm-workflow/scripts/cluster_exec.sh git fetch origin "$branch"
-.codex/skills/slurm-workflow/scripts/cluster_exec.sh git checkout "$branch"
-.codex/skills/slurm-workflow/scripts/cluster_exec.sh git merge --ff-only "$sha"
-.codex/skills/slurm-workflow/scripts/cluster_exec.sh git rev-parse HEAD
-```
-
-The final cluster `git rev-parse HEAD` must match the local `sha`. If the cluster checkout has uncommitted changes or cannot fast-forward, stop and ask before submitting; do not run stale or ambiguous code.
 
 ## Submit Jobs
 
@@ -94,14 +60,14 @@ Apply the same location rule: run these directly on the cluster or through `ssh 
 
 ## Read Logs
 
-Logs live under `logs/`, inside a job-type-specific subfolder. File names start with the Slurm job ID and follow:
+Logs live under `logs/`, inside a job-type-specific subfolder. File names end with the Slurm job ID suffix and follow:
 
 ```text
-<SLURM_JOB_ID>_<DATE>_<TIME>.out
-<SLURM_JOB_ID>_<DATE>_<TIME>.err
+<DATE>_<TIME>_<SLURM_JOB_ID>.out
+<DATE>_<TIME>_<SLURM_JOB_ID>.err
 ```
 
-Find the exact files by matching the job ID prefix recursively:
+Find the exact files by matching the job ID suffix recursively:
 
 ```bash
 .codex/skills/slurm-workflow/scripts/find_job_logs.sh <job-id>
@@ -124,7 +90,33 @@ For a single status-and-log pass, prefer:
 ```bash
 .codex/skills/slurm-workflow/scripts/summarize_job.sh <job-id>
 ```
+Also note that the second line of a Slurm log has the command that was used for the run.
 
-## Reporting Back
+<!-- ## Reporting Back
 
-When summarizing a run, include the script name, job ID, current/final Slurm state, and the exact log files inspected. If the job failed, quote only the short error excerpt needed to diagnose it and name the next concrete fix or rerun command.
+When summarizing a run, include the script name, job ID, current/final Slurm state, and the exact log files inspected. If the job failed, quote only the short error excerpt needed to diagnose it and name the next concrete fix or rerun command. -->
+
+## Sync Code Before Submitting jobs if not working on the cluster
+
+If you made code or config changes locally and you're not working on the cluster, do not start a Slurm run until the cluster checkout has those changes. The cluster runs `/nlp/u/siddharth/transcoder-adapters`, so a local unpushed or unfetched edit means Slurm will run old code.
+
+Before submitting:
+
+1. Commit the local changes.
+2. Push the commit if the cluster needs to fetch it from a remote.
+3. Fetch and fast-forward the same branch on the cluster.
+4. Verify the cluster checkout is at the intended commit before launching Slurm.
+
+Useful command pattern from the local repo:
+
+```bash
+branch=$(git branch --show-current)
+sha=$(git rev-parse HEAD)
+git push origin "$branch"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git fetch origin "$branch"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git checkout "$branch"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git merge --ff-only "$sha"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git rev-parse HEAD
+```
+
+The final cluster `git rev-parse HEAD` must match the local `sha`. If the cluster checkout has uncommitted changes or cannot fast-forward, stop and ask before submitting; do not run stale or ambiguous code.

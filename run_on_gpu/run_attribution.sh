@@ -11,7 +11,7 @@
 #
 #   Or: sbatch --export=ALL,HF_TOKEN=... ./run_on_gpu/run_attribution.sh [args]
 #
-# Logs: logs/attribution/<job_id>_<timestamp>.{out,err}
+# Logs: logs/attribution/<timestamp>_<job_id>.{out,err}
 #
 # Attribution uses circuit-tracer, which is declared in the project's "viz"
 # optional dependency group, so this runner uses `uv run --extra viz`.

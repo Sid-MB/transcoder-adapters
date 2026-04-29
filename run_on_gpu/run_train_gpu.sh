@@ -3,7 +3,7 @@
 # ── Usage ────────────────────────────────────────────────────────────
 #   Run ./sh/slurm_batch_train.sh, or sbatch with env vars set manually.
 #
-# Logs: logs/train/<job_id>_<timestamp>.{out,err}
+# Logs: logs/train/<timestamp>_<job_id>.{out,err}
 # ─────────────────────────────────────────────────────────────────────
 
 SLURM_LOG_DIR="logs/train"

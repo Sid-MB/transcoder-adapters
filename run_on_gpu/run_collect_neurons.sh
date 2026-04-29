@@ -4,7 +4,7 @@
 #   ./sh/slurm_batch_collect_neurons.sh
 #   Or: sbatch --export=ALL,HF_TOKEN=... ./run_on_gpu/run_collect_neurons.sh [args]
 #
-# Logs: logs/collect_neurons/<job_id>_<timestamp>.{out,err}
+# Logs: logs/collect_neurons/<timestamp>_<job_id>.{out,err}
 # ─────────────────────────────────────────────────────────────────────
 
 SLURM_LOG_DIR="logs/collect_neurons"

@@ -7,10 +7,10 @@ usage() {
   cat <<'USAGE'
 Usage: find_job_logs.sh <job-id>
 
-Find Slurm log files recursively under logs/ by matching the job ID prefix.
+Find Slurm log files recursively under logs/ by matching the job ID suffix.
 Expected names look like:
-  <SLURM_JOB_ID>_<DATE>_<TIME>.out
-  <SLURM_JOB_ID>_<DATE>_<TIME>.err
+  <DATE>_<TIME>_<SLURM_JOB_ID>.out
+  <DATE>_<TIME>_<SLURM_JOB_ID>.err
 
 Example:
   find_job_logs.sh 123456
@@ -36,7 +36,7 @@ fi
 set +e
 output=$(
   "$SCRIPT_DIR/cluster_exec.sh" \
-    find logs -type f '(' -name "${job_id}_*.out" -o -name "${job_id}_*.err" ')' -print 2>&1
+    find logs -type f '(' -name "*_${job_id}.out" -o -name "*_${job_id}.err" ')' -print 2>&1
 )
 status=$?
 set -e

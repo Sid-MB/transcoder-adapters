@@ -4,7 +4,7 @@
 #   ./sh/slurm_batch_pack_features.sh
 #   Or: sbatch --export=ALL,HF_TOKEN=... ./run_on_gpu/run_pack_features.sh [args]
 #
-# Logs: logs/pack_features/<job_id>_<timestamp>.{out,err}
+# Logs: logs/pack_features/<timestamp>_<job_id>.{out,err}
 # ─────────────────────────────────────────────────────────────────────
 
 SLURM_LOG_DIR="logs/pack_features"

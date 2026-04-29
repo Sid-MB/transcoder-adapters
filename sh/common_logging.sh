@@ -3,7 +3,7 @@
 # Shared logging setup. Source this from Bash scripts after setting LOG_DIR.
 #
 # Optional:
-#   LOG_PREFIX  Prefix for the log filename. Defaults to "local".
+#   LOG_PREFIX  Suffix for the log filename. Defaults to "local".
 
 if [ -z "$LOG_DIR" ]; then
     echo "ERROR: LOG_DIR must be set before sourcing sh/common_logging.sh" >&2
@@ -12,5 +12,5 @@ fi
 
 mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOGFILE="${LOG_DIR}/${LOG_PREFIX:-local}_${TIMESTAMP}"
+LOGFILE="${LOG_DIR}/${TIMESTAMP}_${LOG_PREFIX:-local}"
 exec > >(tee "${LOGFILE}.out") 2> >(tee "${LOGFILE}.err" >&2)
