@@ -65,6 +65,7 @@ def _region_density(feature: dict, region: str) -> float:
 
 def score_feature(feature: dict, tokens_per_region: dict[str, int]) -> dict[str, float]:
     """Return assistant-boundary scores from metadata for one feature."""
+    activation_count = int(feature.get("activation_count") or 0)
     marker_fraction = _region_fraction(feature, ASSISTANT_MARKER_REGION)
     answer_fraction = _region_fraction(feature, ANSWER_REGION)
     marker_density = _region_density(feature, ASSISTANT_MARKER_REGION)
@@ -87,11 +88,16 @@ def score_feature(feature: dict, tokens_per_region: dict[str, int]) -> dict[str,
 
     marker_tokens = int(tokens_per_region.get(ASSISTANT_MARKER_REGION) or 0)
     has_marker_region = marker_tokens > 0
+    marker_count = marker_fraction * activation_count
+    answer_count = answer_fraction * activation_count
 
     return {
+        "activation_count": float(activation_count),
         "assistant_fraction": assistant_fraction,
         "assistant_marker_fraction": marker_fraction,
         "answer_fraction": answer_fraction,
+        "assistant_marker_count": marker_count,
+        "answer_count": answer_count,
         "assistant_density": assistant_density,
         "assistant_marker_density": marker_density,
         "answer_density": answer_density,
@@ -106,6 +112,7 @@ def classify_feature(
     *,
     assistant_fraction_threshold: float,
     marker_fraction_threshold: float,
+    min_marker_activations: int,
     density_lift_threshold: float,
 ) -> list[str]:
     """Classify one feature into annotation tags."""
@@ -118,6 +125,7 @@ def classify_feature(
 
     if (
         scores["assistant_marker_fraction"] >= marker_fraction_threshold
+        and scores["assistant_marker_count"] >= min_marker_activations
         and scores["has_marker_region"] > 0
     ):
         tags.extend(["assistant_response", "assistant_token"])
@@ -137,6 +145,7 @@ def annotate_features(
     *,
     assistant_fraction_threshold: float,
     marker_fraction_threshold: float,
+    min_marker_activations: int,
     density_lift_threshold: float,
 ) -> tuple[dict, list[dict]]:
     tokens_per_region = metadata.get("tokens_per_region") or {}
@@ -150,6 +159,7 @@ def annotate_features(
             scores,
             assistant_fraction_threshold=assistant_fraction_threshold,
             marker_fraction_threshold=marker_fraction_threshold,
+            min_marker_activations=min_marker_activations,
             density_lift_threshold=density_lift_threshold,
         )
         if not tags:
@@ -215,6 +225,16 @@ def main() -> None:
         help="Minimum fraction of feature fires on assistant marker tokens",
     )
     parser.add_argument(
+        "--min_marker_activations",
+        type=int,
+        default=5,
+        help=(
+            "Minimum number of assistant-marker activations required for the "
+            "assistant_token tag. This avoids tagging one-off marker hits in "
+            "small feature collections."
+        ),
+    )
+    parser.add_argument(
         "--density_lift_threshold",
         type=float,
         default=2.0,
@@ -251,6 +271,7 @@ def main() -> None:
         annotations,
         assistant_fraction_threshold=args.assistant_fraction_threshold,
         marker_fraction_threshold=args.marker_fraction_threshold,
+        min_marker_activations=args.min_marker_activations,
         density_lift_threshold=args.density_lift_threshold,
     )
     _save_json(annotations_path, annotations)
@@ -262,6 +283,7 @@ def main() -> None:
             f"L{hit['layer']} F{hit['feature']} cantor={hit['cantor_id']} "
             f"tags={tag_text} assistant_frac={hit['assistant_fraction']:.3f} "
             f"marker_frac={hit['assistant_marker_fraction']:.3f} "
+            f"marker_count={hit['assistant_marker_count']:.0f} "
             f"density_lift={hit['density_lift']:.2f}"
         )
 
