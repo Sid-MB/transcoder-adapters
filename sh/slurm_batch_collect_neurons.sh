@@ -5,14 +5,11 @@
 
 export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
 
-sbatch \
-  --account=nlp \
+./sh/sbatch \
   --gres=gpu:1 \
   --constraint=48G \
   --mem=128G \
   --partition=jag-hi \
   --job-name=collect_neurons \
   --time=2-00:00:00 \
-  --mail-user="$USER@cs.stanford.edu" \
-  --mail-type=END,FAIL \
   ./run_on_gpu/run_collect_neurons.sh "$@"
