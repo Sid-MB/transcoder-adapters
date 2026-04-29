@@ -39,15 +39,29 @@ uv run python -m analysis.features.visualize.feature_dashboard --data_dir /nlp/s
 | `--data_dir` | (required) | Directory that contains `feature_metadata.json` and `features/` |
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `8765` | Port |
+| `--annotations_file` | `<data_dir>/feature_annotations.json` | Persistent feature tags and notes |
 | `--no-open` | off | Do not open a browser automatically |
 
 Stop the server with **Ctrl+C**.
 
+## Annotate assistant-response features
+
+After collecting activations, run the metadata-only scanner:
+
+```sh
+uv run python -m analysis.features.annotate_assistant_response_features --data_dir /path/to/run
+```
+
+It tags features that concentrate on `assistant_marker` or `answer` regions and
+merges them into `feature_annotations.json`. The dashboard loads that file,
+lets you filter by tag, and lets you edit tags and notes from the feature detail
+pane. Manual edits are saved back to the same JSON file.
+
 ## What you’ll see
 
 - **Overview:** validation mix by domain, regions, and (when applicable) thinking-position bins.
-- **Table:** browse features with frequency, domain skew, and per-domain activation density; sort and filter by layer.
-- **Detail:** click a row to load that feature’s JSON — per-domain bars, regions, thinking bins, logit lens, and example tabs (global top, per-domain top quantiles, random samples). Each example includes a **scale bar**: `act_min` and `act_max` (from the feature JSON) at the ends, **peak** (highlighted token) as a dot with its numeric value; per-token activations still appear in hover tooltips. Re-run collection to get an explicit `peak_activation` field in each example; older runs still derive the peak from `tokens_acts_list`.
+- **Table:** browse features with frequency, annotation tags, domain skew, and per-domain activation density; sort and filter by layer or tag.
+- **Detail:** click a row to load that feature’s JSON — editable annotations, per-domain bars, regions, thinking bins, logit lens, and example tabs (global top, per-domain top quantiles, random samples). Each example includes a **scale bar**: `act_min` and `act_max` (from the feature JSON) at the ends, **peak** (highlighted token) as a dot with its numeric value; per-token activations still appear in hover tooltips. Re-run collection to get an explicit `peak_activation` field in each example; older runs still derive the peak from `tokens_acts_list`.
 
 ## Troubleshooting
 
