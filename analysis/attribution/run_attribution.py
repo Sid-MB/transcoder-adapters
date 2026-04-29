@@ -28,17 +28,99 @@ After running, start the frontend with:
 import os
 import argparse
 from pathlib import Path
+from typing import Literal
 
 import torch
 
 from helpers.log import logger, setup_logging
 
 from analysis.attribution.relp_model import RelPReplacementModel
-from analysis.attribution.attribute import attribute
-from circuit_tracer.utils.create_graph_files import create_graph_files
+
+DEEPSEEK_BOS_TOKEN = "<｜begin▁of▁sentence｜>"
+DEEPSEEK_USER_TOKEN = "<｜User｜>"
+DEEPSEEK_ASSISTANT_TOKEN = "<｜Assistant｜>"
+QWEN_IM_START = "<|im_start|>"
+QWEN_IM_END = "<|im_end|>"
+PromptFormat = Literal["auto", "raw", "chat"]
 
 #%%
-def load_prompt_file(path: Path, tokenizer) -> tuple[list[int], int, str]:
+def _parse_chat_prompt_text(text: str) -> tuple[str, str] | None:
+    """Parse a raw marked prompt into user and assistant text."""
+    if DEEPSEEK_USER_TOKEN in text and DEEPSEEK_ASSISTANT_TOKEN in text:
+        if text.startswith(DEEPSEEK_BOS_TOKEN):
+            text = text[len(DEEPSEEK_BOS_TOKEN):]
+        user_part, assistant_part = text.split(DEEPSEEK_ASSISTANT_TOKEN, 1)
+        if DEEPSEEK_USER_TOKEN not in user_part:
+            return None
+        user_content = user_part.split(DEEPSEEK_USER_TOKEN, 1)[1]
+        return user_content, assistant_part
+
+    user_header = f"{QWEN_IM_START}user\n"
+    assistant_header = f"{QWEN_IM_START}assistant\n"
+    if user_header in text and assistant_header in text:
+        user_part, assistant_part = text.split(assistant_header, 1)
+        user_content = user_part.split(user_header, 1)[1]
+        if user_content.endswith(QWEN_IM_END + "\n"):
+            user_content = user_content[:-(len(QWEN_IM_END) + 1)]
+        elif user_content.endswith(QWEN_IM_END):
+            user_content = user_content[:-len(QWEN_IM_END)]
+        if assistant_part.endswith(QWEN_IM_END + "\n"):
+            assistant_part = assistant_part[:-(len(QWEN_IM_END) + 1)]
+        elif assistant_part.endswith(QWEN_IM_END):
+            assistant_part = assistant_part[:-len(QWEN_IM_END)]
+        return user_content, assistant_part
+
+    return None
+
+
+def _should_chat_format_prompt(
+    text: str,
+    prompt_format: PromptFormat,
+    model_type: str | None,
+) -> bool:
+    if prompt_format == "raw":
+        return False
+    if prompt_format == "chat":
+        return True
+    return model_type == "gemma2" and _parse_chat_prompt_text(text) is not None
+
+
+def _load_chat_formatted_prompt(
+    text: str,
+    tokenizer,
+) -> tuple[list[int], int, str]:
+    parsed = _parse_chat_prompt_text(text)
+    if parsed is None:
+        raise ValueError(
+            "Prompt format 'chat' requires DeepSeek/Qwen-style user and assistant markers"
+        )
+
+    user_content, assistant_content = parsed
+    assistant_ids = tokenizer.encode(assistant_content, add_special_tokens=False)
+    if not assistant_ids:
+        raise ValueError("Assistant prompt content must include a target token")
+
+    target_token = assistant_ids[-1]
+    assistant_prefix = tokenizer.decode(assistant_ids[:-1])
+    prompt_tokens = tokenizer.apply_chat_template(
+        [{"role": "user", "content": user_content}],
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    prompt_tokens = list(prompt_tokens) + tokenizer.encode(
+        assistant_prefix,
+        add_special_tokens=False,
+    )
+    prompt_str = tokenizer.decode(prompt_tokens)
+    return prompt_tokens, target_token, prompt_str
+
+
+def load_prompt_file(
+    path: Path,
+    tokenizer,
+    prompt_format: PromptFormat = "auto",
+    model_type: str | None = None,
+) -> tuple[list[int], int, str]:
     """
     Load a prompt file where the last token is the target.
 
@@ -48,14 +130,24 @@ def load_prompt_file(path: Path, tokenizer) -> tuple[list[int], int, str]:
         prompt_str: Decoded prompt string
     """
     text = path.read_text()
+    if _should_chat_format_prompt(text, prompt_format, model_type):
+        return _load_chat_formatted_prompt(text, tokenizer)
+
     full_tokens = tokenizer.encode(text, add_special_tokens=False)
+    if not full_tokens:
+        raise ValueError(f"Prompt file is empty after tokenization: {path}")
     prompt_tokens = full_tokens[:-1]
     target_token = full_tokens[-1]
     prompt_str = tokenizer.decode(prompt_tokens)
     return prompt_tokens, target_token, prompt_str
 
 
-def load_prompts(prompts_dir: str, tokenizer) -> dict[str, dict]:
+def load_prompts(
+    prompts_dir: str,
+    tokenizer,
+    prompt_format: PromptFormat = "auto",
+    model_type: str | None = None,
+) -> dict[str, dict]:
     """
     Load prompts from a directory of .txt files.
 
@@ -69,7 +161,12 @@ def load_prompts(prompts_dir: str, tokenizer) -> dict[str, dict]:
 
     for txt_file in sorted(prompts_path.glob("*.txt")):
         slug = txt_file.stem
-        tokens, target, text = load_prompt_file(txt_file, tokenizer)
+        tokens, target, text = load_prompt_file(
+            txt_file,
+            tokenizer,
+            prompt_format=prompt_format,
+            model_type=model_type,
+        )
         prompts[slug] = {
             "tokens": tokens,
             "target": target,
@@ -98,6 +195,8 @@ def run_attribution_for_prompt(
 ):
     """Run attribution for a single prompt and save graph files."""
     import gc
+    from analysis.attribution.attribute import attribute
+    from circuit_tracer.utils.create_graph_files import create_graph_files
 
     logger.info(f"  Running attribution (batch_size={batch_size})...")
     raw_graph = attribute(
@@ -162,6 +261,17 @@ def main():
 
     # Optional: override scan name (defaults to run_name)
     parser.add_argument("--scan", type=str, default=None, help="Scan name for features (default: run_name)")
+    parser.add_argument(
+        "--prompt_format",
+        type=str,
+        choices=["auto", "raw", "chat"],
+        default="auto",
+        help=(
+            "How to tokenize prompt files. 'raw' preserves file text exactly; "
+            "'chat' parses marked prompt files and applies the tokenizer chat template; "
+            "'auto' uses chat formatting for Gemma checkpoints with marked prompt files."
+        ),
+    )
 
     # Attribution parameters
     parser.add_argument("--max_n_logits", type=int, default=10)
@@ -187,6 +297,7 @@ def main():
     logger.info(f"Run name:    {args.run_name}")
     logger.info(f"Checkpoint:  {args.checkpoint}")
     logger.info(f"Prompts:     {args.prompts}")
+    logger.info(f"Prompt fmt:  {args.prompt_format}")
     logger.info(f"Output:      {args.output_dir}")
     logger.info(f"Scan:        {args.scan}")
     logger.info("=" * 60)
@@ -204,18 +315,29 @@ def main():
     )
     logger.info(f"Loaded: {model.cfg.n_layers} layers, {model.cfg.d_model} d_model, "
                f"{model.cfg.n_features} features")
+    model_type = getattr(model.hf_config, "model_type", None)
 
     # Load prompts (single file or directory)
     logger.info("\nLoading prompts...")
     prompts_path = Path(args.prompts)
     if prompts_path.is_file():
         slug = prompts_path.stem
-        tokens, target, text = load_prompt_file(prompts_path, model.tokenizer)
+        tokens, target, text = load_prompt_file(
+            prompts_path,
+            model.tokenizer,
+            prompt_format=args.prompt_format,
+            model_type=model_type,
+        )
         prompts = {slug: {"tokens": tokens, "target": target, "text": text}}
         target_str = model.tokenizer.decode([target])
         logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
     else:
-        prompts = load_prompts(args.prompts, model.tokenizer)
+        prompts = load_prompts(
+            args.prompts,
+            model.tokenizer,
+            prompt_format=args.prompt_format,
+            model_type=model_type,
+        )
     prompt_items = list(prompts.items())
     logger.info(f"Found {len(prompt_items)} prompt(s)")
 

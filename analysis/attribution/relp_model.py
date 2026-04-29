@@ -161,12 +161,19 @@ class RelPReplacementModel(nn.Module):
 
         if tokens.ndim > 1:
             raise ValueError(f"Tokens must be 1D, got {tokens.shape}")
+        if len(tokens) == 0:
+            raise ValueError("Prompt tokenization produced no tokens")
 
-        # Add BOS if not present
-        if tokens[0] not in self.tokenizer.all_special_ids:
-            bos = self.tokenizer.bos_token_id or self.tokenizer.eos_token_id
-            if bos is not None:
-                tokens = torch.cat([torch.tensor([bos]), tokens])
+        # Add BOS if not present. Some chat templates begin with another
+        # special token such as Gemma's <start_of_turn>, which should not count
+        # as BOS for attribution zeroing.
+        bos = self.tokenizer.bos_token_id
+        if bos is None:
+            bos = self.tokenizer.eos_token_id
+        if isinstance(bos, list):
+            bos = bos[0] if bos else None
+        if bos is not None and tokens[0].item() != bos:
+            tokens = torch.cat([torch.tensor([bos], dtype=tokens.dtype), tokens])
 
         return tokens.to(self.cfg.device)
 

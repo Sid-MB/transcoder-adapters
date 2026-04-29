@@ -19,6 +19,7 @@ def load_val_data(
     tokenizer: Any,
     max_length: int,
     domain: str | None = None,
+    model_type: str | None = None,
 ) -> tuple[Any, list[dict] | None]:
     """Load validation data from JSONL (local/hf://) or HF dataset ID.
 
@@ -28,6 +29,7 @@ def load_val_data(
         max_length: Maximum sequence length in tokens.
         domain: If provided and the dataset has no per-example domain metadata,
                 use this as the domain label for all examples.
+        model_type: Optional architecture name. Used to choose JSONL formatting.
 
     Returns:
         (dataset, examples_meta) where examples_meta is a list of dicts with
@@ -35,7 +37,7 @@ def load_val_data(
     """
     # Case 1: JSONL file (local path or hf:// URI)
     if val_data.endswith(".jsonl") or val_data.startswith("hf://"):
-        dataset, examples_meta = _load_jsonl(val_data, tokenizer, max_length)
+        dataset, examples_meta = _load_jsonl(val_data, tokenizer, max_length, model_type=model_type)
     else:
         # Case 2: HF dataset ID
         dataset, examples_meta = _load_hf_dataset(val_data, tokenizer, max_length)
@@ -51,11 +53,12 @@ def _load_jsonl(
     val_data: str,
     tokenizer: Any,
     max_length: int,
+    model_type: str | None = None,
 ) -> tuple[Any, list[dict] | None]:
     """Load JSONL data via OpenThoughtsDataset."""
     from training.dataset import OpenThoughtsDataset
 
-    dataset_format = "deepseek"
+    dataset_format = "tokenizer" if model_type == "gemma2" else "deepseek"
     logger.info(
         f"Loading JSONL validation data as OpenThoughtsDataset "
         f"(format={dataset_format}) from {val_data}..."

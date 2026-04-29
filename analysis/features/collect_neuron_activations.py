@@ -540,7 +540,12 @@ def main():
 
     # Dataset
     logger.info(f"Loading validation data: {args.val_data}")
-    dataset, examples_meta = load_val_data(args.val_data, tokenizer, args.max_length)
+    dataset, examples_meta = load_val_data(
+        args.val_data,
+        tokenizer,
+        args.max_length,
+        model_type=model_type,
+    )
 
     n_samples = len(dataset)
     if args.max_samples:

@@ -98,9 +98,8 @@ class OpenThoughtsDataset(Dataset):
         if self.filter_length:
             logger.info(f"Filtering {len(all_examples)} examples by length...")
             for example in all_examples:
-                formatted_text = self.format_example(example)
-                tokens = self.tokenizer(formatted_text, add_special_tokens=True)
-                if len(tokens['input_ids']) <= self.max_length:
+                input_ids, _ = self._tokenize_example(example)
+                if len(input_ids) <= self.max_length:
                     self.examples.append(example)
             logger.info(f"Kept {len(self.examples)}/{len(all_examples)} after filtering")
         else:
@@ -114,38 +113,7 @@ class OpenThoughtsDataset(Dataset):
     def __getitem__(self, idx: int) -> DatasetItem:
         """Get a single example."""
         example = self.examples[idx]
-        conversations = example['conversations']
-        prompt = conversations[0]['value']
-        response = conversations[1]['value']
-
-        # Format and tokenize
-        if self.format == "deepseek":
-            # Normalize "<think> " to "<think>\n" to match DeepSeek's expected format
-            if response.startswith("<think> "):
-                response = "<think>\n" + response[len("<think> "):]
-            text = f"{DEEPSEEK_USER_TOKEN}{prompt}{DEEPSEEK_ASSISTANT_TOKEN}{response}"
-            input_ids = self.tokenizer.encode(text, add_special_tokens=True)
-            # Prompt boundary: tokenize just the prompt portion
-            prompt_text = f"{DEEPSEEK_USER_TOKEN}{prompt}{DEEPSEEK_ASSISTANT_TOKEN}"
-            prompt_len = len(self.tokenizer.encode(prompt_text, add_special_tokens=True))
-        elif self.format == "qwen":
-            # Explicit Qwen/QwQ format: <|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n...<|im_end|>
-            if response.startswith("<think> "):
-                response = "<think>\n" + response[len("<think> "):]
-            text = f"{QWEN_IM_START}user\n{prompt}{QWEN_IM_END}\n{QWEN_IM_START}assistant\n{response}{QWEN_IM_END}\n"
-            input_ids = self.tokenizer.encode(text, add_special_tokens=True)
-            # Prompt boundary
-            prompt_text = f"{QWEN_IM_START}user\n{prompt}{QWEN_IM_END}\n{QWEN_IM_START}assistant\n"
-            prompt_len = len(self.tokenizer.encode(prompt_text, add_special_tokens=True))
-        else:
-            text = self.format_example(example)
-            input_ids = self.tokenizer.encode(text, add_special_tokens=True)
-            # Prompt boundary: use chat template
-            prompt_len = len(self.tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
-                tokenize=True,
-                add_generation_prompt=True
-            ))
+        input_ids, prompt_len = self._tokenize_example(example)
 
         # Truncate if needed
         original_length = len(input_ids)
@@ -170,6 +138,49 @@ class OpenThoughtsDataset(Dataset):
             "truncated": truncated,
             "original_length": original_length,
         }
+
+    def _tokenize_example(self, example: dict[str, Any]) -> tuple[list[int], int]:
+        """Tokenize one example and return ``(input_ids, prompt_len)``."""
+        conversations = example['conversations']
+        prompt = conversations[0]['value']
+        response = conversations[1]['value']
+
+        # Format and tokenize
+        if self.format == "deepseek":
+            # Normalize "<think> " to "<think>\n" to match DeepSeek's expected format
+            if response.startswith("<think> "):
+                response = "<think>\n" + response[len("<think> "):]
+            text = f"{DEEPSEEK_USER_TOKEN}{prompt}{DEEPSEEK_ASSISTANT_TOKEN}{response}"
+            input_ids = self.tokenizer.encode(text, add_special_tokens=True)
+            # Prompt boundary: tokenize just the prompt portion
+            prompt_text = f"{DEEPSEEK_USER_TOKEN}{prompt}{DEEPSEEK_ASSISTANT_TOKEN}"
+            prompt_len = len(self.tokenizer.encode(prompt_text, add_special_tokens=True))
+        elif self.format == "qwen":
+            # Explicit Qwen/QwQ format: <|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n...<|im_end|>
+            if response.startswith("<think> "):
+                response = "<think>\n" + response[len("<think> "):]
+            text = f"{QWEN_IM_START}user\n{prompt}{QWEN_IM_END}\n{QWEN_IM_START}assistant\n{response}{QWEN_IM_END}\n"
+            input_ids = self.tokenizer.encode(text, add_special_tokens=True)
+            # Prompt boundary
+            prompt_text = f"{QWEN_IM_START}user\n{prompt}{QWEN_IM_END}\n{QWEN_IM_START}assistant\n"
+            prompt_len = len(self.tokenizer.encode(prompt_text, add_special_tokens=True))
+        else:
+            messages = [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": response}
+            ]
+            input_ids = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=False
+            )
+            prompt_len = len(self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=True,
+                add_generation_prompt=True
+            ))
+
+        return list(input_ids), prompt_len
 
     def format_example(self, example: dict[str, Any]) -> str:
         """Format a single example into the training format.
