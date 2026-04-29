@@ -421,14 +421,27 @@
     el('page-info').textContent = `${filtered.length === 0 ? 0 : start + 1}–${Math.min(start + slice.length, filtered.length)} of ${filtered.length}`;
   }
 
+  const RAMP_LOW = { L: 0.90, C: 0.08, H: 150 };
+  const RAMP_HIGH = { L: 0.50, C: 0.22, H: 330 };
+
+  function tokenColor(t, alphaMax) {
+    const tt = Math.max(0, Math.min(1, t));
+    const L = RAMP_LOW.L + (RAMP_HIGH.L - RAMP_LOW.L) * tt;
+    const C = RAMP_LOW.C + (RAMP_HIGH.C - RAMP_LOW.C) * tt;
+    const H = RAMP_LOW.H + (RAMP_HIGH.H - RAMP_LOW.H) * tt;
+    const alpha = alphaMax * tt;
+    return `oklch(${L.toFixed(3)} ${C.toFixed(3)} ${H.toFixed(1)} / ${alpha.toFixed(3)})`;
+  }
+
+  function tokenGradient(alphaMax) {
+    return `linear-gradient(in oklch 90deg, ${tokenColor(0, alphaMax)} 0%, ${tokenColor(1, alphaMax)} 100%)`;
+  }
+
   function tokenStyle(act, lo, hi) {
     if (act == null || Number.isNaN(act) || act <= 0) return 'transparent';
     if (hi <= lo) return 'transparent';
-    const t = Math.max(0, Math.min(1, (act - lo) / (hi - lo)));
-    const r = Math.round(40 + t * 200);
-    const g = Math.round(80 + (1 - t) * 120);
-    const b = Math.round(180 + t * 60);
-    return `rgba(${r},${g},${b},0.45)`;
+    const t = (act - lo) / (hi - lo);
+    return tokenColor(t, 0.85);
   }
 
   function peakActivation(ex) {
@@ -467,7 +480,7 @@
         <div class="act-scale-center">
           <div class="act-scale-track-wrap">
             <div class="act-scale-peak-lbl" style="left:${pct}%">${escapeHtml(formatScalar(peak))}</div>
-            <div class="act-scale-track">
+            <div class="act-scale-track" style="background:${tokenGradient(0.45)}">
               <div class="act-scale-dot" style="left:${pct}%"></div>
             </div>
           </div>
