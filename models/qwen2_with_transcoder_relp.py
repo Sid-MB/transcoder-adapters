@@ -18,6 +18,12 @@ from transformers.models.qwen2.modeling_qwen2 import (
 )
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 
+from models.relp_common import (
+    RelPCausalLMWithTranscoderMixin,
+    load_checkpoint_state_dict,
+    resolve_checkpoint_path,
+)
+
 
 
 class Qwen2RMSNormRelP(nn.Module):
@@ -280,6 +286,8 @@ class Qwen2AttentionRelP(nn.Module):
 class Qwen2DecoderLayerRelP(nn.Module):
     """Decoder layer with RelP-aware components."""
 
+    relp_norm_names = ("input_layernorm", "post_attention_layernorm")
+
     def __init__(self, config: Qwen2Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -373,7 +381,7 @@ class Qwen2ModelRelP(nn.Module):
         return BaseModelOutputWithPast(last_hidden_state=hidden_states)
 
 
-class Qwen2ForCausalLMWithTranscoderRelP(nn.Module):
+class Qwen2ForCausalLMWithTranscoderRelP(RelPCausalLMWithTranscoderMixin, nn.Module):
     """
     Qwen2 + Transcoder with RelP-aware backward pass.
 
@@ -386,6 +394,8 @@ class Qwen2ForCausalLMWithTranscoderRelP(nn.Module):
         # Gradients now follow RelP rules
     """
 
+    relp_decoder_layer_cls = Qwen2DecoderLayerRelP
+
     def __init__(self, config: Qwen2Config):
         super().__init__()
         self.config = config
@@ -396,89 +406,51 @@ class Qwen2ForCausalLMWithTranscoderRelP(nn.Module):
         self.relp_enabled = True
         self.stop_grad_at: set[str] = set()
 
-    def set_relp_enabled(self, enabled: bool):
-        """Enable/disable RelP rules globally."""
-        self.relp_enabled = enabled
-        self._propagate_relp_settings()
-
-    def set_stop_grad_at(self, points: set[str]):
-        """Set which points should have gradients stopped."""
-        self.stop_grad_at = points
-        self._propagate_relp_settings()
-
     def _decoder_layers(self) -> Iterator[Qwen2DecoderLayerRelP]:
         """Yield each decoder layer with proper typing."""
         for layer in self.model.layers:
             yield layer  # type: ignore[misc]
 
-    def _propagate_relp_settings(self):
-        """Propagate RelP settings to all submodules."""
-        for layer in self._decoder_layers():
-            layer.input_layernorm.relp_enabled = self.relp_enabled
-            layer.post_attention_layernorm.relp_enabled = self.relp_enabled
-            layer.self_attn.relp_enabled = self.relp_enabled
-            layer.self_attn.stop_grad_at = self.stop_grad_at
-            layer.mlp.relp_enabled = self.relp_enabled
-            layer.mlp.stop_grad_at = self.stop_grad_at
-        self.model.norm.relp_enabled = self.relp_enabled  # type: ignore[union-attr]
+    def run_backbone_with_cache(
+        self,
+        tokens: torch.Tensor,
+        batch_size: int,
+        resid_cache: dict[int | str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Run Qwen2 backbone while caching residual streams for attribution."""
+        self.set_stop_grad_at({"transcoder_features"})
 
-    def set_chunked_attention(self, enabled: bool, chunk_size: int = 512):
-        """Enable/disable memory-efficient chunked attention.
+        input_ids = tokens.unsqueeze(0).expand(batch_size, -1)
+        hidden_states = self.model.embed_tokens(input_ids)
+        hidden_states.retain_grad()
+        resid_cache["embed"] = hidden_states
 
-        Args:
-            enabled: If True, use chunked attention (O(seq*chunk) memory).
-                     If False, use full attention (O(seq^2) memory).
-            chunk_size: Size of query chunks (default 512).
-        """
-        for layer in self._decoder_layers():
-            layer.self_attn.use_chunked_attention = enabled
-            layer.self_attn.attention_chunk_size = chunk_size
+        seq_len = hidden_states.shape[1]
+        position_ids = torch.arange(seq_len, device=hidden_states.device).unsqueeze(0)
+        position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
+        causal_mask = torch.triu(
+            torch.full(
+                (seq_len, seq_len),
+                float("-inf"),
+                device=hidden_states.device,
+                dtype=hidden_states.dtype,
+            ),
+            diagonal=1,
+        ).unsqueeze(0).unsqueeze(0)
 
-    def set_feature_mask(self, mask: torch.Tensor | None):
-        """Set feature mask for ablation studies.
+        for layer_idx, layer in enumerate(self.model.layers):
+            hidden_states.retain_grad()
+            resid_cache[layer_idx] = hidden_states
+            hidden_states = layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_embeddings=position_embeddings,
+            )
 
-        Args:
-            mask: Shape [n_layers, n_features], 1=keep, 0=suppress.
-                  Pass None to clear all masks.
-        """
-        for i, layer in enumerate(self._decoder_layers()):
-            layer.mlp.feature_mask = mask[i] if mask is not None else None
-
-    def get_cached_features(self) -> dict:
-        """Get cached feature activations for all layers.
-
-        Returns:
-            Dict mapping layer_idx -> features tensor [batch, seq, n_features]
-        """
-        return {
-            i: layer.mlp.cached_features
-            for i, layer in enumerate(self._decoder_layers())
-            if layer.mlp.cached_features is not None
-        }
-
-    def get_feature_attributions(self) -> dict:
-        """Get feature attributions (features * grad) for all layers.
-
-        Call this after backward() to get per-feature attributions.
-
-        Returns:
-            Dict mapping layer_idx -> attribution tensor [batch, seq, n_features]
-        """
-        attrs = {}
-        for i, layer in enumerate(self._decoder_layers()):
-            f = layer.mlp.cached_features
-            if f is not None and f.grad is not None:
-                attrs[i] = f * f.grad
-        return attrs
-
-    def get_feature_attribution_summary(self) -> dict:
-        """Get summed feature attributions per layer.
-
-        Returns:
-            Dict mapping layer_idx -> scalar total attribution for that layer
-        """
-        attrs = self.get_feature_attributions()
-        return {i: attr.sum().item() for i, attr in attrs.items()}
+        hidden_states = self.model.norm(hidden_states)
+        hidden_states.retain_grad()
+        resid_cache[self.config.num_hidden_layers] = hidden_states
+        return hidden_states
 
     def forward(
         self,
@@ -499,36 +471,18 @@ class Qwen2ForCausalLMWithTranscoderRelP(nn.Module):
                   (e.g. "nathu0/transcoder-adapters-R1-Distill-Qwen-7B-l1w0.001-l0-1.4")
         """
         from transformers import AutoConfig
-        import os
 
-        # Resolve HF repo ID to local path
-        if not os.path.exists(path):
-            from huggingface_hub import snapshot_download
-            path = snapshot_download(path)
-
+        path = resolve_checkpoint_path(path)
         # Load config
         config = AutoConfig.from_pretrained(path, trust_remote_code=True)
-        assert isinstance(config, Qwen2Config)
+        if not isinstance(config, Qwen2Config):
+            raise TypeError(f"Expected Qwen2Config, got {type(config).__name__}")
 
         # Create model
         model = cls(config)
 
         # Load state dict
-        if os.path.isdir(path):
-            import glob
-            weight_files = glob.glob(os.path.join(path, "*.safetensors"))
-            if weight_files:
-                from safetensors.torch import load_file
-                state_dict = {}
-                for f in weight_files:
-                    state_dict.update(load_file(f))
-            else:
-                weight_file = os.path.join(path, "pytorch_model.bin")
-                state_dict = torch.load(weight_file, map_location="cpu")
-        else:
-            state_dict = torch.load(path, map_location="cpu")
-
-        # Load weights (may need key remapping)
+        state_dict = load_checkpoint_state_dict(path)
         model.load_state_dict(state_dict, strict=False)
 
         return model
