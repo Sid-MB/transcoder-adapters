@@ -186,11 +186,8 @@ def _build_model_card(
     """
     github_repo = "https://github.com/Sid-MB/transcoder-adapters"
 
-    # Determine base model, training mode, and tokenizer source
-    mode_prefix = "direct" if config.direct else "bridging"
-    if config.direct:
-        ref_model = config.direct.reference_model_path
-    elif config.bridging:
+    # Determine base model and tokenizer source (bridging mode only)
+    if config.bridging:
         ref_model = config.bridging.reference_model_path
     else:
         ref_model = None

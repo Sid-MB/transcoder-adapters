@@ -923,8 +923,7 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         config = _finalize_config(config)
         wandb.config.update(config.__dict__, allow_val_change=True)
     elif config.use_wandb:
-        mode_prefix = "direct" if config.direct else "bridging"
-        wandb.init(project=config.wandb_project, name=f"{mode_prefix}_{config.wandb_run_name}", config=config.__dict__)
+        wandb.init(project=config.wandb_project, name=f"bridging_{config.wandb_run_name}", config=config.__dict__)
 
     if config.bridging is None:
         raise ValueError("Config must specify a 'bridging' section.")
