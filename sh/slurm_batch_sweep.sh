@@ -14,4 +14,4 @@ sbatch \
   --time=21-00:00:00 \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
-  ./slurm/run_sweep_gpu.sh "$@"
+  ./run_on_gpu/run_sweep_gpu.sh "$@"

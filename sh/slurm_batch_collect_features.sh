@@ -16,4 +16,4 @@ sbatch \
   --job-name=collect_features \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
-  ./slurm/run_collect_features.sh "$@"
+  ./run_on_gpu/run_collect_features.sh "$@"

@@ -14,4 +14,4 @@ sbatch \
   --time=0-04:00:00 \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
-  ./slurm/run_pack_features.sh "$@"
+  ./run_on_gpu/run_pack_features.sh "$@"

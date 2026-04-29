@@ -34,4 +34,4 @@ sbatch \
   --time=1-00:00:00 \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
-  ./slurm/run_response_length_eval.sh "${OTHER_ARGS[@]}"
+  ./run_on_gpu/run_response_length_eval.sh "${OTHER_ARGS[@]}"

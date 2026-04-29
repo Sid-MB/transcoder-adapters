@@ -37,4 +37,4 @@ sbatch \
   --time=1-00:00:00 \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
-  ./slurm/run_token_metrics.sh "${OTHER_ARGS[@]}"
+  ./run_on_gpu/run_token_metrics.sh "${OTHER_ARGS[@]}"

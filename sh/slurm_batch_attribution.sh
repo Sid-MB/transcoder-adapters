@@ -79,4 +79,4 @@ sbatch \
   --time="$TIME_LIMIT" \
   --mail-user="$USER@cs.stanford.edu" \
   --mail-type=END,FAIL \
-  ./slurm/run_attribution.sh "${OTHER_ARGS[@]}"
+  ./run_on_gpu/run_attribution.sh "${OTHER_ARGS[@]}"

@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 
 # ── Usage ────────────────────────────────────────────────────────────
-#   Run ./sh/slurm_batch_sweep.sh, or sbatch with env vars set manually.
+#   Run ./sh/slurm_batch_train.sh, or sbatch with env vars set manually.
 #
-# Logs: logs/sweep/<job_id>_<timestamp>.{out,err}
+# Logs: logs/train/<job_id>_<timestamp>.{out,err}
 # ─────────────────────────────────────────────────────────────────────
 
-SLURM_LOG_DIR="logs/sweep"
-source slurm/common.sh
+SLURM_LOG_DIR="logs/train"
+source run_on_gpu/common.sh
 
-run slurm/run_sweep.sh \
-    --config training/configs/gemma2_2b.yaml \
-    --sweep training/configs/sweeps/lr.yaml \
-    --sweep_count 4 \
-    "$@"
+# uv run python -m training.train --config training/configs/gemma2_2b.yaml "$@"
+run uv run python -m training.train "$@"
