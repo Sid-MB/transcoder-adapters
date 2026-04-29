@@ -1,6 +1,6 @@
 ---
 name: slurm-workflow
-description: Repo-specific workflow for submitting, monitoring, and debugging Slurm jobs for transcoder-adapters. Use when the user says things like "run this with slurm", "launch a run", "look at the output for the last run", asks Codex to run scripts from the repo's sh/ directory, submit jobs with sbatch, wait for Slurm completion, inspect squeue/sacct state, or read job logs under logs/ on the Stanford cluster; when running from a local machine, all such commands must be executed through ssh to sc.stanford.edu in /nlp/u/siddharth/transcoder-adapters.
+description: Repo-specific workflow for submitting, monitoring, and debugging Slurm jobs for transcoder-adapters. Use when the user says things like "run this with slurm", "launch a run", "look at the output for the last run", asks Codex to run scripts from the repo's sh/ directory, sync local commits to the cluster before a run, submit jobs with sbatch, wait for Slurm completion, inspect squeue/sacct state, or read job logs under logs/ on the Stanford cluster; when running from a local machine, all such commands must be executed through ssh to sc.stanford.edu in /nlp/u/siddharth/transcoder-adapters.
 ---
 
 # Slurm Run Workflow
@@ -37,6 +37,31 @@ ssh sc.stanford.edu 'cd /nlp/u/siddharth/transcoder-adapters && <command>'
 ```
 
 Do not inspect local `logs/` files or run local `sh/` scripts when `sbatch` is unavailable locally.
+
+## Sync Code Before Submitting
+
+If you made code or config changes locally, do not start a Slurm run until the cluster checkout has those changes. The cluster runs `/nlp/u/siddharth/transcoder-adapters`, so a local unpushed or unfetched edit means Slurm will run old code.
+
+Before submitting:
+
+1. Commit the local changes.
+2. Push the commit if the cluster needs to fetch it from a remote.
+3. Fetch and fast-forward the same branch on the cluster.
+4. Verify the cluster checkout is at the intended commit before launching Slurm.
+
+Useful command pattern from the local repo:
+
+```bash
+branch=$(git branch --show-current)
+sha=$(git rev-parse HEAD)
+git push origin "$branch"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git fetch origin "$branch"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git checkout "$branch"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git merge --ff-only "$sha"
+.codex/skills/slurm-workflow/scripts/cluster_exec.sh git rev-parse HEAD
+```
+
+The final cluster `git rev-parse HEAD` must match the local `sha`. If the cluster checkout has uncommitted changes or cannot fast-forward, stop and ask before submitting; do not run stale or ambiguous code.
 
 ## Submit Jobs
 
