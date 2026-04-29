@@ -9,7 +9,7 @@ subdirectory before fresh annotations are written. Pass ``--merge`` to merge new
 tags into an existing annotations file instead.
 
 Example:
-    python -m analysis.features.annotate_assistant_response_features \
+    python -m analysis.features.annotate.annotate_assistant_response_features \
         --data_dir /path/to/feature_run
 """
 
@@ -20,7 +20,7 @@ from typing import Any
 
 from helpers.log import setup_logging
 
-from analysis.features.annotation_framework import (
+from analysis.features.annotate.annotation_framework import (
     FeatureAnnotationResult,
     FeatureAnnotator,
     add_common_annotation_args,

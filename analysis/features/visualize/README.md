@@ -49,7 +49,7 @@ Stop the server with **Ctrl+C**.
 After collecting activations, run the metadata-only scanner:
 
 ```sh
-uv run python -m analysis.features.annotate_assistant_response_features --data_dir /path/to/run
+uv run python -m analysis.features.annotate.annotate_assistant_response_features --data_dir /path/to/run
 ```
 
 It tags features that concentrate on `assistant_marker` or `answer` regions and

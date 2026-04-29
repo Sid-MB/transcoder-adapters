@@ -16,6 +16,6 @@ LOG_DIR="logs/annotate_assistant_response_features"
 LOG_PREFIX="local"
 source sh/common_logging.sh
 
-uv run python -m analysis.features.annotate_assistant_response_features "$@"
+uv run python -m analysis.features.annotate.annotate_assistant_response_features "$@"
 
 # After, restart visualizer to see changes.
