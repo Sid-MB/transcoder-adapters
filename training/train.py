@@ -8,7 +8,7 @@ that encourage layer-wise compatibility with a reference model.
 import os
 import sys
 from helpers import logger, setup_logging
-os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from torch.optim import AdamW
