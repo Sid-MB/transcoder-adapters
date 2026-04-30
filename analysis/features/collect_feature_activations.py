@@ -469,6 +469,16 @@ def _release_feature_examples(stats: FeatureStats) -> None:
     stats.domain_top_k_examples.clear()
 
 
+def _count_nonempty_features(collector: FeatureCollector) -> int:
+    """Count feature JSON files that will be written."""
+    return sum(
+        1
+        for layer_stats in collector.stats
+        for stats in layer_stats
+        if stats.activation_count > 0
+    )
+
+
 def export_circuit_tracer_json(
     collector: FeatureCollector,
     logit_lens_data: list[dict],
@@ -488,12 +498,18 @@ def export_circuit_tracer_json(
         f"(max {max_pending_writes} pending writes)..."
     )
 
+    total_writes = _count_nonempty_features(collector)
+    total_features = collector.n_layers * collector.n_features
     write_count = 0
-    skipped = 0
+    skipped = total_features - total_writes
 
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         pending_writes: set[Future] = set()
-        with tqdm(desc="Writing files", unit="file") as write_progress:
+        with tqdm(
+            total=total_writes,
+            desc="Writing feature files",
+            unit="file",
+        ) as write_progress:
             for layer_idx in tqdm(range(collector.n_layers), desc="Building JSON"):
                 layer_logit_lens = logit_lens_data[layer_idx]
 
@@ -502,7 +518,6 @@ def export_circuit_tracer_json(
 
                     # Skip empty features
                     if stats.activation_count == 0:
-                        skipped += 1
                         continue
 
                     # Get examples (sorted by activation for top-k)
