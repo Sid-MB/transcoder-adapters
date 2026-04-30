@@ -16,6 +16,8 @@ Prefer the bundled helper scripts because they encode the local-vs-cluster rule,
 - `.codex/skills/slurm-workflow/scripts/find_job_logs.sh <job-id>`: find matching `.out` and `.err` files recursively under `logs/`.
 - `.codex/skills/slurm-workflow/scripts/summarize_job.sh [--tail N] <job-id>`: show `squeue`, `sacct`, matching logs, failure markers, and log tails.
 
+Run scripts outside of the sandbox, especially if you run into errors about things like slurm commands being unavailable.
+
 ## Checking if we're on the local machine or the cluster
 
 To figure out if you're on the cluster or a local machine, check if `sbatch` is available with `command -v sbatch`: if it finds it, you're on the cluster.

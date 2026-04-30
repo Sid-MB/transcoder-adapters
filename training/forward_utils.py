@@ -9,6 +9,41 @@ from transformers.masking_utils import create_causal_mask, create_sliding_window
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
 
+
+def _language_backbone(model: "PreTrainedModel"):
+    backbone = getattr(model, "model", model)
+    if hasattr(backbone, "layers"):
+        return backbone
+    if hasattr(backbone, "language_model") and hasattr(backbone.language_model, "layers"):
+        return backbone.language_model
+    if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
+        return model.language_model
+    raise AttributeError(f"Could not find language backbone on {type(model).__name__}")
+
+
+def _layer_type(backbone, layer, layer_idx: int) -> str:
+    if hasattr(backbone.config, "layer_types"):
+        return backbone.config.layer_types[layer_idx]
+    if hasattr(layer, "attention_type"):
+        return layer.attention_type
+    if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "layer_type"):
+        return layer.self_attn.layer_type
+    return "full_attention"
+
+
+def _per_layer_inputs(backbone, input_ids: torch.Tensor, inputs_embeds: torch.Tensor):
+    if not getattr(backbone, "hidden_size_per_layer_input", 0):
+        return None
+    token_inputs = backbone.get_per_layer_inputs(input_ids, inputs_embeds)
+    return backbone.project_per_layer_inputs(inputs_embeds, token_inputs)
+
+
+def _run_layer(layer, hidden_states, *, per_layer_input, **kwargs):
+    if per_layer_input is None:
+        return layer(hidden_states, **kwargs)
+    return layer(hidden_states, per_layer_input=per_layer_input, **kwargs)
+
+
 def forward_mixed(
     model1: "PreTrainedModel",
     model2: "PreTrainedModel",
@@ -32,8 +67,12 @@ def forward_mixed(
     Returns:
         logits: output logits [batch, seq_len, vocab_size]
     """
+    backbone1 = _language_backbone(model1)
+    backbone2 = _language_backbone(model2)
+
     # Get embeddings from model1
-    h = model1.model.embed_tokens(input_ids)
+    h = backbone1.embed_tokens(input_ids)
+    per_layer_inputs1 = _per_layer_inputs(backbone1, input_ids, h)
 
     # Setup position ids and cache position
     seq_len = h.shape[1]
@@ -43,8 +82,8 @@ def forward_mixed(
 
     # Create causal mask (use model1's config, should be same arch)
     mask_kwargs = {
-        "config": model1.config,
-        "input_embeds": h,
+        "config": backbone1.config,
+        "inputs_embeds": h,
         "attention_mask": attention_mask,
         "cache_position": cache_position,
         "past_key_values": None,
@@ -53,42 +92,63 @@ def forward_mixed(
     causal_mask_mapping = {
         "full_attention": create_causal_mask(**mask_kwargs), # type: ignore
     }
-    if any(getattr(layer, 'attention_type', None) == 'sliding_attention' for layer in model1.model.layers):
+    if any(_layer_type(backbone1, layer, i) == "sliding_attention" for i, layer in enumerate(backbone1.layers)):
         causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs) # type: ignore
 
     # Position embeddings from model1
-    position_embeddings = model1.model.rotary_emb(h, position_ids)
+    position_embeddings = {
+        layer_type: backbone1.rotary_emb(h, position_ids, layer_type)
+        for layer_type in set(getattr(backbone1.config, "layer_types", ["full_attention"]))
+    } if hasattr(backbone1.config, "layer_types") else backbone1.rotary_emb(h, position_ids)
 
     # Model1 layers: 0 to switch_layer-1
-    for layer in model1.model.layers[:switch_layer]:
-        layer_attn_mask = causal_mask_mapping[layer.attention_type]
-        h = layer(
+    shared_kv_states1 = {}
+    for i, layer in enumerate(backbone1.layers[:switch_layer]):
+        lt = _layer_type(backbone1, layer, i)
+        layer_attn_mask = causal_mask_mapping[lt]
+        layer_position_embeddings = position_embeddings[lt] if isinstance(position_embeddings, dict) else position_embeddings
+        h = _run_layer(
+            layer,
             h,
+            per_layer_input=per_layer_inputs1[:, :, i, :] if per_layer_inputs1 is not None else None,
             attention_mask=layer_attn_mask,
             position_ids=position_ids,
-            position_embeddings=position_embeddings,
+            position_embeddings=layer_position_embeddings,
             cache_position=cache_position,
+            shared_kv_states=shared_kv_states1,
+            past_key_values=None,
         )
         if isinstance(h, tuple):
             h = h[0]
 
     # Model2 layers: switch_layer to L
     # Need model2's position embeddings for its layers
-    position_embeddings_2 = model2.model.rotary_emb(h, position_ids)
-    for layer in model2.model.layers[switch_layer:]:
-        layer_attn_mask = causal_mask_mapping[layer.attention_type]
-        h = layer(
+    per_layer_inputs2 = _per_layer_inputs(backbone2, input_ids, h)
+    position_embeddings_2 = {
+        layer_type: backbone2.rotary_emb(h, position_ids, layer_type)
+        for layer_type in set(getattr(backbone2.config, "layer_types", ["full_attention"]))
+    } if hasattr(backbone2.config, "layer_types") else backbone2.rotary_emb(h, position_ids)
+    shared_kv_states2 = dict(shared_kv_states1)
+    for i, layer in enumerate(backbone2.layers[switch_layer:], start=switch_layer):
+        lt = _layer_type(backbone2, layer, i)
+        layer_attn_mask = causal_mask_mapping[lt]
+        layer_position_embeddings = position_embeddings_2[lt] if isinstance(position_embeddings_2, dict) else position_embeddings_2
+        h = _run_layer(
+            layer,
             h,
+            per_layer_input=per_layer_inputs2[:, :, i, :] if per_layer_inputs2 is not None else None,
             attention_mask=layer_attn_mask,
             position_ids=position_ids,
-            position_embeddings=position_embeddings_2,
+            position_embeddings=layer_position_embeddings,
             cache_position=cache_position,
+            shared_kv_states=shared_kv_states2,
+            past_key_values=None,
         )
         if isinstance(h, tuple):
             h = h[0]
 
     # Final norm + lm_head from model2
-    h = model2.model.norm(h)
+    h = backbone2.norm(h)
     logits = model2.lm_head(h)
 
     # Gemma2 applies tanh softcapping to final logits inside its forward(),

@@ -3,6 +3,8 @@
 import torch
 import torch.nn.functional as F
 
+from training.forward_utils import _language_backbone, _layer_type, _per_layer_inputs, _run_layer
+
 
 def compute_kl_loss(
     logits: torch.Tensor,
@@ -146,13 +148,17 @@ def compute_nmse_loss(
     """
     from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
-    n_layers = len(model.model.layers)
+    backbone = _language_backbone(model)
+    ref_backbone = _language_backbone(ref_model)
+    n_layers = len(backbone.layers)
     device = model.get_input_embeddings().weight.device
 
     # Get embeddings
-    h_adapt = model.model.embed_tokens(input_ids)
+    h_adapt = backbone.embed_tokens(input_ids)
+    per_layer_inputs_adapt = _per_layer_inputs(backbone, input_ids, h_adapt)
     with torch.no_grad():
-        h_ref = ref_model.model.embed_tokens(input_ids)
+        h_ref = ref_backbone.embed_tokens(input_ids)
+        per_layer_inputs_ref = _per_layer_inputs(ref_backbone, input_ids, h_ref)
 
     # Setup position ids and cache position
     seq_len = h_adapt.shape[1]
@@ -161,8 +167,8 @@ def compute_nmse_loss(
 
     # Create causal masks (full + sliding window if needed)
     mask_kwargs = {
-        "config": model.config,
-        "input_embeds": h_adapt,
+        "config": backbone.config,
+        "inputs_embeds": h_adapt,
         "attention_mask": attention_mask,
         "cache_position": cache_position,
         "past_key_values": None,
@@ -171,13 +177,19 @@ def compute_nmse_loss(
     causal_mask_mapping = {
         "full_attention": create_causal_mask(**mask_kwargs),  # type: ignore
     }
-    if any(getattr(layer, 'attention_type', None) == 'sliding_attention' for layer in model.model.layers):
+    if any(_layer_type(backbone, layer, i) == "sliding_attention" for i, layer in enumerate(backbone.layers)):
         causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)  # type: ignore
 
     # Position embeddings
-    position_embeddings_adapt = model.model.rotary_emb(h_adapt, position_ids)
+    position_embeddings_adapt = {
+        layer_type: backbone.rotary_emb(h_adapt, position_ids, layer_type)
+        for layer_type in set(getattr(backbone.config, "layer_types", ["full_attention"]))
+    } if hasattr(backbone.config, "layer_types") else backbone.rotary_emb(h_adapt, position_ids)
     with torch.no_grad():
-        position_embeddings_ref = ref_model.model.rotary_emb(h_ref, position_ids)
+        position_embeddings_ref = {
+            layer_type: ref_backbone.rotary_emb(h_ref, position_ids, layer_type)
+            for layer_type in set(getattr(ref_backbone.config, "layer_types", ["full_attention"]))
+        } if hasattr(ref_backbone.config, "layer_types") else ref_backbone.rotary_emb(h_ref, position_ids)
 
     # NMSE on embeddings (layer 0)
     layer_nmse_0 = _layer_nmse(h_adapt, h_ref.detach(), mask=attention_mask)
@@ -185,26 +197,43 @@ def compute_nmse_loss(
     layerwise = {0: layer_nmse_0.item()} if return_layerwise else None
 
     # Layer by layer
-    for i, (layer_adapt, layer_ref) in enumerate(zip(model.model.layers, ref_model.model.layers)):
-        layer_mask = causal_mask_mapping[layer_adapt.attention_type]
+    shared_kv_states_adapt = {}
+    shared_kv_states_ref = {}
+    for i, (layer_adapt, layer_ref) in enumerate(zip(backbone.layers, ref_backbone.layers)):
+        lt = _layer_type(backbone, layer_adapt, i)
+        layer_mask = causal_mask_mapping[lt]
+        layer_position_embeddings_adapt = (
+            position_embeddings_adapt[lt] if isinstance(position_embeddings_adapt, dict) else position_embeddings_adapt
+        )
+        layer_position_embeddings_ref = (
+            position_embeddings_ref[lt] if isinstance(position_embeddings_ref, dict) else position_embeddings_ref
+        )
 
-        h_adapt = layer_adapt(
+        h_adapt = _run_layer(
+            layer_adapt,
             h_adapt,
+            per_layer_input=per_layer_inputs_adapt[:, :, i, :] if per_layer_inputs_adapt is not None else None,
             attention_mask=layer_mask,
             position_ids=position_ids,
-            position_embeddings=position_embeddings_adapt,
+            position_embeddings=layer_position_embeddings_adapt,
             cache_position=cache_position,
+            shared_kv_states=shared_kv_states_adapt,
+            past_key_values=None,
         )
         if isinstance(h_adapt, tuple):
             h_adapt = h_adapt[0]
 
         with torch.no_grad():
-            h_ref = layer_ref(
+            h_ref = _run_layer(
+                layer_ref,
                 h_ref,
+                per_layer_input=per_layer_inputs_ref[:, :, i, :] if per_layer_inputs_ref is not None else None,
                 attention_mask=layer_mask,
                 position_ids=position_ids,
-                position_embeddings=position_embeddings_ref,
+                position_embeddings=layer_position_embeddings_ref,
                 cache_position=cache_position,
+                shared_kv_states=shared_kv_states_ref,
+                past_key_values=None,
             )
             if isinstance(h_ref, tuple):
                 h_ref = h_ref[0]
