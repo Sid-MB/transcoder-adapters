@@ -15,6 +15,7 @@ from models.tokens import SpecialTokenIds, detect_special_tokens
 _BASE_TOKENIZER: dict[str, str] = {
     "gemma2": "google/gemma-2-2b-it",
     "qwen2": "Qwen/Qwen2-0.5B",
+    "gemma4": "google/gemma-4-E2B-it",
 }
 
 

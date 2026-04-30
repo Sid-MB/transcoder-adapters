@@ -108,6 +108,12 @@ _TOKEN_STRATEGIES: dict[str, list[dict[str, str | list[str]]]] = {
             "assistant_marker": ["<start_of_turn>model\n", "<start_of_turn>model"],
         },
     ],
+    "gemma4": [
+        {
+            "user_marker": ["<start_of_turn>user\n", "<start_of_turn>user"],
+            "assistant_marker": ["<start_of_turn>model\n", "<start_of_turn>model"],
+        },
+    ],
 }
 
 # Generic fallback strategies tried for any architecture
