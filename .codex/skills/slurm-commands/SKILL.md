@@ -23,7 +23,7 @@ ssh sc.stanford.edu 'cd /nlp/u/siddharth/transcoder-adapters/ && <command>'
 
 For example (also waits until the job finishes, optional):
 ```sh
-ssh sc.stanford.edu 'cd /nlp/u/siddharth/transcoder-adapters/ && SBATCH_WAIT=1 ./sh/slurm_batch_train --config training/configs/gemma2_2b.yaml'
+ssh sc.stanford.edu 'cd /nlp/u/siddharth/transcoder-adapters/ && SBATCH_WAIT=1 ./sh/slurm_batch_train.sh --config training/configs/gemma2_2b.yaml'
 ```
 
 ## Submit Jobs

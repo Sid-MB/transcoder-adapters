@@ -994,10 +994,10 @@ Examples:
   uv run python -m training.train --config training/configs/gemma2_2b.yaml
 
   uv run python -m training.train \\
-    --config training/configs/gemma2_2b.yaml training/configs/gemma2-matrix/l1_0.001.yaml \\
+    --config training/configs/gemma2_2b.yaml training/configs/gemma2-matrix/chat_filter.yaml \\
     --learning_rate 1e-3 \\
     --batch_size 8 \\
-    --run_name_prefix gemma2_l1_001
+    --run_name_prefix gemma2_chat_filter
 
   uv run python -m training.train \\
     --config training/configs/gemma2_2b.yaml \\
