@@ -38,14 +38,16 @@ Tips:
 
 ## Read Logs
 
-Logs live under `logs/`, inside a job-type-specific subfolder. File names end with the Slurm job ID suffix and typically follow:
+Logs live under `logs/`, inside a job-type-specific subfolder. File names typically follow the pattern:
 
-```text
+```
 <DATE>_<TIME>_<SLURM_JOB_ID>.out
 <DATE>_<TIME>_<SLURM_JOB_ID>.err
 ```
+(there is one .out and one .err file for each job). The best way to find the correct logs is to match the job ID.
 
-Tip: Logs can be very long, especially the `.err` files since they include `tqdm` progress bars! Use `head` and `tail` to your advantage:
+
+Tip: Logs can be very long, especially the `.err` files since they include every step of `tqdm` progress bars! Use `head` and `tail` to your advantage:
 - You can usually just `tail` logs to figure out if the job errored
 - The second line of `*.out` logs tells you the exact command that the job ran
 - You can also `tail -f` logs of running jobs
@@ -67,6 +69,10 @@ squeue -j <job-id>
 sacct -j <job-id> --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
 squeue --me
 ```
+
+## Using Wandb
+
+Training runs will log information to wandb in the entity "siddharth-stanford", project name "sparse-adaptation". You can use the wandb MCP server to get this information. To correlate with your slurm runs, wandb run names end with "_sl<SLURM_JOB_ID>".
 
 ## Sync Code Before Submitting jobs if not working on the cluster
 
