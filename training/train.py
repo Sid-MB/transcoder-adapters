@@ -60,8 +60,8 @@ def _copy_generation_config_from(source: str, model) -> None:
             token_id = getattr(model.generation_config, attr, None)
             if token_id is not None:
                 setattr(model.config, attr, token_id)
-    except Exception:
-        logger.info(f"No generation_config found at {source}; using model defaults")
+    except OSError as exc:
+        logger.info(f"No generation_config found at {source}; using model defaults ({exc})")
 
 
 def _generation_config_from_model_config(hf_config) -> GenerationConfig:

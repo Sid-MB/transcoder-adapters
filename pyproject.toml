@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "torch>=2.11.0",
-    "transformers @ git+https://github.com/huggingface/transformers.git",
+    "transformers @ git+https://github.com/huggingface/transformers.git@a8f43eca15b8d1c63deb33f6b97dfab30419e5da",
     "huggingface-hub>=1.5.0,<2.0",
     "safetensors>=0.7.0",
     "pyyaml>=6.0.3",

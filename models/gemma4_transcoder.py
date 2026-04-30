@@ -13,6 +13,7 @@ from transformers.models.gemma4.modeling_gemma4 import Gemma4TextMLP
 class Gemma4ConfigWithTranscoder(Gemma4TextConfig):
     """Gemma4 config with transcoder parameters."""
 
+    # Preserve the upstream text config type; the model registry maps it to gemma4.
     model_type = "gemma4_text"
 
     def __init__(self, transcoder_n_features=512, transcoder_dec_bias=False, **kwargs):

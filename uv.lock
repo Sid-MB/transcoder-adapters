@@ -4186,7 +4186,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.11.0" },
     { name = "tqdm", specifier = ">=4.67.3" },
     { name = "transcoder-adapters", extras = ["analysis", "vllm"], marker = "extra == 'all'" },
-    { name = "transformers", git = "https://github.com/huggingface/transformers.git" },
+    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=a8f43eca15b8d1c63deb33f6b97dfab30419e5da" },
     { name = "vllm", marker = "extra == 'vllm'", specifier = ">=0.20.0" },
     { name = "wandb", specifier = ">=0.26.1" },
 ]
@@ -4195,7 +4195,7 @@ provides-extras = ["analysis", "viz", "vllm", "all"]
 [[package]]
 name = "transformers"
 version = "5.7.0.dev0"
-source = { git = "https://github.com/huggingface/transformers.git#a8f43eca15b8d1c63deb33f6b97dfab30419e5da" }
+source = { git = "https://github.com/huggingface/transformers.git?rev=a8f43eca15b8d1c63deb33f6b97dfab30419e5da#a8f43eca15b8d1c63deb33f6b97dfab30419e5da" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },

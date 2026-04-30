@@ -66,6 +66,21 @@ datasets:
 
         self.assertEqual(config.datasets[0].length_excession_behavior, LengthExcessionBehavior.TRUNCATE)
 
+    def test_load_config_rejects_checkpoint_model_type_as_model_arch(self):
+        yaml_text = """
+model_arch: gemma4_text
+output_dir: /tmp/transcoder-adapters-test
+wandb_run_name: bad-arch
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "bad_arch.yaml")
+            with open(path, "w") as f:
+                f.write(yaml_text)
+
+            with self.assertRaisesRegex(ValueError, "Use model_arch: 'gemma4'"):
+                load_config(path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -283,9 +283,11 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
             config.transcoder.pre_activation_loss_weight = float(config.transcoder.pre_activation_loss_weight)
 
     # Resolve model_arch from model_name if not set
+    from models import detect_architecture, validate_architecture_name
     if config.model_arch is None:
-        from models import detect_architecture
         config.model_arch = detect_architecture(config.model_name)
+    else:
+        config.model_arch = validate_architecture_name(config.model_arch)
 
     # Print a warning if there were any extra keys in the YAML that were not used in the config dataclass
     extra_keys = set(config_dict.keys()) - set(ExperimentConfig.__dataclass_fields__.keys())
