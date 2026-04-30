@@ -1,0 +1,23 @@
+# Longer full-feature Gemma4 E2B run that fits on a 48GB GPU.
+#
+# Use as:
+#   ./sh/slurm_batch_train.sh --config training/configs/gemma4_2b.yaml training/configs/gemma4_2b_full_10k.yaml
+
+run_name_prefix: "gemma4_2b_full_10k"
+
+transcoder:
+  n_features: 8192
+  dec_bias: true
+  l1_weight: 0.001
+
+total_rows: 10000
+
+batch_size: 1
+
+val_frequency: 1000
+layerwise_val_frequency: 2000
+token_metrics_final_n_samples: 0
+
+use_wandb: true
+save_checkpoints: true
+push_to_hub: false

@@ -25,6 +25,9 @@ from training.losses import compute_kl_loss, compute_lm_loss, compute_nmse_loss
 from models import get_transcoder_classes
 
 DEBUG_MODE_EARLY_EXIT_STEPS = 50
+GEMMA4_LANGUAGE_MODEL_KEY_MAPPING = {
+    r"^model\.language_model\.": "model.",
+}
 
 def move_batch_to(device, batch):
     """Move batch tensors to device."""
@@ -52,13 +55,45 @@ def _align_config_token_ids_with_tokenizer(hf_config, tokenizer) -> None:
 def _copy_generation_config_from(source: str, model) -> None:
     """Copy generation metadata from the tokenizer/reference model source if present."""
     try:
-        model.generation_config = GenerationConfig.from_pretrained(source)
+        model.generation_config = GenerationConfig.from_pretrained(source, local_files_only=True)
         for attr in ("bos_token_id", "eos_token_id", "pad_token_id"):
             token_id = getattr(model.generation_config, attr, None)
             if token_id is not None:
                 setattr(model.config, attr, token_id)
-    except OSError:
-        logger.info(f"No generation_config found at {source}; using model defaults")
+    except OSError as exc:
+        logger.info(f"No generation_config found at {source}; using model defaults ({exc})")
+
+
+def _generation_config_from_model_config(hf_config) -> GenerationConfig:
+    """Build a local generation config so from_pretrained does not fetch custom generation code."""
+    return GenerationConfig.from_model_config(hf_config)
+
+
+def _transcoder_model_load_kwargs(config: ExperimentConfig, hf_config) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "generation_config": _generation_config_from_model_config(hf_config),
+    }
+    if config.model_arch == "gemma4":
+        kwargs["key_mapping"] = GEMMA4_LANGUAGE_MODEL_KEY_MAPPING
+    return kwargs
+
+
+def _plain_model_load_kwargs(hf_config=None) -> dict[str, Any]:
+    if hf_config is None:
+        return {"generation_config": GenerationConfig()}
+    return {"generation_config": _generation_config_from_model_config(hf_config)}
+
+
+def _decoder_layers(model):
+    """Return language decoder layers for text-only or multimodal HF wrappers."""
+    backbone = getattr(model, "model", model)
+    if hasattr(backbone, "layers"):
+        return backbone.layers
+    if hasattr(backbone, "language_model") and hasattr(backbone.language_model, "layers"):
+        return backbone.language_model.layers
+    if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
+        return model.language_model.layers
+    raise AttributeError(f"Could not find decoder layers on {type(model).__name__}")
 
 
 def setup_models_bridging(config: ExperimentConfig):
@@ -115,6 +150,7 @@ def setup_models_bridging(config: ExperimentConfig):
             dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
+            **_transcoder_model_load_kwargs(config, hf_config),
         )
         _copy_generation_config_from(bridging_config.reference_model_path, model)
         logger.info(f"Swapping in base model MLP weights from: {config.model_name}")
@@ -123,8 +159,9 @@ def setup_models_bridging(config: ExperimentConfig):
             dtype=torch.bfloat16,
             device_map="cpu",
             trust_remote_code=True,
+            **_plain_model_load_kwargs(),
         )
-        for adapter_mlp, base_layer in zip(model._transcoder_mlps(), base_model.model.layers): # pyright: ignore[reportCallIssue]
+        for adapter_mlp, base_layer in zip(model._transcoder_mlps(), _decoder_layers(base_model)): # pyright: ignore[reportCallIssue]
             base_mlp = base_layer.mlp  # type: ignore[union-attr]
             device = adapter_mlp.gate_proj.weight.device
             adapter_mlp.gate_proj.weight.data.copy_(base_mlp.gate_proj.weight.data.to(device))
@@ -141,6 +178,7 @@ def setup_models_bridging(config: ExperimentConfig):
             dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
+            **_transcoder_model_load_kwargs(config, hf_config),
         )
         _copy_generation_config_from(tokenizer_path, model)
 
@@ -165,6 +203,7 @@ def setup_models_bridging(config: ExperimentConfig):
         dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
+        **_plain_model_load_kwargs(),
     )
     ref_model.eval()
     for param in ref_model.parameters():
@@ -217,6 +256,7 @@ def setup_models_direct(config: ExperimentConfig):
         dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
+        **_transcoder_model_load_kwargs(config, hf_config),
     )
 
     # Resize embeddings for newly added tokens
@@ -230,6 +270,7 @@ def setup_models_direct(config: ExperimentConfig):
             dtype=torch.bfloat16,
             device_map="cpu",
             trust_remote_code=True,
+            **_plain_model_load_kwargs(),
         )
         ref_tokenizer = AutoTokenizer.from_pretrained(
             direct_config.reference_model_path, trust_remote_code=True,
@@ -953,10 +994,10 @@ Examples:
   uv run python -m training.train --config training/configs/gemma2_2b.yaml
 
   uv run python -m training.train \\
-    --config training/configs/gemma2_2b.yaml training/configs/gemma-matrix/l1_0.001.yaml \\
+    --config training/configs/gemma2_2b.yaml training/configs/gemma2-matrix/chat_filter.yaml \\
     --learning_rate 1e-3 \\
     --batch_size 8 \\
-    --run_name_prefix gemma_l1_001
+    --run_name_prefix gemma2_chat_filter
 
   uv run python -m training.train \\
     --config training/configs/gemma2_2b.yaml \\

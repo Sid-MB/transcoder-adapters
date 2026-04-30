@@ -322,7 +322,7 @@ def tokenize_chat_prompt_response(
     """Tokenize a chat prompt and assistant response, including stop markers.
 
     The response span is computed from the tokenizer's chat template so model
-    family-specific assistant end markers (for example Gemma's <end_of_turn>)
+    family-specific assistant end markers (for example Gemma2's <end_of_turn>)
     are included in the evaluated response tokens.
     """
     prompt_ids = tokenizer.apply_chat_template(
@@ -714,7 +714,7 @@ def main():
     # Validate data source / reference model pairing.
     # evalchemy_qwen rollouts are DeepSeek-R1-Distill-Qwen outputs; their math/code
     # prompt templates are only meaningful for Qwen/DeepSeek-family models.
-    # lmsys_chat uses apply_chat_template and targets general chat models (e.g. Gemma-it).
+    # lmsys_chat uses apply_chat_template and targets general chat models (e.g. Gemma2-it).
     ref_lower = reference_model.lower()
     is_qwen_ref = any(k in ref_lower for k in ("qwen", "deepseek"))
     if args.data_source == "evalchemy_qwen" and not is_qwen_ref:

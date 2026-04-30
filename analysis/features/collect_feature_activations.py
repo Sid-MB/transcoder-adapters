@@ -51,12 +51,16 @@ import heapq
 from dataclasses import dataclass, field
 from collections import defaultdict
 from typing import Any
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 import torch
 from tqdm import tqdm
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
+from analysis.features.annotate.annotate_assistant_response_features import (
+    AssistantResponseFeatureAnnotator,
+)
+from analysis.features.annotate.annotation_framework import run_annotation
 from analysis.features.load_val_data import load_val_data
 
 
@@ -446,6 +450,39 @@ def _write_feature_json(args: tuple) -> None:
         json.dump(feature_json, f)
 
 
+def _drain_completed_writes(
+    pending: set[Future],
+    progress,
+    block: bool = False,
+) -> set[Future]:
+    """Wait for completed JSON writes and surface any write errors."""
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for future in done:
+            future.result()
+        progress.update(len(done))
+        if not block:
+            break
+    return pending
+
+
+def _release_feature_examples(stats: FeatureStats) -> None:
+    """Drop example buffers once the feature JSON has been handed to a writer."""
+    stats.top_k_examples.clear()
+    stats.random_examples.clear()
+    stats.domain_top_k_examples.clear()
+
+
+def _count_nonempty_features(collector: FeatureCollector) -> int:
+    """Count feature JSON files that will be written."""
+    return sum(
+        1
+        for layer_stats in collector.stats
+        for stats in layer_stats
+        if stats.activation_count > 0
+    )
+
+
 def export_circuit_tracer_json(
     collector: FeatureCollector,
     logit_lens_data: list[dict],
@@ -459,78 +496,108 @@ def export_circuit_tracer_json(
 
     logger.info(f"Exporting features to {features_dir}...")
 
-    # First pass: build all JSON objects
-    write_tasks = []  # list of (filepath, json_dict)
-    skipped = 0
+    max_pending_writes = max(1, n_workers * 2)
+    logger.info(
+        f"Streaming feature JSON files with {n_workers} workers "
+        f"(max {max_pending_writes} pending writes)..."
+    )
 
-    for layer_idx in tqdm(range(collector.n_layers), desc="Building JSON"):
-        layer_logit_lens = logit_lens_data[layer_idx]
+    total_writes = _count_nonempty_features(collector)
+    total_features = collector.n_layers * collector.n_features
+    write_count = 0
+    skipped = total_features - total_writes
 
-        for feature_idx in range(collector.n_features):
-            stats = collector.stats[layer_idx][feature_idx]
-
-            # Skip empty features
-            if stats.activation_count == 0:
-                skipped += 1
-                continue
-
-            # Get examples (sorted by activation for top-k)
-            top_examples = sorted(stats.top_k_examples, key=lambda x: -x.activation)
-            random_examples = stats.random_examples
-
-            # Format examples
-            top_formatted = [format_example_for_circuit_tracer(ex, tokenizer) for ex in top_examples]
-            random_formatted = [format_example_for_circuit_tracer(ex, tokenizer) for ex in random_examples]
-
-            # Compute activation range from examples
-            all_acts = []
-            for ex in top_examples + random_examples:
-                all_acts.extend(ex.context_activations)
-            act_min = min(all_acts) if all_acts else 0.0
-            act_max = max(all_acts) if all_acts else 1.0
-
-            # Get logit lens tokens
-            top_logits = [tokenizer.decode([tok_id]) for tok_id in layer_logit_lens['top_ids'][feature_idx]]
-            bottom_logits = [tokenizer.decode([tok_id]) for tok_id in layer_logit_lens['bot_ids'][feature_idx]]
-
-            # Per-domain top examples (sorted by descending activation)
-            domain_quantiles = []
-            for domain_name, domain_heap in sorted(stats.domain_top_k_examples.items()):
-                domain_sorted = sorted(domain_heap, key=lambda x: -x.activation)
-                domain_formatted = [
-                    format_example_for_circuit_tracer(ex, tokenizer) for ex in domain_sorted
-                ]
-                domain_quantiles.append({
-                    "quantile_name": f"Top activations ({domain_name})",
-                    "examples": domain_formatted,
-                })
-
-            # Build JSON
-            feature_json = {
-                "top_logits": top_logits,
-                "bottom_logits": bottom_logits,
-                "act_min": act_min,
-                "act_max": act_max,
-                "examples_quantiles": [
-                    {"quantile_name": "Top activations", "examples": top_formatted},
-                    *domain_quantiles,
-                    {"quantile_name": "Random samples", "examples": random_formatted},
-                ],
-                "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
-                "layer": layer_idx,
-                "feature": feature_idx,
-            }
-
-            cantor_id = cantor_pair(layer_idx, feature_idx)
-            filepath = features_dir / f"{cantor_id}.json"
-            write_tasks.append((filepath, feature_json))
-
-    # Second pass: write files in parallel
-    logger.info(f"Writing {len(write_tasks)} files with {n_workers} workers...")
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        list(tqdm(executor.map(_write_feature_json, write_tasks), total=len(write_tasks), desc="Writing files"))
+        pending_writes: set[Future] = set()
+        with tqdm(
+            total=total_writes,
+            desc="Writing feature files",
+            unit="file",
+        ) as write_progress:
+            for layer_idx in tqdm(range(collector.n_layers), desc="Building JSON"):
+                layer_logit_lens = logit_lens_data[layer_idx]
 
-    logger.info(f"Generated {len(write_tasks)} feature files, skipped {skipped} empty features")
+                for feature_idx in range(collector.n_features):
+                    stats = collector.stats[layer_idx][feature_idx]
+
+                    # Skip empty features
+                    if stats.activation_count == 0:
+                        continue
+
+                    # Get examples (sorted by activation for top-k)
+                    top_examples = sorted(stats.top_k_examples, key=lambda x: -x.activation)
+                    random_examples = stats.random_examples
+
+                    # Format examples
+                    top_formatted = [
+                        format_example_for_circuit_tracer(ex, tokenizer)
+                        for ex in top_examples
+                    ]
+                    random_formatted = [
+                        format_example_for_circuit_tracer(ex, tokenizer)
+                        for ex in random_examples
+                    ]
+
+                    # Compute activation range from examples
+                    all_acts = []
+                    for ex in top_examples + random_examples:
+                        all_acts.extend(ex.context_activations)
+                    act_min = min(all_acts) if all_acts else 0.0
+                    act_max = max(all_acts) if all_acts else 1.0
+
+                    # Get logit lens tokens
+                    top_logits = [
+                        tokenizer.decode([tok_id])
+                        for tok_id in layer_logit_lens['top_ids'][feature_idx]
+                    ]
+                    bottom_logits = [
+                        tokenizer.decode([tok_id])
+                        for tok_id in layer_logit_lens['bot_ids'][feature_idx]
+                    ]
+
+                    # Per-domain top examples (sorted by descending activation)
+                    domain_quantiles = []
+                    for domain_name, domain_heap in sorted(stats.domain_top_k_examples.items()):
+                        domain_sorted = sorted(domain_heap, key=lambda x: -x.activation)
+                        domain_formatted = [
+                            format_example_for_circuit_tracer(ex, tokenizer)
+                            for ex in domain_sorted
+                        ]
+                        domain_quantiles.append({
+                            "quantile_name": f"Top activations ({domain_name})",
+                            "examples": domain_formatted,
+                        })
+
+                    # Build JSON
+                    feature_json = {
+                        "top_logits": top_logits,
+                        "bottom_logits": bottom_logits,
+                        "act_min": act_min,
+                        "act_max": act_max,
+                        "examples_quantiles": [
+                            {"quantile_name": "Top activations", "examples": top_formatted},
+                            *domain_quantiles,
+                            {"quantile_name": "Random samples", "examples": random_formatted},
+                        ],
+                        "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
+                        "layer": layer_idx,
+                        "feature": feature_idx,
+                    }
+
+                    cantor_id = cantor_pair(layer_idx, feature_idx)
+                    filepath = features_dir / f"{cantor_id}.json"
+                    pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
+                    write_count += 1
+                    _release_feature_examples(stats)
+
+                    if len(pending_writes) >= max_pending_writes:
+                        pending_writes = _drain_completed_writes(
+                            pending_writes, write_progress
+                        )
+
+            _drain_completed_writes(pending_writes, write_progress, block=True)
+
+    logger.info(f"Generated {write_count} feature files, skipped {skipped} empty features")
 
 
 def export_metadata(collector: FeatureCollector, output_dir: Path):
@@ -602,6 +669,19 @@ def export_metadata(collector: FeatureCollector, output_dir: Path):
         json.dump(metadata, f)
 
     logger.info(f"Saved metadata for {len(metadata['features'])} features")
+
+
+def annotate_collected_features(output_dir: Path) -> None:
+    """Run fast metadata-based feature annotations for the dashboard."""
+    annotations_path = output_dir / "feature_annotations.json"
+    logger.info("Running assistant-response feature annotations...")
+    logger.info(f"Annotation output file: {annotations_path}")
+    run_annotation(
+        data_dir=output_dir,
+        annotations_file=annotations_path,
+        annotator=AssistantResponseFeatureAnnotator(),
+    )
+    logger.info(f"Feature annotations saved to {annotations_path}")
 
 
 # =============================================================================
@@ -967,11 +1047,17 @@ def main():
     # Export
     export_circuit_tracer_json(collector, logit_lens_data, tokenizer, output_dir)
     export_metadata(collector, output_dir)
+    annotate_collected_features(output_dir)
 
     logger.info(f"Done! Output written to {output_dir}")
     logger.info("  features/: Circuit tracer JSON files")
     logger.info("  feature_metadata.json: Rich metadata for analysis")
+    logger.info("  feature_annotations.json: Automatic feature annotations")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.error("Unhandled exception in collect_feature_activations", exc_info=True)
+        raise

@@ -122,7 +122,10 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
                     self.cached_l0 = per_token_l0.mean().item()
 
                 # Dead features: age all, reset active ones
-                self._dead_feature_counters = self._dead_feature_counters.to(features.device)
+                if self._dead_feature_counters.is_meta:
+                    self._dead_feature_counters = torch.zeros(self.n_features, device=features.device)
+                else:
+                    self._dead_feature_counters = self._dead_feature_counters.to(features.device)
                 self._dead_feature_counters += batch_size
                 self._dead_feature_counters[feature_active.any(dim=(0, 1))] = 0
 

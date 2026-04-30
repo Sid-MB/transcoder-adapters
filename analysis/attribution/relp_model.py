@@ -165,7 +165,7 @@ class RelPReplacementModel(nn.Module):
             raise ValueError("Prompt tokenization produced no tokens")
 
         # Add BOS if not present. Some chat templates begin with another
-        # special token such as Gemma's <start_of_turn>, which should not count
+        # special token such as Gemma2's <start_of_turn>, which should not count
         # as BOS for attribution zeroing.
         bos = self.tokenizer.bos_token_id
         if bos is None:

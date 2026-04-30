@@ -123,7 +123,7 @@ def generate_response_lengths(
     for ex in tqdm(prompts, desc="Generating"):
         input_ids = torch.tensor([ex["prompt_ids"]], dtype=torch.long, device=device)
 
-        # Gemma-2 exposes eos_token_id as a list; model.generate requires a scalar.
+        # Gemma2 exposes eos_token_id as a list; model.generate requires a scalar.
         eos_id = model.config.eos_token_id
         pad_id = eos_id[0] if isinstance(eos_id, list) else eos_id
 

@@ -1,7 +1,7 @@
 """Configuration management for sparse adaptation experiments."""
 
 import yaml
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Literal
 
@@ -18,6 +18,32 @@ class LengthExcessionBehavior(str, Enum):
     """Throw if any sequences are over the max length."""
     FILTER = "filter"
     """Filter out any sequences that exceed the maximum length."""
+
+
+class ConfigLoader(yaml.SafeLoader):
+    """Safe config loader with support for legacy configs emitted by yaml.dump."""
+
+
+class ConfigDumper(yaml.SafeDumper):
+    """Safe config dumper that writes enum values as plain YAML scalars."""
+
+
+def _legacy_length_excession_behavior_constructor(loader: yaml.Loader, node: yaml.Node) -> LengthExcessionBehavior:
+    values = loader.construct_sequence(node)
+    if len(values) != 1:
+        raise ValueError(f"Invalid legacy LengthExcessionBehavior payload: {values}")
+    return LengthExcessionBehavior(values[0])
+
+
+def _enum_representer(dumper: yaml.Dumper, value: Enum) -> yaml.Node:
+    return dumper.represent_data(value.value)
+
+
+ConfigLoader.add_constructor(
+    "tag:yaml.org,2002:python/object/apply:training.config.LengthExcessionBehavior",
+    _legacy_length_excession_behavior_constructor,
+)
+ConfigDumper.add_multi_representer(Enum, _enum_representer)
 
 
 @dataclass
@@ -89,7 +115,7 @@ class ExperimentConfig:
     # Training hyperparameters
     learning_rate: float = 8e-4
     batch_size: int = 1
-    micro_batch_size: int | None = None # not really doing gradient accumulation anymore, see note in PredefinedDataset's _make_dataloader function. If None, this will be set to batch_size.
+    micro_batch_size: int | None = None # Prefer to leave micro_batch_size as None! We're not really doing gradient accumulation anymore, see note in PredefinedDataset's _make_dataloader function. If None, this will be set to batch_size.
     num_epochs: int = 1
     warmup_ratio: float = 0.05
     gradient_clip_norm: float = 1.0
@@ -162,7 +188,7 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
     config_dict: dict = {}
     for n, p in enumerate(paths):
         with open(p, 'r') as f:
-            layer = yaml.safe_load(f)
+            layer = yaml.load(f, Loader=ConfigLoader)
         if layer:
             config_dict = {**config_dict, **layer}
             if n != 0:
@@ -173,11 +199,17 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
     # Handle nested configs
     adapter_configs = {}
     if 'transcoder' in config_dict:
-        adapter_configs['transcoder'] = TranscoderConfig(**config_dict.pop('transcoder'))
+        raw_transcoder = config_dict.pop('transcoder')
+        if raw_transcoder is not None:
+            adapter_configs['transcoder'] = TranscoderConfig(**raw_transcoder)
     if 'bridging' in config_dict:
-        adapter_configs['bridging'] = BridgingConfig(**config_dict.pop('bridging'))
+        raw_bridging = config_dict.pop('bridging')
+        if raw_bridging is not None:
+            adapter_configs['bridging'] = BridgingConfig(**raw_bridging)
     if 'direct' in config_dict:
-        adapter_configs['direct'] = DirectConfig(**config_dict.pop('direct'))
+        raw_direct = config_dict.pop('direct')
+        if raw_direct is not None:
+            adapter_configs['direct'] = DirectConfig(**raw_direct)
 
     # Parse datasets list before creating ExperimentConfig
     if 'datasets' in config_dict:
@@ -251,9 +283,11 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
             config.transcoder.pre_activation_loss_weight = float(config.transcoder.pre_activation_loss_weight)
 
     # Resolve model_arch from model_name if not set
+    from models import detect_architecture, validate_architecture_name
     if config.model_arch is None:
-        from models import detect_architecture
         config.model_arch = detect_architecture(config.model_name)
+    else:
+        config.model_arch = validate_architecture_name(config.model_arch)
 
     # Print a warning if there were any extra keys in the YAML that were not used in the config dataclass
     extra_keys = set(config_dict.keys()) - set(ExperimentConfig.__dataclass_fields__.keys())
@@ -383,17 +417,7 @@ def apply_overrides(config: ExperimentConfig, overrides: dict[str, Any]) -> Expe
 
 def save_config(config: ExperimentConfig, output_path: str):
     """Save configuration to YAML file."""
-    config_dict = {}
-    for field_name in config.__dataclass_fields__:
-        val = getattr(config, field_name)
-        if hasattr(val, '__dataclass_fields__'):
-            config_dict[field_name] = val.__dict__
-        elif isinstance(val, list) and val and hasattr(val[0], '__dataclass_fields__'):
-            config_dict[field_name] = [item.__dict__ for item in val]
-        else:
-            config_dict[field_name] = val
-
     with open(output_path, 'w') as f:
-        yaml.dump(config_dict, f, indent=2, default_flow_style=False)
+        yaml.dump(asdict(config), f, Dumper=ConfigDumper, indent=2, default_flow_style=False, sort_keys=False)
 
 CHECKPOINT_CONFIG_FILENAME = "train_config.yaml"

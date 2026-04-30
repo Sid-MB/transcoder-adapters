@@ -9,6 +9,7 @@ from analysis.attribution.run_attribution import (
     DEEPSEEK_USER_TOKEN,
     load_prompt_file,
 )
+from training.dataset.gemma2.lmsys_chat import LMSYSChatDataset
 from training.dataset.openthoughts.open_thoughts import OpenThoughtsDataset
 
 
@@ -162,6 +163,27 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
         raw_tokens = tokenizer.encode(raw_prompt, add_special_tokens=False)
         self.assertEqual(prompt_tokens, raw_tokens[:-1])
         self.assertEqual(target, raw_tokens[-1])
+
+    def test_lmsys_chat_accepts_batch_encoding_template_output(self):
+        class BatchEncodingChatTokenizer(GemmaLikeChatTokenizer):
+            def apply_chat_template(self, *args, **kwargs):
+                ids = super().apply_chat_template(*args, **kwargs)
+                if kwargs.get("tokenize", False):
+                    return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+                return ids
+
+        dataset = LMSYSChatDataset.__new__(LMSYSChatDataset)
+        dataset.tokenizer = BatchEncodingChatTokenizer()
+
+        messages = [
+            {"role": "user", "content": "Problem?"},
+            {"role": "assistant", "content": "Answer!"},
+        ]
+        ids = dataset._chat_template_ids(messages, add_generation_prompt=False)
+
+        self.assertIsInstance(ids, list)
+        self.assertTrue(all(isinstance(token_id, int) for token_id in ids))
+        self.assertEqual(ids[0], dataset.tokenizer.bos_token_id)
 
 
 if __name__ == "__main__":

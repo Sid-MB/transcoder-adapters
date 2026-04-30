@@ -1,6 +1,6 @@
 from .openthoughts.open_thoughts import OpenThoughtsDataset
 from .collate import collate_fn
-from .gemma import FineWebDataset, LMSYSChatDataset, MixedDataset
+from .gemma2 import FineWebDataset, LMSYSChatDataset, MixedDataset
 
 __all__ = [
     "OpenThoughtsDataset",

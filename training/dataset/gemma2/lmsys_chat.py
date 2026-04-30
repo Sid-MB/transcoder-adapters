@@ -1,3 +1,7 @@
+import json
+from collections.abc import Mapping, Sequence
+
+import torch
 from torch.utils.data import Dataset
 
 from datasets import Dataset as HFDataset, load_dataset
@@ -54,12 +58,10 @@ class LMSYSChatDataset(Dataset):
         return len(self.ds)
 
     def __getitem__(self, idx: int) -> DatasetItem:
-        conversation = self.ds[idx][self.conversation_field]
+        conversation = self._normalize_conversation(self.ds[idx][self.conversation_field])
 
         # Tokenize full conversation via chat template
-        input_ids = self.tokenizer.apply_chat_template(
-            conversation, tokenize=True, add_generation_prompt=False
-        )
+        input_ids = self._chat_template_ids(conversation, add_generation_prompt=False)
 
         # Truncate if needed
         original_length = len(input_ids)
@@ -104,19 +106,39 @@ class LMSYSChatDataset(Dataset):
             # Tokens up to (not including) this assistant turn, with generation
             # prompt so we get the assistant turn-start marker included.
             prefix = conversation[:i]
-            prefix_ids = self.tokenizer.apply_chat_template(
-                prefix, tokenize=True, add_generation_prompt=True
-            )
+            prefix_ids = self._chat_template_ids(prefix, add_generation_prompt=True)
             start = len(prefix_ids)
 
             # Tokens through the end of this assistant turn.
             through = conversation[: i + 1]
-            through_ids = self.tokenizer.apply_chat_template(
-                through, tokenize=True, add_generation_prompt=False
-            )
+            through_ids = self._chat_template_ids(through, add_generation_prompt=False)
             end = min(len(through_ids), len(full_ids))
 
             # Unmask the assistant span
             labels[start:end] = list(full_ids[start:end])
 
         return labels
+
+    @staticmethod
+    def _normalize_conversation(conversation) -> list[dict]:
+        if isinstance(conversation, str):
+            conversation = json.loads(conversation)
+        return conversation
+
+    def _chat_template_ids(
+        self, conversation: list[dict], *, add_generation_prompt: bool
+    ) -> list[int]:
+        rendered = self.tokenizer.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=add_generation_prompt,
+        )
+        if isinstance(rendered, str):
+            rendered = self.tokenizer(rendered, add_special_tokens=False)
+        if isinstance(rendered, Mapping):
+            rendered = rendered["input_ids"]
+        if isinstance(rendered, torch.Tensor):
+            rendered = rendered.tolist()
+        if not isinstance(rendered, Sequence):
+            raise TypeError(f"Unexpected chat template output type: {type(rendered).__name__}")
+        return list(rendered)
