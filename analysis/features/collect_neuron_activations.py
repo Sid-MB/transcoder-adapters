@@ -46,6 +46,8 @@ from analysis.features.collect_feature_activations import (
     FeatureStats,
     cantor_pair,
     format_example_for_circuit_tracer,
+    _drain_completed_writes,
+    _release_feature_examples,
     _write_feature_json,
 )
 
@@ -332,59 +334,85 @@ def export_circuit_tracer_json_neurons(
 
     logger.info(f"Exporting neurons to {features_dir}...")
 
-    write_tasks = []
+    max_pending_writes = max(1, n_workers * 2)
+    logger.info(
+        f"Streaming neuron JSON files with {n_workers} workers "
+        f"(max {max_pending_writes} pending writes)..."
+    )
+
+    write_count = 0
     skipped = 0
 
-    for layer_idx in tqdm(range(collector.n_layers), desc="Building JSON"):
-        layer_logit_lens = logit_lens_data[layer_idx]
-        sampled = collector.sampled_neurons[layer_idx]
-
-        for local_idx, neuron_idx in enumerate(sampled):
-            stats = collector.stats[layer_idx][local_idx]
-
-            if stats.activation_count == 0:
-                skipped += 1
-                continue
-
-            top_examples = sorted(stats.top_k_examples, key=lambda x: -x.activation)
-            random_examples = stats.random_examples
-
-            top_formatted = [format_example_for_circuit_tracer(ex, tokenizer) for ex in top_examples]
-            random_formatted = [format_example_for_circuit_tracer(ex, tokenizer) for ex in random_examples]
-
-            all_acts = []
-            for ex in top_examples + random_examples:
-                all_acts.extend(ex.context_activations)
-            act_min = min(all_acts) if all_acts else 0.0
-            act_max = max(all_acts) if all_acts else 1.0
-
-            top_logits = [tokenizer.decode([tok_id]) for tok_id in layer_logit_lens['top_ids'][local_idx]]
-            bottom_logits = [tokenizer.decode([tok_id]) for tok_id in layer_logit_lens['bot_ids'][local_idx]]
-
-            feature_json = {
-                "top_logits": top_logits,
-                "bottom_logits": bottom_logits,
-                "act_min": act_min,
-                "act_max": act_max,
-                "examples_quantiles": [
-                    {"quantile_name": "Top activations", "examples": top_formatted},
-                    {"quantile_name": "Random samples", "examples": random_formatted},
-                ],
-                "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
-                "layer": layer_idx,
-                "feature": neuron_idx,  # Original neuron index
-                "is_neuron": True,  # Mark as neuron baseline
-            }
-
-            cantor_id = cantor_pair(layer_idx, neuron_idx)
-            filepath = features_dir / f"{cantor_id}.json"
-            write_tasks.append((filepath, feature_json))
-
-    logger.info(f"Writing {len(write_tasks)} files with {n_workers} workers...")
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        list(tqdm(executor.map(_write_feature_json, write_tasks), total=len(write_tasks), desc="Writing files"))
+        pending_writes = set()
+        with tqdm(desc="Writing files", unit="file") as write_progress:
+            for layer_idx in tqdm(range(collector.n_layers), desc="Building JSON"):
+                layer_logit_lens = logit_lens_data[layer_idx]
+                sampled = collector.sampled_neurons[layer_idx]
 
-    logger.info(f"Generated {len(write_tasks)} neuron files, skipped {skipped} empty neurons")
+                for local_idx, neuron_idx in enumerate(sampled):
+                    stats = collector.stats[layer_idx][local_idx]
+
+                    if stats.activation_count == 0:
+                        skipped += 1
+                        continue
+
+                    top_examples = sorted(stats.top_k_examples, key=lambda x: -x.activation)
+                    random_examples = stats.random_examples
+
+                    top_formatted = [
+                        format_example_for_circuit_tracer(ex, tokenizer)
+                        for ex in top_examples
+                    ]
+                    random_formatted = [
+                        format_example_for_circuit_tracer(ex, tokenizer)
+                        for ex in random_examples
+                    ]
+
+                    all_acts = []
+                    for ex in top_examples + random_examples:
+                        all_acts.extend(ex.context_activations)
+                    act_min = min(all_acts) if all_acts else 0.0
+                    act_max = max(all_acts) if all_acts else 1.0
+
+                    top_logits = [
+                        tokenizer.decode([tok_id])
+                        for tok_id in layer_logit_lens['top_ids'][local_idx]
+                    ]
+                    bottom_logits = [
+                        tokenizer.decode([tok_id])
+                        for tok_id in layer_logit_lens['bot_ids'][local_idx]
+                    ]
+
+                    feature_json = {
+                        "top_logits": top_logits,
+                        "bottom_logits": bottom_logits,
+                        "act_min": act_min,
+                        "act_max": act_max,
+                        "examples_quantiles": [
+                            {"quantile_name": "Top activations", "examples": top_formatted},
+                            {"quantile_name": "Random samples", "examples": random_formatted},
+                        ],
+                        "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
+                        "layer": layer_idx,
+                        "feature": neuron_idx,  # Original neuron index
+                        "is_neuron": True,  # Mark as neuron baseline
+                    }
+
+                    cantor_id = cantor_pair(layer_idx, neuron_idx)
+                    filepath = features_dir / f"{cantor_id}.json"
+                    pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
+                    write_count += 1
+                    _release_feature_examples(stats)
+
+                    if len(pending_writes) >= max_pending_writes:
+                        pending_writes = _drain_completed_writes(
+                            pending_writes, write_progress
+                        )
+
+            _drain_completed_writes(pending_writes, write_progress, block=True)
+
+    logger.info(f"Generated {write_count} neuron files, skipped {skipped} empty neurons")
 
 
 def export_metadata_neurons(collector: NeuronCollector, output_dir: Path):
@@ -608,4 +636,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.error("Unhandled exception in collect_neuron_activations", exc_info=True)
+        raise

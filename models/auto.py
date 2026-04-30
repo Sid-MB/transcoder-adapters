@@ -39,13 +39,33 @@ def load_tokenizer(
         logger.info(f"Loading tokenizer from explicit path: {tokenizer_path}")
         return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
+    config = None
     try:
         logger.info(f"Loading tokenizer from checkpoint: {model_path}")
-        return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        if getattr(tokenizer, "chat_template", None) is not None:
+            return tokenizer
+
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        model_type: str = getattr(config, "model_type", "")
+        if model_type in _BASE_TOKENIZER:
+            source = _BASE_TOKENIZER[model_type]
+            logger.warning(
+                f"Tokenizer from checkpoint has no chat_template; "
+                f"falling back to base model tokenizer: {source}"
+            )
+            return AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+
+        logger.warning(
+            "Tokenizer from checkpoint has no chat_template and model_type "
+            f"{model_type!r} has no known base tokenizer. Use --tokenizer for chat data."
+        )
+        return tokenizer
     except (OSError, AttributeError, KeyError, TypeError) as exc:
         logger.warning(f"Could not load tokenizer from checkpoint ({exc}); trying base tokenizer fallback")
 
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    if config is None:
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     model_type: str = getattr(config, "model_type", "")
 
     if model_type not in _BASE_TOKENIZER:

@@ -9,7 +9,7 @@ description: Information for launching Slurm jobs and reviewing their logs.
 
 Use this workflow to work with Slurm and inspect job outputs.
 
-If you run into errors about things like slurm commands being unavailable, run Slurm / `sh/...` commands outside of the sandbox
+If you run into errors about like slurm commands being unavailable or slurm connection failures, run slurm and `./sh/...` commands outside of the sandbox
 
 ## Checking if we're on the local machine or the cluster
 
@@ -44,7 +44,7 @@ Logs live under `logs/`, inside a job-type-specific subfolder. File names typica
 <DATE>_<TIME>_<SLURM_JOB_ID>.out
 <DATE>_<TIME>_<SLURM_JOB_ID>.err
 ```
-(there is one .out and one .err file for each job). The best way to find the correct logs is to match the job ID.
+(there is one .out and one .err file for each job with the exact same names beside the extension). The best way to find the correct logs is to match the job ID. And, if someone provides one of the files, you can find the other by looking at the same path with the other extension.
 
 
 Tip: Logs can be very long, especially the `.err` files since they include every step of `tqdm` progress bars! Use `head` and `tail` to your advantage:
