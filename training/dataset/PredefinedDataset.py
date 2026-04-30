@@ -88,7 +88,7 @@ class PredefinedDataset:
 
         match entry.type:
             case "fineweb":
-                from training.dataset.gemma.fineweb import FineWebDataset
+                from training.dataset.gemma2.fineweb import FineWebDataset
                 return FineWebDataset(
                     data_path=datapath,
                     tokenizer=self.tokenizer,
@@ -96,7 +96,7 @@ class PredefinedDataset:
                     truncate=truncate,
                 )
             case "lmsys_chat":
-                from training.dataset.gemma.lmsys_chat import LMSYSChatDataset
+                from training.dataset.gemma2.lmsys_chat import LMSYSChatDataset
                 return LMSYSChatDataset(
                     data_path=datapath,
                     tokenizer=self.tokenizer,

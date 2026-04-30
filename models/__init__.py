@@ -73,11 +73,11 @@ def detect_architecture(model_name: str) -> str:
 
     if "qwen" in name_lower:
         return "qwen2"
-    if "google/gemma" in name_lower:
+    if "google/gemma-2" in name_lower:
         from helpers.log import logger
         logger.info(f"Using original (non-transcoder) Gemma2 architecture for {model_name}")
         return "gemma2-orig"
-    if "gemma" in name_lower:
+    if "gemma2" in name_lower:
         return "gemma2"
     raise ValueError(
         f"Cannot auto-detect architecture for '{model_name}'. "

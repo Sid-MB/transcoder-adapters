@@ -155,7 +155,7 @@ def _load_chat_dataset(
     conv_col: str,
 ) -> tuple[Any, list[dict] | None]:
     """Load chat conversation data via LMSYSChatDataset."""
-    from training.dataset.gemma.lmsys_chat import LMSYSChatDataset
+    from training.dataset.gemma2.lmsys_chat import LMSYSChatDataset
 
     logger.info(f"Detected chat column '{conv_col}', loading via LMSYSChatDataset")
     dataset = LMSYSChatDataset(

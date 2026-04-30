@@ -21,7 +21,7 @@ TokenMarkers = dict[str, TokenMarkerValue]
 class SpecialTokenIds:
     """Special token patterns for a given tokenizer/architecture.
 
-    Most markers are single tokens, but Gemma role markers are a token
+    Most markers are single tokens, but Gemma2 role markers are a token
     sequence: ``<start_of_turn>`` followed by the role name.
     """
     bos: TokenPatterns | None = None
@@ -100,7 +100,7 @@ _TOKEN_STRATEGIES: dict[str, list[dict[str, str | list[str]]]] = {
          "think_start": "<think>", "think_end": "</think>"},
     ],
     "gemma2": [
-        # Gemma 2 uses <start_of_turn> plus role text (no thinking tags).
+        # Gemma2 uses <start_of_turn> plus role text (no thinking tags).
         # Keep newline/no-newline variants because chat templates include a
         # newline after the role, and tokenizers may bind it to the role token.
         {
@@ -239,7 +239,7 @@ def classify_position(position: int, markers: TokenMarkers) -> tuple[str, float 
         - Regions: bos, user_marker, assistant_marker, think_start, think_end,
                    question, thinking, answer, unknown
     """
-    # Special marker spans. Gemma role markers span multiple tokens, e.g.
+    # Special marker spans. Gemma2 role markers span multiple tokens, e.g.
     # <start_of_turn>, role text, and sometimes the following newline.
     for marker_name in ('bos', 'user_marker', 'assistant_marker', 'think_start', 'think_end'):
         if _in_marker_span(position, _marker_spans(markers, marker_name)):

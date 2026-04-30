@@ -269,7 +269,7 @@ def main():
         help=(
             "How to tokenize prompt files. 'raw' preserves file text exactly; "
             "'chat' parses marked prompt files and applies the tokenizer chat template; "
-            "'auto' uses chat formatting for Gemma checkpoints with marked prompt files."
+            "'auto' uses chat formatting for Gemma2 checkpoints with marked prompt files."
         ),
     )
 
