@@ -14,7 +14,6 @@ total_rows: 50
 weight_by: "rows"
 
 batch_size: 1
-micro_batch_size: 1
 
 val_frequency: 50
 layerwise_val_frequency: 50
