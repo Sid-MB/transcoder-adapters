@@ -96,6 +96,9 @@ Also note that the second line of a Slurm log has the command that was used for 
 
 When summarizing a run, include the script name, job ID, current/final Slurm state, and the exact log files inspected. If the job failed, quote only the short error excerpt needed to diagnose it and name the next concrete fix or rerun command. -->
 
+## Iterative development
+If asked for iterative development or similar, you can follow the workflow of launching a job with wait, waiting until it finishes, inspecting the logs, and if it failed, launching a new job with a fix, looping forever until success.
+
 ## Sync Code Before Submitting jobs if not working on the cluster
 
 If you made code or config changes locally and you're not working on the cluster, do not start a Slurm run until the cluster checkout has those changes. The cluster runs `/nlp/u/siddharth/transcoder-adapters`, so a local unpushed or unfetched edit means Slurm will run old code.

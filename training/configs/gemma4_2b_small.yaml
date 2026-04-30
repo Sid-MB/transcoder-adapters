@@ -1,0 +1,26 @@
+# Smoke-test overrides for gemma4_2b.yaml.
+#
+# Use as:
+#   ./sh/slurm_batch_train.sh --config training/configs/gemma4_2b.yaml training/configs/gemma4_2b_small.yaml
+
+run_name_prefix: "gemma4_2b_small"
+
+transcoder:
+  n_features: 1024
+  dec_bias: true
+  l1_weight: 0.001
+
+total_rows: 50
+weight_by: "rows"
+
+batch_size: 1
+micro_batch_size: 1
+
+val_frequency: 50
+layerwise_val_frequency: 50
+token_metrics_final_n_samples: 0
+
+use_wandb: true
+save_checkpoints: false
+push_to_hub: false
+debug_mode: true

@@ -6,14 +6,14 @@ from collections.abc import Iterator
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import Gemma4Config, Gemma4ForCausalLM
-from transformers.models.gemma4.modeling_gemma4 import Gemma4MLP
+from transformers import Gemma4ForCausalLM, Gemma4TextConfig
+from transformers.models.gemma4.modeling_gemma4 import Gemma4TextMLP
 
 
-class Gemma4ConfigWithTranscoder(Gemma4Config):
+class Gemma4ConfigWithTranscoder(Gemma4TextConfig):
     """Gemma4 config with transcoder parameters."""
 
-    model_type = "gemma4"
+    model_type = "gemma4_text"
 
     def __init__(self, transcoder_n_features=512, transcoder_dec_bias=False, **kwargs):
         self.transcoder_n_features = transcoder_n_features
@@ -22,11 +22,11 @@ class Gemma4ConfigWithTranscoder(Gemma4Config):
         self.architectures = ["Gemma4ForCausalLMWithTranscoder"]
 
 
-class Gemma4MLPWithTranscoder(Gemma4MLP):
+class Gemma4MLPWithTranscoder(Gemma4TextMLP):
     """Gemma4 MLP with integrated transcoder branch."""
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, layer_idx: int):
+        super().__init__(config, layer_idx)
         self.config = config
         self.d_model = config.hidden_size
         self.n_features = getattr(config, "transcoder_n_features", 512)
@@ -96,8 +96,8 @@ class Gemma4ForCausalLMWithTranscoder(Gemma4ForCausalLM):
 
     def __init__(self, config):
         super().__init__(config)
-        for layer in self.model.layers:
-            layer.mlp = Gemma4MLPWithTranscoder(config)
+        for layer_idx, layer in enumerate(self.model.layers):
+            layer.mlp = Gemma4MLPWithTranscoder(config, layer_idx)
 
     def forward(self, input_ids=None, attention_mask=None, *args, **kwargs):
         for layer in self.model.layers:
