@@ -1,0 +1,62 @@
+# High-quality, large-scale bridging transcoder config for Gemma2 2B.
+#
+# Intended for a serious run rather than a quick matrix point:
+# - uses more rows and longer sequences than gemma2_2b.yaml
+# - filters over-length examples instead of truncating them
+# - gives chat data more weight to match the instruction-tuned reference
+# - increases transcoder capacity and reduces/schedules L1 for better quality
+
+model_name: "google/gemma-2-2b"
+model_arch: "gemma2"
+run_name_prefix: "gemma2_2b_huge"
+
+transcoder:
+  n_features: 16384
+  dec_bias: true
+  l1_weight: 0.0003
+  normalize_by_layer: true
+  schedule_l1_weight: true
+
+bridging:
+  reference_model_path: "google/gemma-2-2b-it"
+  backbone: "target"
+  loss_type: "kl"
+  n_cutoffs: 2
+  sampling: "uniform"
+  always_include_adapt_only: true
+  lambda_adapt: 1.0
+  lambda_bridge: 2.0
+  lambda_nmse: 1.0
+
+datasets:
+  - type: "fineweb"
+    datapath: "science-of-finetuning/fineweb-1m-sample"
+    max_seq_length: 2048
+    length_excession_behavior: "filter"
+    weight: 0.35
+  - type: "lmsys_chat"
+    datapath: "siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
+    max_seq_length: 2048
+    length_excession_behavior: "filter"
+    weight: 0.65
+
+total_rows: 500000
+weight_by: "tokens"
+loss_on_prompt: true
+
+batch_size: 2
+learning_rate: 4e-4
+num_epochs: 1
+warmup_ratio: 0.05
+gradient_clip_norm: 1.0
+seed: 42
+
+val_frequency: 2000
+layerwise_val_frequency: 4000
+token_metrics_n_samples: 0
+token_metrics_final_n_samples: 500
+
+use_wandb: true
+save_checkpoints: true
+checkpoint_frequency: 10000
+push_to_hub: true

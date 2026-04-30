@@ -934,18 +934,76 @@ def save_latest_checkpoint(model, tokenizer, config: ExperimentConfig, base_dir,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train with bridging loss")
-    parser.add_argument("--config", required=True, nargs="+", help="Path(s) to experiment config YAMLs. Later files shallow-override earlier ones.")
-    parser.add_argument("--learning_rate", "-lr", type=float, help="Override learning rate")
-    parser.add_argument("--l1_weight", type=float, help="Override transcoder L1 weight")
-    parser.add_argument("--n_features", type=int, help="Override transcoder n_features")
-    parser.add_argument("--batch_size", type=int, help="Override batch size")
-    parser.add_argument("--num_epochs", type=int, help="Override number of epochs")
-    parser.add_argument("--run_name_prefix", type=str, help="Override the run name prefix used for wandb and the output directory")
-    parser.add_argument("--debug_mode", nargs="?", const="true", default=None, help="Override debug_mode (--debug_mode, --debug_mode=true, --debug_mode=false). If activating debug mode through this setting, wandb will be disabled.")
-    parser.add_argument("--sweep", type=str, default=None, help="Path to a wandb sweep config YAML. When set, creates a sweep and runs training via wandb.agent.")
-    parser.add_argument("--sweep_id", type=str, default=None, help="Join an existing wandb sweep by ID (e.g. from another GPU). Mutually exclusive with --sweep.")
-    parser.add_argument("--sweep_count", type=int, default=5, help="Number of sweep runs per agent (default: 5)")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train a transcoder adapter from one or more YAML config files. "
+            "Later config files shallow-override earlier config files, then the "
+            "supported CLI override flags are applied last."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Config and override behavior:
+  --config accepts one or more YAML files:
+    --config <base.yaml> [override.yaml ...]
+
+  Override YAML files must appear immediately after --config and before the next
+  --flag. Later YAML files override earlier YAML files through a SHALLOW merge.
+
+Examples:
+  uv run python -m training.train --config training/configs/gemma2_2b.yaml
+
+  uv run python -m training.train \\
+    --config training/configs/gemma2_2b.yaml training/configs/gemma-matrix/l1_0.001.yaml \\
+    --learning_rate 1e-3 \\
+    --batch_size 8 \\
+    --run_name_prefix gemma_l1_001
+
+  uv run python -m training.train \\
+    --config training/configs/gemma2_2b.yaml \\
+    --debug_mode
+
+Sweep examples:
+  uv run python -m training.train \\
+    --config training/configs/gemma2_2b.yaml \\
+    --sweep training/configs/sweeps/lr.yaml \\
+    --sweep_count 20
+
+  uv run python -m training.train \\
+    --config training/configs/gemma2_2b.yaml \\
+    --sweep_id <entity/project/sweep_id-or-sweep_id> \\
+    --sweep_count 20
+""",
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        nargs="+",
+        metavar="YAML",
+        help=(
+            "Required config YAML path(s). Later files shallow-override earlier ones. Put every YAML path immediately after --config before you write the next flag."
+        ),
+    )
+    parser.add_argument("--learning_rate", "-lr", type=float, help="Override ExperimentConfig.learning_rate after YAML configs are loaded.")
+    parser.add_argument("--l1_weight", type=float, help="Override ExperimentConfig.transcoder.l1_weight after YAML configs are loaded.")
+    parser.add_argument("--n_features", type=int, help="Override ExperimentConfig.transcoder.n_features after YAML configs are loaded.")
+    parser.add_argument("--batch_size", type=int, help="Override ExperimentConfig.batch_size after YAML configs are loaded.")
+    parser.add_argument("--num_epochs", type=int, help="Override ExperimentConfig.num_epochs after YAML configs are loaded.")
+    parser.add_argument("--run_name_prefix", type=str, help="Override ExperimentConfig.run_name_prefix; used for WandB run names and output directories.")
+    parser.add_argument(
+        "--debug_mode",
+        nargs="?",
+        const="true",
+        default=None,
+        metavar="{true,false}",
+        help=(
+            "Override ExperimentConfig.debug_mode. Passing --debug_mode by "
+            "itself means true. When set true, WandB is disabled and _debug is "
+            "appended to run_name_prefix when applicable."
+        ),
+    )
+    parser.add_argument("--sweep", type=str, default=None, metavar="YAML", help="Create a WandB sweep from this sweep YAML and run an agent in this process.")
+    parser.add_argument("--sweep_id", type=str, default=None, help="Join an existing WandB sweep instead of creating one. Mutually exclusive with --sweep.")
+    parser.add_argument("--sweep_count", type=int, default=5, help="Number of sweep runs for this WandB agent. Defaults to 5.")
     args = parser.parse_args()
 
     setup_logging()
