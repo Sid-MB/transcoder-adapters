@@ -57,6 +57,10 @@ import torch
 from tqdm import tqdm
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
+from analysis.features.annotate.annotate_assistant_response_features import (
+    AssistantResponseFeatureAnnotator,
+)
+from analysis.features.annotate.annotation_framework import run_annotation
 from analysis.features.load_val_data import load_val_data
 
 
@@ -667,6 +671,19 @@ def export_metadata(collector: FeatureCollector, output_dir: Path):
     logger.info(f"Saved metadata for {len(metadata['features'])} features")
 
 
+def annotate_collected_features(output_dir: Path) -> None:
+    """Run fast metadata-based feature annotations for the dashboard."""
+    annotations_path = output_dir / "feature_annotations.json"
+    logger.info("Running assistant-response feature annotations...")
+    logger.info(f"Annotation output file: {annotations_path}")
+    run_annotation(
+        data_dir=output_dir,
+        annotations_file=annotations_path,
+        annotator=AssistantResponseFeatureAnnotator(),
+    )
+    logger.info(f"Feature annotations saved to {annotations_path}")
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -1030,10 +1047,12 @@ def main():
     # Export
     export_circuit_tracer_json(collector, logit_lens_data, tokenizer, output_dir)
     export_metadata(collector, output_dir)
+    annotate_collected_features(output_dir)
 
     logger.info(f"Done! Output written to {output_dir}")
     logger.info("  features/: Circuit tracer JSON files")
     logger.info("  feature_metadata.json: Rich metadata for analysis")
+    logger.info("  feature_annotations.json: Automatic feature annotations")
 
 
 if __name__ == "__main__":
