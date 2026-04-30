@@ -17,39 +17,40 @@ if TYPE_CHECKING:
 
 ModelOutputTypes = tuple[type[Any], type[Any]]
 
+_KNOWN_ARCHITECTURES = ("qwen2", "gemma2", "gemma2-orig", "gemma4")
 _REGISTRY: dict[str, ModelOutputTypes] = {}
 
 
-def _maybe_register_gemma4() -> None:
-    """Register Gemma4 if supported by installed transformers version."""
-    try:
-        from models.gemma4_transcoder import Gemma4ConfigWithTranscoder, Gemma4ForCausalLMWithTranscoder
-    except ImportError:
-        return
+def _load_architecture(arch: str) -> ModelOutputTypes:
+    if arch not in _REGISTRY:
+        match arch:
+            case "qwen2":
+                from models.qwen2_transcoder import Qwen2ConfigWithTranscoder, Qwen2ForCausalLMWithTranscoder
 
-    _REGISTRY["gemma4"] = (Gemma4ConfigWithTranscoder, Gemma4ForCausalLMWithTranscoder)
+                _REGISTRY[arch] = (Qwen2ConfigWithTranscoder, Qwen2ForCausalLMWithTranscoder)
+            case "gemma2":
+                from models.gemma2_transcoder import Gemma2ConfigWithTranscoder, Gemma2ForCausalLMWithTranscoder
 
+                _REGISTRY[arch] = (Gemma2ConfigWithTranscoder, Gemma2ForCausalLMWithTranscoder)
+            case "gemma2-orig":
+                from transformers import Gemma2Config, Gemma2ForCausalLM
 
-def _ensure_registered() -> None:
-    if _REGISTRY:
-        return
+                _REGISTRY[arch] = (Gemma2Config, Gemma2ForCausalLM)
+            case "gemma4":
+                from models.gemma4_transcoder import Gemma4ConfigWithTranscoder, Gemma4ForCausalLMWithTranscoder
 
-    from models.gemma2_transcoder import Gemma2ConfigWithTranscoder, Gemma2ForCausalLMWithTranscoder
-    from models.qwen2_transcoder import Qwen2ConfigWithTranscoder, Qwen2ForCausalLMWithTranscoder
-    from transformers import Gemma2Config, Gemma2ForCausalLM
-
-    _REGISTRY["qwen2"] = (Qwen2ConfigWithTranscoder, Qwen2ForCausalLMWithTranscoder)
-    _REGISTRY["gemma2"] = (Gemma2ConfigWithTranscoder, Gemma2ForCausalLMWithTranscoder)
-    _REGISTRY["gemma2-orig"] = (Gemma2Config, Gemma2ForCausalLM)
-    _maybe_register_gemma4()
+                _REGISTRY[arch] = (Gemma4ConfigWithTranscoder, Gemma4ForCausalLMWithTranscoder)
+            case _:
+                raise ValueError(f"Unknown architecture: '{arch}'. Available: {', '.join(available_architectures())}")
+    return _REGISTRY[arch]
 
 
 def get_transcoder_classes(arch: str) -> ModelOutputTypes:
-    _ensure_registered()
-    if arch not in _REGISTRY:
+    if arch not in _KNOWN_ARCHITECTURES:
         available = ", ".join(available_architectures())
         raise ValueError(f"Unknown architecture: '{arch}'. Available: {available}")
-    return _REGISTRY[arch]
+
+    return _load_architecture(arch)
 
 
 def detect_architecture(model_name: str) -> str:
@@ -73,5 +74,4 @@ def detect_architecture(model_name: str) -> str:
 
 
 def available_architectures() -> list[str]:
-    _ensure_registered()
-    return sorted(_REGISTRY.keys())
+    return sorted(_KNOWN_ARCHITECTURES)

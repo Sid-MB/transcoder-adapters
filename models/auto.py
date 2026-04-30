@@ -76,20 +76,19 @@ class AutoModelForCausalLMWithTranscoder:
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "PreTrainedModel":
         from transformers import AutoConfig
-        from models import _ensure_registered, _REGISTRY
+        from models import available_architectures, get_transcoder_classes
 
         hf_config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
         arch = hf_config.model_type  # e.g. "qwen2", "gemma2"
 
-        _ensure_registered()
-        if arch not in _REGISTRY:
-            available = ", ".join(sorted(_REGISTRY.keys()))
+        if arch not in available_architectures():
+            available = ", ".join(available_architectures())
             raise ValueError(
                 f"Unsupported model_type '{arch}' for transcoder model at "
                 f"'{pretrained_model_name_or_path}'. Available: {available}"
             )
 
-        _config_cls, model_cls = _REGISTRY[arch]
+        _config_cls, model_cls = get_transcoder_classes(arch)
         return model_cls.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
     @staticmethod

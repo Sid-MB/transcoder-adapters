@@ -29,7 +29,31 @@ class FakeTokenizer:
         }.get(text, self.unk_token_id)
 
 
+class FakeGemmaTokenizer:
+    bos_token_id = 2
+    unk_token_id = 0
+
+    def encode(self, text, add_special_tokens=False):
+        del add_special_tokens
+        return {
+            "<start_of_turn>user\n": [106, 1645, 108],
+            "<start_of_turn>user": [106, 1645],
+            "<start_of_turn>model\n": [106, 2516, 108],
+            "<start_of_turn>model": [106, 2516],
+        }.get(text, [self.unk_token_id])
+
+    def convert_tokens_to_ids(self, text):
+        del text
+        return self.unk_token_id
+
+
 class TokenRegionTests(unittest.TestCase):
+    def test_gemma4_uses_gemma_chat_marker_strategy(self):
+        special = detect_special_tokens(FakeGemmaTokenizer(), model_type="gemma4")
+
+        self.assertEqual(special.user_marker, ((106, 1645, 108), (106, 1645)))
+        self.assertEqual(special.assistant_marker, ((106, 2516, 108), (106, 2516)))
+
     def test_gemma_marker_spans_and_multiturn_regions(self):
         special = SpecialTokenIds(
             bos=((2,),),
