@@ -4,9 +4,9 @@ Annotate features that concentrate around the assistant response boundary.
 This is a lightweight post-processing step for ``collect_feature_activations.py``
 outputs. It reads ``feature_metadata.json`` only, scores existing feature stats,
 and writes a persistent ``feature_annotations.json`` file consumable by the local
-dashboard. By default, an existing annotations file is moved into an ``archive/``
-subdirectory before fresh annotations are written. Pass ``--merge`` to merge new
-tags into an existing annotations file instead.
+dashboard. By default, the annotator updates only its own tags and scores in
+place. Pass ``--replace_all`` to archive the existing annotations file before
+writing fresh annotations.
 
 Example:
     python -m analysis.features.annotate.annotate_assistant_response_features \
@@ -44,6 +44,13 @@ class AssistantResponseFeatureAnnotator(FeatureAnnotator):
     """Annotator for features localized to assistant marker or answer regions."""
 
     annotation_name = "assistant_response"
+    owned_tags = frozenset(
+        {
+            "assistant_response",
+            "assistant_token",
+            "near_assistant",
+        }
+    )
 
     def __init__(
         self,
@@ -254,9 +261,9 @@ def main() -> None:
     run_annotation(
         data_dir=args.data_dir,
         annotations_file=args.annotations_file,
-        merge=args.merge,
-        top_k=args.top_k,
         annotator=annotator,
+        replace_all=args.replace_all,
+        top_k=args.top_k,
     )
 
 

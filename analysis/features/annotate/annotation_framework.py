@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from tqdm import tqdm
 
@@ -33,6 +33,8 @@ class FeatureAnnotator(ABC):
     """Base class for annotators that operate on feature metadata entries."""
 
     annotation_name: str
+    # Set this for migration from older files without auto_tags ownership metadata.
+    owned_tags: frozenset[str] | None = None
 
     def setup(self, metadata: dict[str, Any]) -> None:
         """Load any run-level state needed before per-feature annotation."""
@@ -51,10 +53,22 @@ class FeatureAnnotator(ABC):
         result: FeatureAnnotationResult,
     ) -> dict[str, Any]:
         existing_tags = entry.get("tags") or []
-        merged_tags = sorted({*existing_tags, *result.tags})
+        auto_tags = dict(entry.get("auto_tags") or {})
+        previous_tags = set(auto_tags.get(self.annotation_name) or [])
+        if self.owned_tags is not None:
+            previous_tags.update(self.owned_tags)
+
+        merged_tags = sorted(({*existing_tags} - previous_tags) | set(result.tags))
         auto_scores = dict(entry.get("auto_scores") or {})
         if result.scores:
             auto_scores[self.annotation_name] = result.scores
+        else:
+            auto_scores.pop(self.annotation_name, None)
+
+        if result.tags:
+            auto_tags[self.annotation_name] = sorted(set(result.tags))
+        else:
+            auto_tags.pop(self.annotation_name, None)
 
         merged = {
             **entry,
@@ -63,7 +77,22 @@ class FeatureAnnotator(ABC):
         }
         if auto_scores:
             merged["auto_scores"] = auto_scores
+        else:
+            merged.pop("auto_scores", None)
+        if auto_tags:
+            merged["auto_tags"] = auto_tags
+        else:
+            merged.pop("auto_tags", None)
         return merged
+
+    def has_existing_annotation(self, entry: dict[str, Any]) -> bool:
+        auto_tags = entry.get("auto_tags") or {}
+        auto_scores = entry.get("auto_scores") or {}
+        if self.annotation_name in auto_tags or self.annotation_name in auto_scores:
+            return True
+        if self.owned_tags is None:
+            return False
+        return bool(set(entry.get("tags") or []) & self.owned_tags)
 
     def make_hit(
         self,
@@ -126,31 +155,60 @@ def annotate_features(
 
     for feature in tqdm(metadata.get("features") or []):
         result = annotator.annotate_feature(feature, metadata)
-        if not result.tags:
-            continue
-
         cantor_id = str(feature["cantor_id"])
         entry = annotations.get(cantor_id) or {}
+        should_update = bool(result.tags) or annotator.has_existing_annotation(entry)
+        if not should_update:
+            continue
+
         annotations[cantor_id] = annotator.merge_annotation(entry, result)
-        hits.append(annotator.make_hit(feature, result))
+        if result.tags:
+            hits.append(annotator.make_hit(feature, result))
 
     hits.sort(key=annotator.sort_key, reverse=True)
     return annotations, hits
+
+
+def _annotator_list(
+    annotator: FeatureAnnotator | Sequence[FeatureAnnotator],
+) -> list[FeatureAnnotator]:
+    if isinstance(annotator, FeatureAnnotator):
+        return [annotator]
+    annotators = list(annotator)
+    if not annotators:
+        raise ValueError("At least one annotator is required")
+    annotation_names = [a.annotation_name for a in annotators]
+    if len(annotation_names) != len(set(annotation_names)):
+        raise ValueError(f"Annotator names must be unique: {annotation_names}")
+    return annotators
+
+
+def annotate_features_with_annotators(
+    metadata: dict[str, Any],
+    annotations: dict[str, Any],
+    annotators: Sequence[FeatureAnnotator],
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    hits_by_annotator: dict[str, list[dict[str, Any]]] = {}
+    for annotator in annotators:
+        annotations, hits = annotate_features(metadata, annotations, annotator)
+        hits_by_annotator[annotator.annotation_name] = hits
+    return annotations, hits_by_annotator
 
 
 def run_annotation(
     *,
     data_dir: Path,
     annotations_file: Path | None,
-    merge: bool,
-    top_k: int,
-    annotator: FeatureAnnotator,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    annotator: FeatureAnnotator | Sequence[FeatureAnnotator],
+    replace_all: bool = False,
+    top_k: int = 25,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
     metadata_path = data_dir / "feature_metadata.json"
     annotations_path = annotations_file or (data_dir / "feature_annotations.json")
     metadata = load_json(metadata_path)
+    annotators = _annotator_list(annotator)
 
-    if not merge and annotations_path.is_file():
+    if replace_all and annotations_path.is_file():
         archive_path = archive_existing_annotations(annotations_path)
         logger.info(
             "Overwriting annotations: archived existing %s to %s",
@@ -161,14 +219,25 @@ def run_annotation(
     else:
         annotations = load_json(annotations_path) if annotations_path.is_file() else {}
 
-    annotations, hits = annotate_features(metadata, annotations, annotator)
+    annotations, hits_by_annotator = annotate_features_with_annotators(
+        metadata,
+        annotations,
+        annotators,
+    )
     save_json(annotations_path, annotations)
 
-    logger.info("Annotated %s features in %s", len(hits), annotations_path)
-    for hit in hits[:top_k]:
-        logger.info(annotator.format_hit(hit))
+    for annotator in annotators:
+        hits = hits_by_annotator[annotator.annotation_name]
+        logger.info(
+            "%s annotated %s features in %s",
+            annotator.annotation_name,
+            len(hits),
+            annotations_path,
+        )
+        for hit in hits[:top_k]:
+            logger.info(annotator.format_hit(hit))
 
-    return annotations, hits
+    return annotations, hits_by_annotator
 
 
 def add_common_annotation_args(parser: Any) -> None:
@@ -179,18 +248,15 @@ def add_common_annotation_args(parser: Any) -> None:
         default=None,
         help=(
             "JSON file to write. Defaults to <data_dir>/feature_annotations.json. "
-            "Unless --merge is passed, an existing file is archived next to itself "
-            "under archive/ before the new file is written."
+            "Existing annotations are updated in place unless --replace_all is passed."
         ),
     )
     parser.add_argument(
-        "--merge",
+        "--replace_all",
         action="store_true",
         help=(
-            "Preserve the existing annotations file and merge newly detected tags "
-            "into it. By default, an existing annotations file is archived to "
-            "<annotations_dir>/archive/<stem>_<timestamp><suffix> and replaced with "
-            "a fresh file so threshold changes produce a clean result."
+            "Archive the existing annotations file and start from an empty file. "
+            "By default, annotators update only their own tags/scores in place."
         ),
     )
     parser.add_argument("--top_k", type=int, default=25, help="Number of hits to log")
