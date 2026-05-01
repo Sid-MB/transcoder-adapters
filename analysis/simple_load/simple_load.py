@@ -20,6 +20,7 @@ from transformers import TextStreamer
 from helpers.log import logger, setup_logging
 from models import get_transcoder_classes, detect_architecture
 from models.auto import load_tokenizer
+from models.steering import FeatureSteeringSpec
 
 
 def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | None = None):
@@ -114,11 +115,24 @@ def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: 
         logger.info("")
 
 
+def parse_feature_steering_spec(value: str) -> FeatureSteeringSpec:
+    """Parse a CANTOR_ID:STRENGTH steering CLI value."""
+    try:
+        cantor_id_text, strength_text = value.split(":", 1)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected CANTOR_ID:STRENGTH") from exc
+
+    try:
+        return FeatureSteeringSpec(int(cantor_id_text), float(strength_text))
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def main():
     parser = argparse.ArgumentParser(description="Load and chat with a transcoder model")
     parser.add_argument("model_path", help="HF repo ID or local path to checkpoint")
     parser.add_argument("--tokenizer", default=None, help="Tokenizer path (defaults to model_path)")
-    parser.add_argument("--arch", default=None, choices=["gemma2", "qwen2"],
+    parser.add_argument("--arch", default=None, choices=["gemma2", "gemma4", "qwen2"],
                         help="Architecture (auto-detected if not set)")
     parser.add_argument("--raw", action="store_true",
                         help="Send raw text without chat template")
@@ -126,7 +140,15 @@ def main():
                         help="Show special tokens in prompt and output")
     parser.add_argument("--hybrid", action="store_true",
                         help="Disable transcoders (use hybrid model: ref attention + base MLP)")
+    parser.add_argument("--steer", action="append", default=[], type=parse_feature_steering_spec,
+                        metavar="CANTOR_ID:STRENGTH",
+                        help="Steer a transcoder feature; repeat for multiple targets")
+    parser.add_argument("--steering_mode", default="min", choices=["min", "add", "set"],
+                        help="How to apply steering strengths")
     args = parser.parse_args()
+
+    if args.hybrid and args.steer:
+        parser.error("--hybrid cannot be used with --steer")
 
     setup_logging()
     model, tokenizer = load_model(args.model_path, args.tokenizer, args.arch)
@@ -139,6 +161,15 @@ def main():
                     layer.mlp.disable_transcoder = True
         else:
             logger.warning("Could not find layers to disable transcoders. Is this a transcoder model?")
+
+    if args.steer:
+        if not hasattr(model, "set_feature_steering"):
+            parser.error("Loaded model does not support feature steering")
+        try:
+            model.set_feature_steering(args.steer, mode=args.steering_mode)
+        except ValueError as exc:
+            parser.error(str(exc))
+        logger.info(f"Feature steering enabled for {len(args.steer)} target(s), mode={args.steering_mode}")
 
     chat(model, tokenizer, use_chat_template=not args.raw, show_special_tokens=args.show_special_tokens)
 

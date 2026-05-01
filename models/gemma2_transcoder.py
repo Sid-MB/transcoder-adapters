@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from transformers import Gemma2Config, Gemma2ForCausalLM
 from transformers.models.gemma2.modeling_gemma2 import Gemma2MLP
 
+from models.steering import FeatureSteeringMixin, apply_feature_steering
+
 # Gemma 2 MLP layer source code: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma2/modeling_gemma2.py#L69C1-L83C1
 
 class Gemma2ConfigWithTranscoder(Gemma2Config):
@@ -69,6 +71,8 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
         # Increments by batch_size each forward, resets to 0 for active features.
         self._dead_feature_counters = torch.zeros(self.n_features)
         self._attention_mask = None  # set by parent model to mask padding
+        self.feature_steering_targets = ()
+        self.feature_steering_mode = "min"
 
     def _init_transcoder_weights(self):
         """Initialize transcoder weights."""
@@ -91,6 +95,11 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
 
         # Transcoder computation: f = ReLU(W_enc * x + b_enc), y = W_dec * f
         features = F.relu(self.transcoder_enc(hidden_states))  # [batch, seq, n_features]
+        features = apply_feature_steering(
+            features,
+            self.feature_steering_targets,
+            self.feature_steering_mode,
+        )
         transcoder_output = self.transcoder_dec(features)      # [batch, seq, d_model]
 
         if self.cache_features:
@@ -132,7 +141,7 @@ class Gemma2MLPWithTranscoder(Gemma2MLP):
         return original_output + transcoder_output
 
 
-class Gemma2ForCausalLMWithTranscoder(Gemma2ForCausalLM):
+class Gemma2ForCausalLMWithTranscoder(FeatureSteeringMixin, Gemma2ForCausalLM):
     """Gemma2 causal LM with integrated transcoder adapters."""
 
     config_class = Gemma2ConfigWithTranscoder

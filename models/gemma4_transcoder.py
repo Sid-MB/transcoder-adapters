@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from transformers import Gemma4ForCausalLM, Gemma4TextConfig
 from transformers.models.gemma4.modeling_gemma4 import Gemma4TextMLP
 
+from models.steering import FeatureSteeringMixin, apply_feature_steering
+
 
 class Gemma4ConfigWithTranscoder(Gemma4TextConfig):
     """Gemma4 config with transcoder parameters."""
@@ -43,6 +45,8 @@ class Gemma4MLPWithTranscoder(Gemma4TextMLP):
         self.cached_l0 = None
         self._dead_feature_counters = torch.zeros(self.n_features)
         self._attention_mask = None
+        self.feature_steering_targets = ()
+        self.feature_steering_mode = "min"
 
     def _init_transcoder_weights(self):
         scale_d_model = 1 / math.sqrt(self.d_model)
@@ -58,6 +62,11 @@ class Gemma4MLPWithTranscoder(Gemma4TextMLP):
             return original_output
 
         features = F.relu(self.transcoder_enc(hidden_states))
+        features = apply_feature_steering(
+            features,
+            self.feature_steering_targets,
+            self.feature_steering_mode,
+        )
         transcoder_output = self.transcoder_dec(features)
 
         if self.cache_features:
@@ -93,7 +102,7 @@ class Gemma4MLPWithTranscoder(Gemma4TextMLP):
         return original_output + transcoder_output
 
 
-class Gemma4ForCausalLMWithTranscoder(Gemma4ForCausalLM):
+class Gemma4ForCausalLMWithTranscoder(FeatureSteeringMixin, Gemma4ForCausalLM):
     """Gemma4 causal LM with integrated transcoder adapters."""
 
     config_class = Gemma4ConfigWithTranscoder
