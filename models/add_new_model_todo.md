@@ -35,7 +35,7 @@ uv run python -m unittest tests.test_real_tokenizers
 
 - [ ] If the tokenizer is public, add it to `REAL_TOKENIZER_CASES` in
   `tests/test_real_tokenizers.py`.
-- [ ]If the model uses a new thinking-token format, update `models/tokens.py` and
+- [ ] If the model uses a new thinking-token format, update `models/tokens.py` and
   add a fixture in `tests/test_tokens.py`.
 
 Supported thinking formats today:
@@ -45,3 +45,5 @@ Supported thinking formats today:
 
 ## Add a config in training/configs to train your model
 - [ ] Likely want to start with a very simple and fast training config to make sure everything is working
+
+Once you've made all changes, start with a very simple and fast debug training config and launch runs until there are no more discernible errors or issues in the out and err logs. This will likely require a lot of iteration. 

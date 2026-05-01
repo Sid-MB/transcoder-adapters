@@ -1,5 +1,7 @@
 import unittest
 
+from transformers.modeling_utils import LoadStateDictInfo
+
 import models
 from models.auto import _base_tokenizer_for
 
@@ -30,6 +32,46 @@ class ModelRegistryTests(unittest.TestCase):
 
     def test_gemma4_text_tokenizer_fallback_uses_gemma4_base(self):
         self.assertEqual(_base_tokenizer_for("gemma4_text"), _base_tokenizer_for("gemma4"))
+
+    def test_gemma4_loader_ignores_unused_multimodal_checkpoint_keys(self):
+        ConfigCls, ModelCls = models.get_transcoder_classes("gemma4")
+        config = ConfigCls(
+            vocab_size=32,
+            hidden_size=8,
+            intermediate_size=16,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=4,
+            transcoder_n_features=4,
+        )
+        model = ModelCls(config)
+        loading_info = LoadStateDictInfo(
+            missing_keys={
+                "model.layers.0.mlp.transcoder_enc.weight",
+                "model.layers.0.mlp.transcoder_dec.weight",
+            },
+            unexpected_keys={
+                "model.audio_tower.layers.0.self_attn.q_proj.weight",
+                "model.embed_audio.embedding_projection.weight",
+                "model.embed_vision.embedding_projection.weight",
+                "model.vision_tower.encoder.layers.0.mlp.up_proj.weight",
+            },
+            mismatched_keys=set(),
+            error_msgs=[],
+            conversion_errors={},
+        )
+
+        model._adjust_missing_and_unexpected_keys(loading_info)
+
+        self.assertEqual(loading_info.unexpected_keys, set())
+        self.assertEqual(
+            loading_info.missing_keys,
+            {
+                "model.layers.0.mlp.transcoder_enc.weight",
+                "model.layers.0.mlp.transcoder_dec.weight",
+            },
+        )
 
     def test_unknown_architecture_lists_available_architectures(self):
         with self.assertRaisesRegex(ValueError, "gemma4"):

@@ -12,6 +12,14 @@ from transformers.models.gemma4.modeling_gemma4 import Gemma4TextMLP
 from models.steering import FeatureSteeringMixin, apply_feature_steering
 
 
+_GEMMA4_UNUSED_MULTIMODAL_KEY_PATTERNS = [
+    r"^model\.audio_tower\.",
+    r"^model\.embed_audio\.",
+    r"^model\.embed_vision\.",
+    r"^model\.vision_tower\.",
+]
+
+
 class Gemma4ConfigWithTranscoder(Gemma4TextConfig):
     """Gemma4 config with transcoder parameters."""
 
@@ -109,6 +117,10 @@ class Gemma4ForCausalLMWithTranscoder(FeatureSteeringMixin, Gemma4ForCausalLM):
 
     def __init__(self, config):
         super().__init__(config)
+        self._keys_to_ignore_on_load_unexpected = [
+            *(self._keys_to_ignore_on_load_unexpected or []),
+            *_GEMMA4_UNUSED_MULTIMODAL_KEY_PATTERNS,
+        ]
         for layer_idx, layer in enumerate(self.model.layers):
             layer.mlp = Gemma4MLPWithTranscoder(config, layer_idx)
 

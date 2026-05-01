@@ -9,7 +9,7 @@ description: Information for launching Slurm jobs and reviewing their logs.
 
 Use this workflow to work with Slurm and inspect job outputs.
 
-If you run into errors about like slurm commands being unavailable or slurm connection failures, run slurm and `./sh/...` commands outside of the sandbox
+If you run into errors about like slurm commands being unavailable or slurm connection failures, run slurm and `./sh/...` commands outside of the sandbox.
 
 ## Checking if we're on the local machine or the cluster
 
@@ -34,6 +34,7 @@ Remember the Slurm job ID from the submission output, (`15292344` in "Submitted 
 
 Tips:
 - If you initiate your Slurm jobs with the env variable `SBATCH_WAIT=1`, the submission command will block until the job finishes, which is useful for iterative development.
+- For iterative development, if you're already on a GPU node you don't need to submit a slurm job or use `SBATCH_WAIT`: you can just call `uv run python <script>` or the `./run_on_gpu/` scripts directly. You can tell if you're on a GPU node if `nvidia-smi` works.
 - Use `scancel <job-id>` to stop a job early.
 
 ## Read Logs
@@ -54,7 +55,7 @@ Tip: Logs can be very long, especially the `.err` files since they include every
 
 ## Iterative development
 If asked for iterative development or similar, you can follow the workflow of:
-1. Launch a job, use `SBATCH_WAIT=1` or monitor the logs
+1. Launch a job. Use `SBATCH_WAIT=1` or, if you're on a GPU node, you can just call `uv run python <script>` directly. Monitor the logs.
 2. Wait until it finishes or until something goes wrong
 3. Inspect the logs and outputs, if any
 4. If it failed, launch a new job with a fix, and repeat until success

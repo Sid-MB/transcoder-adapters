@@ -7,6 +7,7 @@ that encourage layer-wise compatibility with a reference model.
 
 import os
 import sys
+from contextlib import contextmanager
 from helpers import logger, setup_logging
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -28,6 +29,10 @@ DEBUG_MODE_EARLY_EXIT_STEPS = 50
 GEMMA4_LANGUAGE_MODEL_KEY_MAPPING = {
     r"^model\.language_model\.": "model.",
 }
+FRESH_TRANSCODER_MISSING_KEY_PATTERNS = [
+    r"\.transcoder_enc\.(weight|bias)$",
+    r"\.transcoder_dec\.(weight|bias)$",
+]
 
 def move_batch_to(device, batch):
     """Move batch tensors to device."""
@@ -82,6 +87,25 @@ def _plain_model_load_kwargs(hf_config=None) -> dict[str, Any]:
     if hf_config is None:
         return {"generation_config": GenerationConfig()}
     return {"generation_config": _generation_config_from_model_config(hf_config)}
+
+
+@contextmanager
+def _ignore_fresh_transcoder_missing_keys(model_cls):
+    """Silence expected missing adapter weights only while initializing a fresh adapter."""
+    previous = getattr(model_cls, "_keys_to_ignore_on_load_missing", None)
+    model_cls._keys_to_ignore_on_load_missing = [
+        *(previous or []),
+        *FRESH_TRANSCODER_MISSING_KEY_PATTERNS,
+    ]
+    try:
+        yield
+    finally:
+        model_cls._keys_to_ignore_on_load_missing = previous
+
+
+def _load_fresh_transcoder_model(model_cls, *args, **kwargs):
+    with _ignore_fresh_transcoder_missing_keys(model_cls):
+        return model_cls.from_pretrained(*args, **kwargs)
 
 
 def _decoder_layers(model):
@@ -144,7 +168,8 @@ def setup_models_bridging(config: ExperimentConfig):
         # Target backbone: load reference model (attn/embed/layernorm from reference),
         # then swap in base model's MLP weights. Result: reference attn + base MLP + fresh transcoder.
         logger.info(f"Loading reference model as backbone: {bridging_config.reference_model_path}")
-        model = ModelWithTranscoder.from_pretrained(
+        model = _load_fresh_transcoder_model(
+            ModelWithTranscoder,
             bridging_config.reference_model_path,
             config=hf_config,
             dtype=torch.bfloat16,
@@ -172,7 +197,8 @@ def setup_models_bridging(config: ExperimentConfig):
     else:
         # Base backbone: all non-transcoder weights from base model directly.
         logger.info(f"Loading base model: {config.model_name}")
-        model = ModelWithTranscoder.from_pretrained(
+        model = _load_fresh_transcoder_model(
+            ModelWithTranscoder,
             config.model_name,
             config=hf_config,
             dtype=torch.bfloat16,
@@ -250,7 +276,8 @@ def setup_models_direct(config: ExperimentConfig):
     )
     _align_config_token_ids_with_tokenizer(hf_config, tokenizer)
     logger.info(f"Loading base model: {config.model_name}")
-    model = ModelWithTranscoder.from_pretrained(
+    model = _load_fresh_transcoder_model(
+        ModelWithTranscoder,
         config.model_name,
         config=hf_config,
         dtype=torch.bfloat16,
