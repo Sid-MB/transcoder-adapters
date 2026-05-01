@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import sys
 
 import torch
 from transformers import TextStreamer
@@ -51,6 +52,17 @@ def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | N
     return model, tokenizer
 
 
+def extract_input_ids(encoded) -> torch.Tensor:
+    """Return the input_ids tensor from tokenizer outputs."""
+    if isinstance(encoded, torch.Tensor):
+        return encoded
+    if hasattr(encoded, "input_ids"):
+        return encoded.input_ids
+    if isinstance(encoded, dict) and "input_ids" in encoded:
+        return encoded["input_ids"]
+    raise TypeError(f"Could not extract input_ids from {type(encoded).__name__}")
+
+
 def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: bool = False):
     """Interactive multi-turn chat loop.
 
@@ -85,9 +97,9 @@ def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: 
 
         if use_chat_template:
             messages.append({"role": "user", "content": user_input})
-            input_ids = tokenizer.apply_chat_template(
+            input_ids = extract_input_ids(tokenizer.apply_chat_template(
                 messages, add_generation_prompt=True, return_tensors="pt",
-            ).to(model.device)
+            )).to(model.device)
         else:
             input_ids = tokenizer(user_input, return_tensors="pt").input_ids.to(model.device)
 
@@ -115,6 +127,48 @@ def chat(model, tokenizer, use_chat_template: bool = True, show_special_tokens: 
         logger.info("")
 
 
+def run_prompt(
+    model,
+    tokenizer,
+    prompt: str,
+    use_chat_template: bool = True,
+    show_special_tokens: bool = False,
+) -> str:
+    """Generate a single response for a prompt.
+
+    Args:
+        prompt: Prompt text to send to the model.
+        use_chat_template: If True, wraps input as a single user turn with an
+            assistant generation prompt. If False, sends raw text directly.
+        show_special_tokens: If True, includes special tokens in the decoded
+            model output.
+    """
+    if use_chat_template:
+        input_ids = extract_input_ids(tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )).to(model.device)
+    else:
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
+
+    if show_special_tokens:
+        logger.info(f"\n[PROMPT] {tokenizer.decode(input_ids[0], skip_special_tokens=False)}")
+        logger.info("[OUTPUT]")
+
+    with torch.no_grad():
+        output_ids = model.generate(
+            input_ids,
+            max_new_tokens=512,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+        )
+
+    new_tokens = output_ids[0][input_ids.shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=not show_special_tokens)
+
+
 def parse_feature_steering_spec(value: str) -> FeatureSteeringSpec:
     """Parse a CANTOR_ID:STRENGTH steering CLI value."""
     try:
@@ -136,6 +190,8 @@ def main():
                         help="Architecture (auto-detected if not set)")
     parser.add_argument("--raw", action="store_true",
                         help="Send raw text without chat template")
+    parser.add_argument("--prompt", default=None,
+                        help="Run this prompt once, write the generated response to stdout, and exit")
     parser.add_argument("--show_special_tokens", action="store_true", default=True,
                         help="Show special tokens in prompt and output")
     parser.add_argument("--hybrid", action="store_true",
@@ -170,6 +226,19 @@ def main():
         except ValueError as exc:
             parser.error(str(exc))
         logger.info(f"Feature steering enabled for {len(args.steer)} target(s), mode={args.steering_mode}")
+
+    if args.prompt is not None:
+        response = run_prompt(
+            model,
+            tokenizer,
+            args.prompt,
+            use_chat_template=not args.raw,
+            show_special_tokens=args.show_special_tokens,
+        )
+        sys.stdout.write(response)
+        if response and not response.endswith("\n"):
+            sys.stdout.write("\n")
+        return
 
     chat(model, tokenizer, use_chat_template=not args.raw, show_special_tokens=args.show_special_tokens)
 
