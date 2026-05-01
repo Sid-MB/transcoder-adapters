@@ -49,7 +49,7 @@ Stop the server with **Ctrl+C**.
 After collecting activations, run the metadata-only scanner:
 
 ```sh
-uv run python -m analysis.features.annotate.annotate_assistant_response_features --data_dir /path/to/run
+./sh/annotate/annotate_assistant_response_features.sh --data_dir /path/to/run
 ```
 
 It tags features that concentrate on `assistant_marker` or `answer` regions and
@@ -59,6 +59,41 @@ annotations file. Pass `--replace_all` to archive the existing file under
 `<data_dir>/archive/` and write fresh annotations. The dashboard loads that file,
 lets you filter by tag, and lets you edit tags and notes from the feature detail
 pane. Manual edits are saved back to the same JSON file.
+
+## Annotate feature patterns
+
+For broader dashboard tags from per-feature JSONs, run:
+
+```sh
+./sh/annotate/annotate_feature_patterns.sh --data_dir /path/to/run
+```
+
+This runs the `logit_effect`, `activation_shape`, `feature_specificity`,
+`token_surface`, `cross_example_consistency`, and `reasoning_move` annotators by
+default. To run a subset:
+
+```sh
+./sh/annotate/annotate_feature_patterns.sh \
+  --data_dir /path/to/run \
+  --annotators logit_effect,token_surface,reasoning_move
+```
+
+Use `--annotations_file /tmp/some_file.json` for smoke tests that should not
+modify the run directory.
+
+## Annotate contrastive runs
+
+To compare matching `cantor_id` entries across two feature runs:
+
+```sh
+./sh/annotate/annotate_contrastive_runs.sh \
+  --source_data_dir /path/to/source/run \
+  --target_data_dir /path/to/target/run
+```
+
+The target run receives `contrastive_run` tags and scores. By default the output
+is `<target_data_dir>/feature_annotations.json`; pass `--annotations_file` to
+write somewhere else.
 
 ## What you’ll see
 

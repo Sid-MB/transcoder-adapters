@@ -27,4 +27,5 @@ export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
   ./run_on_gpu/run_collect_features.sh "$@"
 
 # Make sure to keep track of the output directory—it's in the logs.
-# After this, you can visualize features with sh/visualize_features.sh or annotate them with sh/annotate/annotate_assistant_response_features.sh (or both!)
+# After this, visualize features with sh/visualize_features.sh.
+# Useful annotators: sh/annotate/annotate_assistant_response_features.sh and sh/annotate/annotate_feature_patterns.sh.

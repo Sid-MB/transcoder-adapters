@@ -8,6 +8,7 @@ the common disk IO, archive/merge semantics, and per-feature iteration.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -132,6 +133,220 @@ def save_json(path: Path, data: Any) -> None:
     tmp_path.replace(path)
 
 
+def load_feature_json(data_dir: Path, cantor_id: int | str) -> dict[str, Any] | None:
+    """Load ``features/{cantor_id}.json`` when it exists."""
+    path = data_dir / "features" / f"{cantor_id}.json"
+    if not path.is_file():
+        return None
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected object in feature JSON: {path}")
+    return data
+
+
+class FeatureJsonAnnotator(FeatureAnnotator):
+    """Base class for annotators that optionally read per-feature JSON files."""
+
+    def __init__(
+        self,
+        *,
+        data_dir: Path,
+        top_k: int = 20,
+        feature_json_cache: dict[str, dict[str, Any] | None] | None = None,
+    ) -> None:
+        self.data_dir = data_dir
+        self.top_k = top_k
+        self._feature_json_cache = (
+            feature_json_cache if feature_json_cache is not None else {}
+        )
+
+    def get_feature_json(self, feature: dict[str, Any]) -> dict[str, Any] | None:
+        cantor_id = str(feature["cantor_id"])
+        if cantor_id not in self._feature_json_cache:
+            self._feature_json_cache[cantor_id] = load_feature_json(
+                self.data_dir,
+                cantor_id,
+            )
+        return self._feature_json_cache[cantor_id]
+
+
+def get_examples_quantile(
+    feature_json: dict[str, Any] | None,
+    quantile_name: str,
+    *,
+    top_k: int | None = None,
+) -> list[dict[str, Any]]:
+    if not feature_json:
+        return []
+    for quantile in feature_json.get("examples_quantiles") or []:
+        if quantile.get("quantile_name") == quantile_name:
+            examples = [
+                ex
+                for ex in quantile.get("examples") or []
+                if isinstance(ex, dict)
+            ]
+            return examples[:top_k] if top_k is not None else examples
+    return []
+
+
+def get_top_activation_examples(
+    feature_json: dict[str, Any] | None,
+    *,
+    top_k: int | None = None,
+    include_domain_quantiles: bool = False,
+) -> list[dict[str, Any]]:
+    if not feature_json:
+        return []
+
+    examples = get_examples_quantile(feature_json, "Top activations")
+    if include_domain_quantiles:
+        for quantile in feature_json.get("examples_quantiles") or []:
+            name = str(quantile.get("quantile_name") or "")
+            if name.startswith("Top activations ("):
+                examples.extend(
+                    ex
+                    for ex in quantile.get("examples") or []
+                    if isinstance(ex, dict)
+                )
+
+    if not examples:
+        for quantile in feature_json.get("examples_quantiles") or []:
+            name = str(quantile.get("quantile_name") or "")
+            if name.startswith("Top activations"):
+                examples.extend(
+                    ex
+                    for ex in quantile.get("examples") or []
+                    if isinstance(ex, dict)
+                )
+                break
+
+    return examples[:top_k] if top_k is not None else examples
+
+
+def get_highlighted_token(example: dict[str, Any]) -> str | None:
+    tokens = example.get("tokens") or []
+    if not isinstance(tokens, list):
+        return None
+    try:
+        idx = int(example["train_token_ind"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if idx < 0 or idx >= len(tokens):
+        return None
+    return str(tokens[idx])
+
+
+def get_tokens_acts_list(example: dict[str, Any]) -> list[float]:
+    values: list[float] = []
+    for value in example.get("tokens_acts_list") or []:
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            values.append(0.0)
+    return values
+
+
+def get_local_token_window(
+    example: dict[str, Any],
+    *,
+    before: int = 3,
+    after: int = 3,
+) -> list[str]:
+    tokens = example.get("tokens") or []
+    if not isinstance(tokens, list):
+        return []
+    try:
+        idx = int(example["train_token_ind"])
+    except (KeyError, TypeError, ValueError):
+        return []
+    start = max(0, idx - before)
+    end = min(len(tokens), idx + after + 1)
+    return [str(token) for token in tokens[start:end]]
+
+
+def get_local_text_window(
+    example: dict[str, Any],
+    *,
+    before: int = 8,
+    after: int = 8,
+) -> str:
+    return "".join(get_local_token_window(example, before=before, after=after))
+
+
+def get_logits(
+    feature_json: dict[str, Any] | None,
+    key: str,
+    *,
+    top_k: int | None = None,
+) -> list[str]:
+    if not feature_json:
+        return []
+    logits = [str(token) for token in feature_json.get(key) or []]
+    return logits[:top_k] if top_k is not None else logits
+
+
+def _positive_distribution_values(distribution: Any) -> list[float]:
+    if isinstance(distribution, dict):
+        raw_values = distribution.values()
+    else:
+        raw_values = distribution or []
+
+    values: list[float] = []
+    for value in raw_values:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0:
+            values.append(numeric)
+    return values
+
+
+def _distribution_probabilities(distribution: Any) -> list[float]:
+    values = _positive_distribution_values(distribution)
+    total = sum(values)
+    if total <= 0:
+        return []
+    return [value / total for value in values]
+
+
+def concentration_entropy(distribution: Any) -> float:
+    """Return normalized entropy in [0, 1] for a distribution."""
+    probs = _distribution_probabilities(distribution)
+    if len(probs) <= 1:
+        return 0.0
+    entropy = -sum(prob * math.log(prob) for prob in probs)
+    return entropy / math.log(len(probs))
+
+
+def concentration_herfindahl(distribution: Any) -> float:
+    probs = _distribution_probabilities(distribution)
+    return sum(prob * prob for prob in probs)
+
+
+def concentration_max_fraction(distribution: Any) -> float:
+    probs = _distribution_probabilities(distribution)
+    return max(probs) if probs else 0.0
+
+
+def concentration_lift_over_rest(distribution: Any) -> float:
+    probs = _distribution_probabilities(distribution)
+    if len(probs) <= 1:
+        return 0.0
+    top = max(probs)
+    rest_mean = (1.0 - top) / max(1, len(probs) - 1)
+    return top / max(rest_mean, 1e-12)
+
+
+def concentration_scores(distribution: Any, prefix: str) -> dict[str, float]:
+    return {
+        f"{prefix}_entropy": concentration_entropy(distribution),
+        f"{prefix}_herfindahl": concentration_herfindahl(distribution),
+        f"{prefix}_max_fraction": concentration_max_fraction(distribution),
+        f"{prefix}_lift_over_rest": concentration_lift_over_rest(distribution),
+    }
+
+
 def archive_existing_annotations(path: Path) -> Path:
     archive_dir = path.parent / "archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -188,10 +403,34 @@ def annotate_features_with_annotators(
     annotations: dict[str, Any],
     annotators: Sequence[FeatureAnnotator],
 ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
-    hits_by_annotator: dict[str, list[dict[str, Any]]] = {}
     for annotator in annotators:
-        annotations, hits = annotate_features(metadata, annotations, annotator)
-        hits_by_annotator[annotator.annotation_name] = hits
+        annotator.setup(metadata)
+
+    hits_by_annotator: dict[str, list[dict[str, Any]]] = {
+        annotator.annotation_name: []
+        for annotator in annotators
+    }
+
+    for feature in tqdm(metadata.get("features") or []):
+        cantor_id = str(feature["cantor_id"])
+        for annotator in annotators:
+            result = annotator.annotate_feature(feature, metadata)
+            entry = annotations.get(cantor_id) or {}
+            should_update = bool(result.tags) or annotator.has_existing_annotation(entry)
+            if not should_update:
+                continue
+
+            annotations[cantor_id] = annotator.merge_annotation(entry, result)
+            if result.tags:
+                hits_by_annotator[annotator.annotation_name].append(
+                    annotator.make_hit(feature, result),
+                )
+
+    for annotator in annotators:
+        hits_by_annotator[annotator.annotation_name].sort(
+            key=annotator.sort_key,
+            reverse=True,
+        )
     return annotations, hits_by_annotator
 
 

@@ -9,7 +9,7 @@ place. Pass ``--replace_all`` to archive the existing annotations file before
 writing fresh annotations.
 
 Example:
-    python -m analysis.features.annotate.annotate_assistant_response_features \
+    uv run python -m analysis.features.annotate.annotate_assistant_response_features \
         --data_dir /path/to/feature_run
 """
 
