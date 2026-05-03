@@ -21,7 +21,7 @@ from transformers import TextStreamer
 from helpers.log import logger, setup_logging
 from models import get_transcoder_classes, detect_architecture
 from models.auto import load_tokenizer
-from models.steering import FeatureSteeringSpec
+from models.steering import FeatureSteeringSpec, cantor_unpair
 
 
 def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | None = None):
@@ -182,6 +182,42 @@ def parse_feature_steering_spec(value: str) -> FeatureSteeringSpec:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def log_feature_steering_targets(model, specs: list[FeatureSteeringSpec]) -> None:
+    """Log decoded steering targets and warn for targets with no decoder effect."""
+    if not specs or not hasattr(model, "_transcoder_mlps"):
+        return
+
+    try:
+        mlps = tuple(model._transcoder_mlps())
+    except Exception as exc:
+        logger.warning(f"Could not inspect feature steering targets: {exc}")
+        return
+
+    for spec in specs:
+        layer_idx, feature_idx = cantor_unpair(spec.cantor_id)
+        if layer_idx >= len(mlps):
+            continue
+
+        mlp = mlps[layer_idx]
+        n_features = getattr(mlp, "n_features", None)
+        decoder = getattr(mlp, "transcoder_dec", None)
+        weight = getattr(decoder, "weight", None)
+        if weight is None or n_features is None or feature_idx >= n_features:
+            continue
+
+        column_norm = weight[:, feature_idx].detach().float().norm().item()
+        logger.info(
+            f"Feature steering target {spec.cantor_id} -> layer {layer_idx}, "
+            f"feature {feature_idx}/{n_features}, strength={spec.strength:g}, "
+            f"decoder_column_norm={column_norm:.6g}"
+        )
+        if column_norm <= 1e-8:
+            logger.warning(
+                f"Feature steering target {spec.cantor_id} has near-zero decoder column norm; "
+                "steering it may have no visible effect."
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Load and chat with a transcoder model")
     parser.add_argument("model_path", help="HF repo ID or local path to checkpoint")
@@ -199,12 +235,20 @@ def main():
     parser.add_argument("--steer", action="append", default=[], type=parse_feature_steering_spec,
                         metavar="CANTOR_ID:STRENGTH",
                         help="Steer a transcoder feature; repeat for multiple targets")
+    parser.add_argument("--feature-data", default=None,
+                        help="Feature-data run directory; with --steer, print top activation snippets")
+    parser.add_argument("--show-steered-activations", action="store_true",
+                        help="Color top activated tokens for each steered feature")
     parser.add_argument("--steering_mode", default="min", choices=["min", "add", "set"],
                         help="How to apply steering strengths")
     args = parser.parse_args()
 
     if args.hybrid and args.steer:
         parser.error("--hybrid cannot be used with --steer")
+    if args.feature_data and not args.steer:
+        parser.error("--feature-data requires at least one --steer target")
+    if args.show_steered_activations and not args.steer:
+        parser.error("--show-steered-activations requires at least one --steer target")
 
     setup_logging()
     model, tokenizer = load_model(args.model_path, args.tokenizer, args.arch)
@@ -226,8 +270,31 @@ def main():
         except ValueError as exc:
             parser.error(str(exc))
         logger.info(f"Feature steering enabled for {len(args.steer)} target(s), mode={args.steering_mode}")
+        log_feature_steering_targets(model, args.steer)
+
+    if args.feature_data:
+        from analysis.simple_load.feature_data import format_steered_feature_snippets
+
+        snippets = format_steered_feature_snippets(args.feature_data, args.steer)
+        if snippets:
+            sys.stdout.write(snippets)
+            if not snippets.endswith("\n"):
+                sys.stdout.write("\n")
 
     if args.prompt is not None:
+        if args.show_steered_activations:
+            from analysis.simple_load.activation_highlights import run_prompt_with_activation_highlights
+
+            run_prompt_with_activation_highlights(
+                model,
+                tokenizer,
+                args.prompt,
+                args.steer,
+                use_chat_template=not args.raw,
+                show_special_tokens=args.show_special_tokens,
+            )
+            return
+
         response = run_prompt(
             model,
             tokenizer,
@@ -238,6 +305,18 @@ def main():
         sys.stdout.write(response)
         if response and not response.endswith("\n"):
             sys.stdout.write("\n")
+        return
+
+    if args.show_steered_activations:
+        from analysis.simple_load.activation_highlights import chat_with_activation_highlights
+
+        chat_with_activation_highlights(
+            model,
+            tokenizer,
+            args.steer,
+            use_chat_template=not args.raw,
+            show_special_tokens=args.show_special_tokens,
+        )
         return
 
     chat(model, tokenizer, use_chat_template=not args.raw, show_special_tokens=args.show_special_tokens)

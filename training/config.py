@@ -71,6 +71,7 @@ class TranscoderConfig:
     n_features: int = 8192
     dec_bias: bool = True  # Whether to include bias in decoder
     l1_weight: float | None = 0.001  # Weight for L1 regularization on features
+    # Todo: Note: the following properties are not implemented yet
     normalize_by_layer: bool = False  # Whether to normalize L1 weights by layer output norm
     schedule_l1_weight: bool = False  # Whether to linearly ramp L1 weight from 0 to target weight
     pre_activation_loss_weight: float = 0.0  # Weight for pre-activation loss (prevents dead features)

@@ -10,7 +10,7 @@ Usage:
     python -m training.upload_models.upload_models_folder_to_hf \\
         /nlp/scr/siddharth/sparse-adaptation/checkpoints \\
         --config training/configs/gemma2_2b.yaml \\
-        --hub_org nathu0
+        --hub_org siddharthmb
 
     # Upload a single checkpoint:
     python -m training.upload_models.upload_models_folder_to_hf \\
@@ -139,11 +139,17 @@ def upload_checkpoint(
     # Create repo
     api.create_repo(repo_id, exist_ok=True)
 
-    if not config: # try to find config within checkpoint dir
-        try:
-            config = load_config(os.path.join(checkpoint_dir, CHECKPOINT_CONFIG_FILENAME))
-        except FileNotFoundError:
-            logger.warning(f"Config file not found in {checkpoint_dir}")
+    try:
+        config_path = os.path.join(checkpoint_dir, CHECKPOINT_CONFIG_FILENAME)
+        loaded_config = load_config(config_path)
+        if config is not None:
+            logger.warning(f"A config file was found at {loaded_config} but a config was also provided with the `--config` flag. Using the provided config, but the config file in the checkpoint directory is probably more accurate. Consider removing the `--config` flag.")
+        else:
+            config = loaded_config
+    except FileNotFoundError:
+        if config is None:
+            logger.warning(f"Config file not found in {checkpoint_dir} and no config was provided. Model card will have not have metadata.")
+        # Otherwise, we already had a config set, so we're fine
 
     # Add model card and training config (small, synchronous)
     if config is not None:
@@ -173,7 +179,7 @@ def main():
         description="Upload saved checkpoints to Hugging Face Hub",
     )
     parser.add_argument(
-        "--path",
+        "path",
         help=f"Path to a checkpoint directory or a folder containing checkpoint directories. Default: {default_path}",
         default=default_path,
     )

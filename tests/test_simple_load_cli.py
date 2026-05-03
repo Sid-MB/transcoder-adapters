@@ -1,5 +1,8 @@
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
@@ -59,6 +62,54 @@ class SimpleLoadCliTests(unittest.TestCase):
             "--steer",
             "11551209:4",
         ])
+
+    def test_prompt_command_with_feature_data_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            features_dir = Path(tmp) / "features"
+            features_dir.mkdir()
+            with open(features_dir / "11551209.json", "w") as f:
+                json.dump(
+                    {
+                        "examples_quantiles": [
+                            {
+                                "quantile_name": "Top activations",
+                                "examples": [
+                                    {
+                                        "tokens": ["Hi", " there"],
+                                        "tokens_acts_list": [0.0, 2.5],
+                                        "train_token_ind": 1,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    f,
+                )
+
+            self.run_cli([
+                "analysis.simple_load.simple_load",
+                MODEL_PATH,
+                "--prompt=Hi",
+                "--steer",
+                "11551209:4",
+                "--feature-data",
+                tmp,
+            ])
+
+    def test_prompt_command_with_activation_highlights_succeeds(self):
+        with patch(
+            "analysis.simple_load.activation_highlights.run_prompt_with_activation_highlights"
+        ) as run_with_highlights:
+            self.run_cli([
+                "analysis.simple_load.simple_load",
+                MODEL_PATH,
+                "--prompt=Hi",
+                "--steer",
+                "11551209:4",
+                "--show-steered-activations",
+            ])
+
+        run_with_highlights.assert_called_once()
 
     def test_invalid_steering_target_exits_with_error(self):
         argv = [

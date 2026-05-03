@@ -9,6 +9,8 @@
 #     --learning_rate 1e-3 \
 #     --batch_size 8 \
 #     --run_name_prefix gemma2_chat_filter
+#
+# ./sh/slurm_batch_train.sh --config training/configs/gemma4_2b.yaml training/configs/gemma4_2b_full_500k.yaml
 
 
 # Setup environment variables. sbatch passes all current env variables to the job.
