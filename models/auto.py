@@ -102,7 +102,7 @@ class AutoModelForCausalLMWithTranscoder:
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "PreTrainedModel":
         from transformers import AutoConfig
-        from models import get_transcoder_classes_for_model_type
+        from models import checkpoint_load_kwargs_for_model_type, get_transcoder_classes_for_model_type
 
         hf_config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
         arch = hf_config.model_type  # e.g. "qwen2", "gemma2"
@@ -114,6 +114,8 @@ class AutoModelForCausalLMWithTranscoder:
                 f"Unsupported model_type '{arch}' for transcoder model at "
                 f"'{pretrained_model_name_or_path}': {exc}"
             ) from exc
+        for key, value in checkpoint_load_kwargs_for_model_type(arch).items():
+            kwargs.setdefault(key, value)
         return model_cls.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
     @staticmethod

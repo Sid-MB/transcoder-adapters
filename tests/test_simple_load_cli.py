@@ -54,6 +54,32 @@ class SimpleLoadCliTests(unittest.TestCase):
             "--prompt=Hi",
         ])
 
+    def test_load_model_applies_gemma4_checkpoint_load_kwargs(self):
+        class FakeConfig:
+            _name_or_path = "google/gemma-4-E2B-it"
+
+        class FakeLoadedModel:
+            def eval(self):
+                pass
+
+        class FakeModelCls:
+            @classmethod
+            def from_pretrained(cls, model_path, **kwargs):
+                FakeModelCls.kwargs = kwargs
+                return FakeLoadedModel()
+
+        with (
+            patch("transformers.AutoConfig.from_pretrained", return_value=FakeConfig()),
+            patch.object(simple_load, "get_transcoder_classes", return_value=(object, FakeModelCls)),
+            patch.object(simple_load, "load_tokenizer", return_value=FakeTokenizer()),
+        ):
+            simple_load.load_model("checkpoint")
+
+        self.assertEqual(
+            FakeModelCls.kwargs["key_mapping"],
+            {r"^model\.language_model\.": "model."},
+        )
+
     def test_prompt_command_with_steering_succeeds(self):
         self.run_cli([
             "analysis.simple_load.simple_load",

@@ -117,6 +117,8 @@ class Gemma4ForCausalLMWithTranscoder(FeatureSteeringMixin, Gemma4ForCausalLM):
 
     def __init__(self, config):
         super().__init__(config)
+        if hasattr(self.model, "language_model"):
+            self.model = self.model.language_model
         self._keys_to_ignore_on_load_unexpected = [
             *(self._keys_to_ignore_on_load_unexpected or []),
             *_GEMMA4_UNUSED_MULTIMODAL_KEY_PATTERNS,

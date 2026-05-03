@@ -19,7 +19,7 @@ import torch
 from transformers import TextStreamer
 
 from helpers.log import logger, setup_logging
-from models import get_transcoder_classes, detect_architecture
+from models import checkpoint_load_kwargs_for_model_type, get_transcoder_classes, detect_architecture
 from models.auto import load_tokenizer
 from models.steering import FeatureSteeringSpec, cantor_unpair
 
@@ -39,11 +39,13 @@ def load_model(model_path: str, tokenizer_path: str | None = None, arch: str | N
         arch = detect_architecture(config._name_or_path or model_path)
 
     _, ModelCls = get_transcoder_classes(arch)
+    load_kwargs = checkpoint_load_kwargs_for_model_type(arch)
 
     model = ModelCls.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        **load_kwargs,
     )
     model.eval()
 

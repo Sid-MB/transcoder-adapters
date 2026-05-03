@@ -23,12 +23,9 @@ from training.config import CHECKPOINT_CONFIG_FILENAME, load_config, ExperimentC
 from training.dataset.PredefinedDataset import PredefinedDataset
 from training.forward_utils import forward_mixed, sample_cutoffs
 from training.losses import compute_kl_loss, compute_lm_loss, compute_nmse_loss
-from models import get_transcoder_classes
+from models import checkpoint_load_kwargs_for_model_type, get_transcoder_classes
 
 DEBUG_MODE_EARLY_EXIT_STEPS = 50
-GEMMA4_LANGUAGE_MODEL_KEY_MAPPING = {
-    r"^model\.language_model\.": "model.",
-}
 FRESH_TRANSCODER_MISSING_KEY_PATTERNS = [
     r"\.transcoder_enc\.(weight|bias)$",
     r"\.transcoder_dec\.(weight|bias)$",
@@ -78,8 +75,8 @@ def _transcoder_model_load_kwargs(config: ExperimentConfig, hf_config) -> dict[s
     kwargs: dict[str, Any] = {
         "generation_config": _generation_config_from_model_config(hf_config),
     }
-    if config.model_arch == "gemma4":
-        kwargs["key_mapping"] = GEMMA4_LANGUAGE_MODEL_KEY_MAPPING
+    if config.model_arch is not None:
+        kwargs.update(checkpoint_load_kwargs_for_model_type(config.model_arch))
     return kwargs
 
 
