@@ -7,10 +7,7 @@ job ID, timestamp) while the config may be generic across runs.
 
 Usage:
     # Upload all checkpoints in a folder:
-    python -m training.upload_models.upload_models_folder_to_hf \\
-        /nlp/scr/siddharth/sparse-adaptation/checkpoints \\
-        --config training/configs/gemma2_2b.yaml \\
-        --hub_org siddharthmb
+    uv run python -m training.upload_models.upload_models_folder_to_hf /nlp/scr/siddharth/sparse-adaptation/checkpoints --hub_org siddharthmb
 
     # Upload a single checkpoint:
     python -m training.upload_models.upload_models_folder_to_hf \\
@@ -20,6 +17,7 @@ Usage:
     # Dry run (just print what would be uploaded):
     python -m training.upload_models.upload_models_folder_to_hf \\
         /nlp/scr/siddharth/sparse-adaptation/checkpoints \\
+        --config training/configs/gemma2_2b.yaml \\
         --dry_run
 """
 

@@ -60,6 +60,7 @@ import argparse
 import json
 import random
 import heapq
+import textwrap
 from dataclasses import dataclass, field
 from collections import defaultdict
 from typing import Any
@@ -716,6 +717,106 @@ def _count_nonempty_features(collector: FeatureCollector) -> int:
     )
 
 
+def _format_bytes(n_bytes: float) -> str:
+    """Format a byte count for logs."""
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    value = float(max(0.0, n_bytes))
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} TiB"
+
+
+def _estimate_token_json_bytes(
+    items: list[tuple[list[int], str, dict]],
+    tokenizer,
+    max_sample_tokens: int = 2048,
+) -> float:
+    """Estimate bytes for one decoded token string in feature JSON."""
+    sampled_token_ids: list[int] = []
+    for tokens, _, _ in items:
+        remaining = max_sample_tokens - len(sampled_token_ids)
+        if remaining <= 0:
+            break
+        sampled_token_ids.extend(tokens[:remaining])
+
+    if not sampled_token_ids:
+        return 8.0
+
+    encoded_size = sum(
+        len(json.dumps(tokenizer.decode([tok_id])))
+        for tok_id in sampled_token_ids
+    )
+    return encoded_size / len(sampled_token_ids)
+
+
+def log_startup_output_size_estimate(
+    *,
+    n_layers: int,
+    n_features: int,
+    items: list[tuple[list[int], str, dict]],
+    tokenizer,
+    top_k: int,
+    n_random: int,
+    domain_top_k: int,
+    context_before: int,
+    context_after: int,
+    domain_names: list[str],
+    activation_example_ranges: list[tuple[float, float]],
+    activation_range_examples_per_domain: int,
+) -> None:
+    """Log a conservative feature JSON size estimate before collection starts.
+
+    The exact output size depends on which features fire and what examples are
+    retained, both of which are only known after the model forward passes. This
+    estimate is still useful as an early quota check because retention settings
+    tightly bound the number and length of examples per feature.
+    """
+    total_features = n_layers * n_features
+    max_context_tokens = context_before + 1 + context_after
+    max_retained_examples_per_feature = (
+        top_k
+        + n_random
+        + len(domain_names) * domain_top_k
+        + len(domain_names)
+        * len(activation_example_ranges)
+        * max(0, activation_range_examples_per_domain)
+    )
+
+    token_json_bytes = _estimate_token_json_bytes(items, tokenizer)
+    # Each saved token carries a decoded JSON string plus a float activation in
+    # tokens_acts_list. Keep a little overhead for commas and object keys.
+    bytes_per_saved_token = token_json_bytes + 18.0
+    fixed_feature_bytes = 900.0
+    bytes_per_example = 220.0 + max_context_tokens * bytes_per_saved_token
+    bytes_per_feature = fixed_feature_bytes + (
+        max_retained_examples_per_feature * bytes_per_example
+    )
+    feature_json_upper_bound = total_features * bytes_per_feature
+
+    logger.info("Startup output-size estimate:")
+    logger.info(
+        "  Feature JSON upper bound: %s if all %s features fire",
+        _format_bytes(feature_json_upper_bound),
+        f"{total_features:,}",
+    )
+    logger.info(
+        "  Estimate inputs: <=%s retained examples/feature, <=%s context tokens/example, "
+        "%s domains, %s activation ranges, sampled token JSON %.1f bytes/token",
+        f"{max_retained_examples_per_feature:,}",
+        f"{max_context_tokens:,}",
+        len(domain_names),
+        len(activation_example_ranges),
+        token_json_bytes,
+    )
+    logger.info(
+        "  Exact feature count and final size are only known after activation collection; "
+        "reduce --context_before/--context_after, --top_k, --domain_top_k, --n_random, "
+        "or --activation_range_examples_per_domain to reduce output size."
+    )
+
+
 def export_circuit_tracer_json(
     collector: FeatureCollector,
     logit_lens_data: list[dict],
@@ -1111,104 +1212,115 @@ def _parse_val_data_entry(entry: str) -> tuple[str | None, str]:
     return None, entry
 
 
+class ArgumentDefaultsRawTextHelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawTextHelpFormatter,
+):
+    """Preserve intentional help formatting while still showing defaults."""
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(
         description="Collect transcoder feature activations for visualization",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=ArgumentDefaultsRawTextHelpFormatter,
     )
     parser.add_argument("--model_path", type=str, required=True,
-                        help="HF repo ID or local path to transcoder checkpoint")
+                        help="""HF repo ID or local path to transcoder checkpoint""")
     parser.add_argument("--val_data", type=str, nargs='+', required=True,
-                        help=(
-                            "Validation data source(s). Each entry is either 'path' or 'domain:path'. "
-                            "Examples: "
-                            "chat:siddharthmb/lmsys-splits "
-                            "fineweb:hf://org/dataset/data/val.jsonl"
-                        ))
+                        help=textwrap.dedent("""
+                            Validation data source(s). Each entry is either 'path' or 'domain:path'.
+                            Examples:
+                              chat:siddharthmb/lmsys-splits
+                              fineweb:hf://org/dataset/data/val.jsonl
+                        """).strip())
     parser.add_argument("--output_dir", type=str, default=None,
-                        help="Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)")
+                        help="""Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)""")
 
     # Optional args
     parser.add_argument("--max_samples", type=int, default=None,
-                        help="Max samples to process per data source (default: all)")
+                        help="""Max samples to process per data source (default: all)""")
     parser.add_argument("--shuffle", action="store_true",
-                        help=(
-                            "Shuffle which rows are used (torch.Generator + torch.randperm). "
-                            f"Uses seed {DEFAULT_SHUFFLE_SEED} unless --shuffle_seed is set."
-                        ))
+                        help=f"""Shuffle which rows are used (torch.Generator + torch.randperm). Uses seed {DEFAULT_SHUFFLE_SEED} unless --shuffle_seed is set.""")
     parser.add_argument("--shuffle_seed", type=int, default=None,
-                        help=(
-                            "If set, sample rows with this seed instead of sequential order "
-                            "(same mechanism as --shuffle). Overrides the default seed from "
-                            f"--shuffle ({DEFAULT_SHUFFLE_SEED}). "
-                            "Each --val_data source uses an independent seed offset."
-                        ))
+                        help=f"""If set, sample rows with this seed instead of sequential order (same mechanism as --shuffle). Overrides the default seed from --shuffle ({DEFAULT_SHUFFLE_SEED}). Each --val_data source uses an independent seed offset.""")
     parser.add_argument("--top_k", type=int, default=20,
-                        help="Number of global top activating examples per feature")
+                        help="""Number of global top activating examples per feature""")
     parser.add_argument("--domain_top_k", type=int, default=10,
-                        help="Number of top activating examples per feature per domain")
+                        help="""Number of top activating examples per feature per domain""")
     parser.add_argument("--n_random", type=int, default=10,
-                        help="Number of random samples per feature")
+                        help="""Number of random samples per feature""")
     parser.add_argument(
         "--activation_example_ranges",
         type=str,
         default=DEFAULT_ACTIVATION_EXAMPLE_RANGES,
-        help=(
-            "Comma-separated activation ranges formatted as lo:hi. "
-            "The collector stores bounded per-feature/per-domain examples for these ranges "
-            "so medium activations can be inspected in the dashboard."
-        ),
+        help=textwrap.dedent("""
+            Comma-separated activation bands in lo:hi format, for example:
+              --activation_example_ranges 0.5:1.0,1.0:2.0,2.5:3.0
+
+            For each positive feature activation, the collector checks whether the activation falls in one configured half-open range:
+              lo <= activation < hi
+
+            When it matches, the collector may save a small bounded text example for that feature, domain, and range. These examples appear in the dashboard as tabs like:
+              Activation range 2.5-3.0 (chat)
+
+            Why this exists:
+              Histograms show how often activation magnitudes occur, but they do not show the text that caused those activations.
+              Top-activation examples are useful, but they are biased toward extreme outliers and can hide the common medium-strength behavior of a feature.
+              Random examples are useful, but they can miss a specific activation-strength band entirely.
+              Activation ranges let you inspect representative text from chosen magnitude bands without saving every activation.
+
+            Set to an empty string to disable matching all activation bands:
+              --activation_example_ranges ''
+        """).strip(),
     )
     parser.add_argument(
         "--activation_range_examples_per_domain",
         type=int,
-        default=1,
-        help=(
-            "Reservoir-sampled examples per feature, per domain, per configured activation range. "
-            "Set to 0 to disable activation-range example tabs."
-        ),
+        default=4,
+        help=textwrap.dedent("""
+            Maximum reservoir-sampled examples to keep for each feature/domain/range bucket.
+
+            The cap is applied independently to every tuple:
+              (layer, feature, domain, activation range)
+
+            For example, with two domains, six activation ranges, and this value set to 4, one feature can keep up to:
+              2 domains * 6 ranges * 4 examples = 48 activation-range examples
+
+            Why this exists:
+              The collector may see many positive activations for every feature across many tokens. Saving every matching text context would make feature JSONs enormous and slow down collection/export.
+              Reservoir sampling keeps the output bounded while still giving each matching activation in the bucket a chance to be represented.
+              Increase this when you want richer dashboard inspection for each band; decrease it when output size or collection time matters.
+
+            Set to 0 to disable activation-range example tabs entirely.
+        """).strip(),
     )
     parser.add_argument("--relative_target_domain", type=str, default="chat",
-                        help="Target domain for relative feature scores")
+                        help="""Target domain for relative feature scores""")
     parser.add_argument("--relative_baseline_domain", type=str, default="fineweb",
-                        help="Baseline domain for relative feature scores")
-    parser.add_argument("--context_before", type=int, default=50,
-                        help="Context tokens before activating token")
+                        help="""Baseline domain for relative feature scores""")
+    parser.add_argument("--context_before", type=int, default=75,
+                        help="""Number of tokens to save before each retained activation example. This only affects saved feature JSON snippet size, CPU transfer/serialization, and dashboard/auto-interp context; it does not change model forward tensor sizes or GPU activation tensor shapes.""")
     parser.add_argument("--context_after", type=int, default=20,
-                        help="Context tokens after activating token")
+                        help="""Number of tokens to save after each retained activation example. This only affects saved feature JSON snippet size, CPU transfer/serialization, and dashboard/auto-interp context; it does not change model forward tensor sizes or GPU activation tensor shapes.""")
     parser.add_argument("--batch_size", type=int, default=16,
-                        help=(
-                            "Max sequences per forward pass. GPU memory budget is auto-computed; "
-                            "this caps CPU-side work (per-token bookkeeping) per batch. "
-                            "Lower if the CPU bottleneck stalls the GPU on short sequences."
-                        ))
+                        help="""Max sequences per forward pass. GPU memory budget is auto-computed; this caps CPU-side work (per-token bookkeeping) per batch. Lower if the CPU bottleneck stalls the GPU on short sequences.""")
     parser.add_argument(
         "--shuffle_batches",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "After length-sorting and packing into batches (padding-efficient), randomly reorder "
-            "**which batch runs first** using torch.randperm with --shuffle_batches_seed. "
-            "Total compute is identical; only iteration order changes, so per-step progress/time "
-            "estimates (e.g. tqdm) are less skewed by many cheap short batches at the start. "
-            "Default: on. Use --no-shuffle_batches to run batches in strict length order (shortest "
-            "batches first)."
-        ),
+        help="""After length-sorting and packing into batches (padding-efficient), randomly reorder **which batch runs first** using torch.randperm with --shuffle_batches_seed. Total compute is identical; only iteration order changes, so per-step progress/time estimates (e.g. tqdm) are less skewed by many cheap short batches at the start. Default: on. Use --no-shuffle_batches to run batches in strict length order (shortest batches first).""",
     )
     parser.add_argument(
         "--shuffle_batches_seed",
         type=int,
         default=DEFAULT_BATCH_SHUFFLE_SEED,
-        help=(
-            "Seed for --shuffle_batches (ignored with --no-shuffle_batches). "
-            f"Default: {DEFAULT_BATCH_SHUFFLE_SEED}."
-        ),
+        help=f"""Seed for --shuffle_batches (ignored with --no-shuffle_batches). Default: {DEFAULT_BATCH_SHUFFLE_SEED}.""",
     )
     parser.add_argument("--tokenizer", type=str, default=None,
-                        help="Explicit tokenizer path (default: resolved from model_type)")
-    parser.add_argument("--max_length", type=int, default=10000,
-                        help="Max sequence length (longer sequences truncated)")
+                        help="""Explicit tokenizer path (default: resolved from model_type)""")
+    parser.add_argument("--max_length", type=int, default=4096,
+                        help="""Max sequence length (longer sequences truncated)""")
 
     args = parser.parse_args()
     try:
@@ -1352,6 +1464,20 @@ def main():
 
     domain_names = sorted({domain for _, domain, _ in items})
     logger.info(f"Activation histogram domains: {domain_names}")
+    log_startup_output_size_estimate(
+        n_layers=n_layers,
+        n_features=n_features,
+        items=items,
+        tokenizer=tokenizer,
+        top_k=args.top_k,
+        n_random=args.n_random,
+        domain_top_k=args.domain_top_k,
+        context_before=args.context_before,
+        context_after=args.context_after,
+        domain_names=domain_names,
+        activation_example_ranges=activation_example_ranges,
+        activation_range_examples_per_domain=args.activation_range_examples_per_domain,
+    )
 
     # Create collector now that all concrete domain labels are known.
     collector = FeatureCollector(
