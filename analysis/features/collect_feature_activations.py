@@ -9,6 +9,17 @@ Each --val_data entry is either a plain path or a 'domain:path' pair.
 When a domain label is given, the top-K max-activating examples for each
 domain are tracked separately and surfaced as their own quantile in the
 output JSON (for example: "Top activations (chat)", "Top activations (fineweb)").
+All positive activations are also aggregated into fixed activation-magnitude
+histograms, globally and per domain. Dense per-feature histogram arrays are
+stored in activation_histograms.npz; feature_metadata.json stores scalar
+summaries for sorting and dashboard display. Dashboard histogram views show raw
+counts, token-normalized density by domain, and conditional magnitude
+distributions by domain. Metadata also includes feature_frequency_summary with
+per-feature firing-frequency histograms and global nonzero token-feature density
+by domain, so run-level chat-vs-web sparsity differences are visible. Configured
+activation bands are reservoir-sampled into feature JSON example tabs such as
+Activation range 2.5-3.0 (chat), so medium non-top activations can be inspected
+directly.
 
 Usage:
     # Single source (no domain label)
@@ -34,6 +45,7 @@ Output:
     ├── features/               # Per-feature JSON files (circuit-tracer format)
     │   ├── {cantor_id}.json   # cantor_pair(layer, feature) -> unique int
     │   └── ...
+    ├── activation_histograms.npz  # Exact all-nonzero activation histograms
     └── feature_metadata.json  # Activation frequencies, domain/region breakdowns
 
     Browse results locally:
@@ -53,10 +65,20 @@ from collections import defaultdict
 from typing import Any
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
+import numpy as np
 import torch
 from tqdm import tqdm
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
+from analysis.features.activation_histograms import (
+    DEFAULT_ACTIVATION_EXAMPLE_RANGES,
+    DEFAULT_HISTOGRAM_BIN_LOWER_BOUNDS,
+    compute_relative_domain_scores,
+    format_activation_range_label,
+    histogram_bin_indices,
+    parse_activation_example_ranges,
+    save_activation_histograms_npz,
+)
 from analysis.features.annotate.annotate_assistant_response_features import (
     AssistantResponseFeatureAnnotator,
 )
@@ -114,6 +136,11 @@ class FeatureStats:
     # Thinking position histogram (10 bins)
     thinking_position_counts: list = field(default_factory=lambda: [0] * 10)
 
+    # Activation-range examples for inspecting non-top medium activations.
+    # Key format: "{domain}|{lo}-{hi}".
+    activation_range_examples: dict = field(default_factory=lambda: defaultdict(list))
+    activation_range_seen_counts: dict = field(default_factory=lambda: defaultdict(int))
+
 
 # =============================================================================
 # Feature Collector
@@ -154,6 +181,10 @@ class FeatureCollector:
         domain_top_k: int = 10,
         context_before: int = 50,
         context_after: int = 20,
+        domain_names: list[str] | None = None,
+        hist_bin_lower_bounds: np.ndarray | None = None,
+        activation_example_ranges: list[tuple[float, float]] | None = None,
+        activation_range_examples_per_domain: int = 1,
     ):
         self.n_layers = n_layers
         self.n_features = n_features
@@ -174,6 +205,36 @@ class FeatureCollector:
         self.tokens_per_domain: dict[str, int] = defaultdict(int)
         self.tokens_per_region: dict[str, int] = defaultdict(int)
         self.tokens_per_thinking_bin: list[int] = [0] * 10
+
+        # Exact activation histogram storage.
+        self.domain_names = list(domain_names or [])
+        self.domain_to_index = {
+            domain: i
+            for i, domain in enumerate(self.domain_names)
+        }
+        self.hist_bin_lower_bounds = np.asarray(
+            hist_bin_lower_bounds
+            if hist_bin_lower_bounds is not None
+            else DEFAULT_HISTOGRAM_BIN_LOWER_BOUNDS,
+            dtype=np.float32,
+        )
+        n_bins = len(self.hist_bin_lower_bounds)
+        n_domains = len(self.domain_names)
+        self.run_hist_total = np.zeros(n_bins, dtype=np.uint64)
+        self.run_hist_by_domain = np.zeros((n_domains, n_bins), dtype=np.uint64)
+        self.feature_hist_total_by_layer = [
+            np.zeros((n_features, n_bins), dtype=np.uint32)
+            for _ in range(n_layers)
+        ]
+        self.feature_hist_by_domain_by_layer = [
+            np.zeros((n_domains, n_features, n_bins), dtype=np.uint32)
+            for _ in range(n_layers)
+        ]
+        self.activation_example_ranges = list(activation_example_ranges or [])
+        self.activation_range_examples_per_domain = max(
+            0,
+            activation_range_examples_per_domain,
+        )
 
         # Hook storage
         self._hooks: list = []
@@ -298,6 +359,96 @@ class FeatureCollector:
             else:
                 stats.random_examples[random_replace_idx] = example
 
+    def _update_activation_histograms(
+        self,
+        *,
+        layer_idx: int,
+        domain: str,
+        active_features: np.ndarray,
+        active_values: np.ndarray,
+    ) -> None:
+        domain_idx = self.domain_to_index.get(domain)
+        if domain_idx is None:
+            raise ValueError(
+                f"Unknown activation domain {domain!r}; known domains={self.domain_names}"
+            )
+
+        bin_indices = histogram_bin_indices(active_values, self.hist_bin_lower_bounds)
+        np.add.at(self.run_hist_total, bin_indices, 1)
+        np.add.at(self.run_hist_by_domain[domain_idx], bin_indices, 1)
+        np.add.at(
+            self.feature_hist_total_by_layer[layer_idx],
+            (active_features, bin_indices),
+            1,
+        )
+        np.add.at(
+            self.feature_hist_by_domain_by_layer[layer_idx][domain_idx],
+            (active_features, bin_indices),
+            1,
+        )
+
+    def _maybe_add_activation_range_example(
+        self,
+        stats: FeatureStats,
+        activation: float,
+        tokens: list[int],
+        position: int,
+        features_gpu: torch.Tensor,
+        feature_idx: int,
+        domain: str,
+        region: str,
+        thinking_position: float | None,
+        sequence_idx: int,
+    ) -> None:
+        if self.activation_range_examples_per_domain <= 0:
+            return
+
+        matched_range = None
+        for activation_range in self.activation_example_ranges:
+            lo, hi = activation_range
+            if lo <= activation < hi:
+                matched_range = activation_range
+                break
+        if matched_range is None:
+            return
+
+        label = format_activation_range_label(matched_range)
+        key = f"{domain}|{label}"
+        stats.activation_range_seen_counts[key] += 1
+        kept_examples = stats.activation_range_examples[key]
+        add_example = False
+        replace_idx = None
+        if len(kept_examples) < self.activation_range_examples_per_domain:
+            add_example = True
+        else:
+            j = random.randint(0, stats.activation_range_seen_counts[key] - 1)
+            if j < self.activation_range_examples_per_domain:
+                add_example = True
+                replace_idx = j
+        if not add_example:
+            return
+
+        context_tokens, pos_in_ctx = self._get_context(tokens, position)
+        ctx_start = max(0, position - self.context_before)
+        ctx_end = min(len(tokens), position + self.context_after + 1)
+        context_activations = features_gpu[ctx_start:ctx_end, feature_idx].float().cpu().tolist()
+        example = ActivatingExample(
+            activation=activation,
+            token_id=tokens[position],
+            position=position,
+            context_tokens=context_tokens,
+            context_activations=context_activations,
+            position_in_context=pos_in_ctx,
+            domain=domain,
+            region=region,
+            thinking_position=thinking_position,
+            sequence_idx=sequence_idx,
+        )
+        if replace_idx is None:
+            kept_examples.append(example)
+        else:
+            kept_examples[replace_idx] = example
+
     def process_batch(
         self,
         model,
@@ -356,6 +507,13 @@ class FeatureCollector:
                 active_features = nonzero[:, 1].cpu().numpy()
                 active_values = features_gpu[nonzero[:, 0], nonzero[:, 1]].float().cpu().numpy()
 
+                self._update_activation_histograms(
+                    layer_idx=layer_idx,
+                    domain=domain,
+                    active_features=active_features,
+                    active_values=active_values,
+                )
+
                 for i in range(len(active_positions)):
                     pos = int(active_positions[i])
                     feature_idx = int(active_features[i])
@@ -372,6 +530,18 @@ class FeatureCollector:
                         bin_idx = min(9, int(think_pos * 10))
                         stats.thinking_position_counts[bin_idx] += 1
 
+                    self._maybe_add_activation_range_example(
+                        stats,
+                        act,
+                        tokens,
+                        pos,
+                        features_gpu,
+                        feature_idx,
+                        domain,
+                        region,
+                        think_pos,
+                        sequence_idx,
+                    )
                     self._maybe_add_example(
                         stats, act, tokens, pos, features_gpu, feature_idx,
                         domain, region, think_pos, sequence_idx
@@ -443,6 +613,67 @@ def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
     }
 
 
+def _build_examples_quantiles(
+    stats: FeatureStats,
+    tokenizer,
+) -> tuple[list[dict], float, float]:
+    top_examples = sorted(stats.top_k_examples, key=lambda x: -x.activation)
+    random_examples = stats.random_examples
+
+    top_formatted = [
+        format_example_for_circuit_tracer(ex, tokenizer)
+        for ex in top_examples
+    ]
+    random_formatted = [
+        format_example_for_circuit_tracer(ex, tokenizer)
+        for ex in random_examples
+    ]
+
+    domain_quantiles = []
+    for domain_name, domain_heap in sorted(stats.domain_top_k_examples.items()):
+        domain_sorted = sorted(domain_heap, key=lambda x: -x.activation)
+        domain_formatted = [
+            format_example_for_circuit_tracer(ex, tokenizer)
+            for ex in domain_sorted
+        ]
+        domain_quantiles.append({
+            "quantile_name": f"Top activations ({domain_name})",
+            "examples": domain_formatted,
+        })
+
+    range_quantiles = []
+    range_examples_for_scale = []
+    for range_key, range_examples in sorted(stats.activation_range_examples.items()):
+        domain_name, range_label = range_key.split("|", 1)
+        range_sorted = sorted(range_examples, key=lambda x: x.activation)
+        range_examples_for_scale.extend(range_sorted)
+        range_formatted = [
+            format_example_for_circuit_tracer(ex, tokenizer)
+            for ex in range_sorted
+        ]
+        range_quantiles.append({
+            "quantile_name": f"Activation range {range_label} ({domain_name})",
+            "examples": range_formatted,
+        })
+
+    all_acts = []
+    for ex in top_examples + random_examples + range_examples_for_scale:
+        all_acts.extend(ex.context_activations)
+    act_min = min(all_acts) if all_acts else 0.0
+    act_max = max(all_acts) if all_acts else 1.0
+
+    return (
+        [
+            {"quantile_name": "Top activations", "examples": top_formatted},
+            *domain_quantiles,
+            *range_quantiles,
+            {"quantile_name": "Random samples", "examples": random_formatted},
+        ],
+        act_min,
+        act_max,
+    )
+
+
 def _write_feature_json(args: tuple) -> None:
     """Write a single feature JSON file (for parallel execution)."""
     filepath, feature_json = args
@@ -471,6 +702,8 @@ def _release_feature_examples(stats: FeatureStats) -> None:
     stats.top_k_examples.clear()
     stats.random_examples.clear()
     stats.domain_top_k_examples.clear()
+    stats.activation_range_examples.clear()
+    stats.activation_range_seen_counts.clear()
 
 
 def _count_nonempty_features(collector: FeatureCollector) -> int:
@@ -524,26 +757,10 @@ def export_circuit_tracer_json(
                     if stats.activation_count == 0:
                         continue
 
-                    # Get examples (sorted by activation for top-k)
-                    top_examples = sorted(stats.top_k_examples, key=lambda x: -x.activation)
-                    random_examples = stats.random_examples
-
-                    # Format examples
-                    top_formatted = [
-                        format_example_for_circuit_tracer(ex, tokenizer)
-                        for ex in top_examples
-                    ]
-                    random_formatted = [
-                        format_example_for_circuit_tracer(ex, tokenizer)
-                        for ex in random_examples
-                    ]
-
-                    # Compute activation range from examples
-                    all_acts = []
-                    for ex in top_examples + random_examples:
-                        all_acts.extend(ex.context_activations)
-                    act_min = min(all_acts) if all_acts else 0.0
-                    act_max = max(all_acts) if all_acts else 1.0
+                    examples_quantiles, act_min, act_max = _build_examples_quantiles(
+                        stats,
+                        tokenizer,
+                    )
 
                     # Get logit lens tokens
                     top_logits = [
@@ -574,11 +791,7 @@ def export_circuit_tracer_json(
                         "bottom_logits": bottom_logits,
                         "act_min": act_min,
                         "act_max": act_max,
-                        "examples_quantiles": [
-                            {"quantile_name": "Top activations", "examples": top_formatted},
-                            *domain_quantiles,
-                            {"quantile_name": "Random samples", "examples": random_formatted},
-                        ],
+                        "examples_quantiles": examples_quantiles,
                         "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
                         "layer": layer_idx,
                         "feature": feature_idx,
@@ -600,71 +813,233 @@ def export_circuit_tracer_json(
     logger.info(f"Generated {write_count} feature files, skipped {skipped} empty features")
 
 
-def export_metadata(collector: FeatureCollector, output_dir: Path):
-    """Export rich metadata to JSON for analysis."""
-    logger.info("Exporting metadata...")
+def export_activation_histograms(collector: FeatureCollector, output_dir: Path) -> Path:
+    hist_path = output_dir / "activation_histograms.npz"
+    logger.info(f"Saving activation histograms to {hist_path}...")
+    save_activation_histograms_npz(
+        path=hist_path,
+        bin_lower_bounds=collector.hist_bin_lower_bounds,
+        domain_names=collector.domain_names,
+        run_hist_total=collector.run_hist_total,
+        run_hist_by_domain=collector.run_hist_by_domain,
+        feature_hist_total_by_layer=collector.feature_hist_total_by_layer,
+        feature_hist_by_domain_by_layer=collector.feature_hist_by_domain_by_layer,
+    )
+    logger.info(f"Saved activation histograms to {hist_path}")
+    return hist_path
 
+
+def build_feature_metadata_entry(
+    *,
+    collector: FeatureCollector,
+    stats: FeatureStats,
+    layer_idx: int,
+    feature_idx: int,
+    target_domain: str,
+    baseline_domain: str,
+) -> dict[str, Any]:
+    total_acts = stats.activation_count
+
+    domain_density = {}
+    domain_fraction = {}
+    for domain, count in stats.domain_counts.items():
+        domain_tokens = collector.tokens_per_domain.get(domain, 0)
+        domain_density[domain] = count / domain_tokens if domain_tokens > 0 else 0
+        domain_fraction[domain] = count / total_acts if total_acts > 0 else 0
+
+    region_density = {}
+    region_fraction = {}
+    for region, count in stats.region_counts.items():
+        region_tokens = collector.tokens_per_region.get(region, 0)
+        region_density[region] = count / region_tokens if region_tokens > 0 else 0
+        region_fraction[region] = count / total_acts if total_acts > 0 else 0
+
+    thinking_density = []
+    thinking_fraction = []
+    thinking_total = sum(stats.thinking_position_counts)
+    for bin_idx in range(10):
+        bin_acts = stats.thinking_position_counts[bin_idx]
+        bin_tokens = collector.tokens_per_thinking_bin[bin_idx]
+        thinking_density.append(bin_acts / bin_tokens if bin_tokens > 0 else 0)
+        thinking_fraction.append(bin_acts / thinking_total if thinking_total > 0 else 0)
+
+    feature_meta: dict[str, Any] = {
+        "layer": layer_idx,
+        "feature": feature_idx,
+        "cantor_id": cantor_pair(layer_idx, feature_idx),
+        "activation_count": total_acts,
+        "activation_freq": total_acts / max(collector.total_tokens, 1),
+        "domain_density": domain_density,
+        "domain_fraction": domain_fraction,
+        "region_density": region_density,
+        "region_fraction": region_fraction,
+        "thinking_position_density": thinking_density,
+        "thinking_position_fraction": thinking_fraction,
+    }
+    relative_scores = compute_relative_domain_scores(
+        domain_counts=dict(stats.domain_counts),
+        tokens_per_domain=dict(collector.tokens_per_domain),
+        domain_names=collector.domain_names,
+        feature_hist_by_domain=collector.feature_hist_by_domain_by_layer[layer_idx][
+            :, feature_idx, :
+        ],
+        bin_lower_bounds=collector.hist_bin_lower_bounds,
+        target_domain=target_domain,
+        baseline_domain=baseline_domain,
+    )
+    if relative_scores is not None:
+        feature_meta["relative_domain_scores"] = relative_scores
+    return feature_meta
+
+
+def build_feature_frequency_summary(collector: FeatureCollector) -> dict[str, Any]:
+    frequency_bin_lower_bounds = np.array(
+        [
+            0.0,
+            1e-9,
+            3e-9,
+            1e-8,
+            3e-8,
+            1e-7,
+            3e-7,
+            1e-6,
+            3e-6,
+            1e-5,
+            3e-5,
+            1e-4,
+            3e-4,
+            1e-3,
+            3e-3,
+            1e-2,
+            3e-2,
+            1e-1,
+            3e-1,
+            1.0,
+        ],
+        dtype=np.float32,
+    )
+    n_total_features = collector.n_layers * collector.n_features
+    total_counts = np.zeros(n_total_features, dtype=np.uint64)
+    counts_by_domain = {
+        domain: np.zeros(n_total_features, dtype=np.uint64)
+        for domain in collector.domain_names
+    }
+
+    flat_idx = 0
+    for layer_idx in range(collector.n_layers):
+        for feature_idx in range(collector.n_features):
+            stats = collector.stats[layer_idx][feature_idx]
+            total_counts[flat_idx] = int(stats.activation_count)
+            for domain in collector.domain_names:
+                counts_by_domain[domain][flat_idx] = int(stats.domain_counts.get(domain) or 0)
+            flat_idx += 1
+
+    total_tokens = max(int(collector.total_tokens), 1)
+    total_freqs = total_counts.astype(np.float64) / total_tokens
+    total_bins = histogram_bin_indices(total_freqs, frequency_bin_lower_bounds)
+    feature_frequency_hist_total = np.bincount(
+        total_bins,
+        minlength=len(frequency_bin_lower_bounds),
+    ).astype(int).tolist()
+
+    feature_frequency_hist_by_domain: dict[str, list[int]] = {}
+    global_nonzero_density_by_domain: dict[str, float] = {}
+    active_feature_count_by_domain: dict[str, int] = {}
+    for domain, counts in counts_by_domain.items():
+        domain_tokens = int(collector.tokens_per_domain.get(domain) or 0)
+        if domain_tokens > 0:
+            domain_freqs = counts.astype(np.float64) / domain_tokens
+            domain_bins = histogram_bin_indices(domain_freqs, frequency_bin_lower_bounds)
+            feature_frequency_hist_by_domain[domain] = np.bincount(
+                domain_bins,
+                minlength=len(frequency_bin_lower_bounds),
+            ).astype(int).tolist()
+            global_nonzero_density_by_domain[domain] = (
+                float(counts.sum()) / (domain_tokens * max(n_total_features, 1))
+            )
+        else:
+            feature_frequency_hist_by_domain[domain] = [0] * len(frequency_bin_lower_bounds)
+            global_nonzero_density_by_domain[domain] = 0.0
+        active_feature_count_by_domain[domain] = int(np.count_nonzero(counts))
+
+    return {
+        "frequency_bin_lower_bounds": frequency_bin_lower_bounds.tolist(),
+        "domain_names": collector.domain_names,
+        "all_features_total": n_total_features,
+        "active_features_total": int(np.count_nonzero(total_counts)),
+        "feature_frequency_hist_total": feature_frequency_hist_total,
+        "feature_frequency_hist_by_domain": feature_frequency_hist_by_domain,
+        "global_nonzero_density_by_domain": global_nonzero_density_by_domain,
+        "active_feature_count_by_domain": active_feature_count_by_domain,
+    }
+
+
+def build_metadata_payload(
+    *,
+    collector: FeatureCollector,
+    target_domain: str,
+    baseline_domain: str,
+) -> dict[str, Any]:
     metadata: dict[str, Any] = {
-        # Global counts
         "total_tokens": collector.total_tokens,
         "tokens_per_domain": dict(collector.tokens_per_domain),
         "tokens_per_region": dict(collector.tokens_per_region),
         "tokens_per_thinking_bin": collector.tokens_per_thinking_bin,
-
-        # Per-feature stats
+        "activation_histograms_file": "activation_histograms.npz",
+        "activation_histogram_summary": {
+            "bin_lower_bounds": collector.hist_bin_lower_bounds.tolist(),
+            "domain_names": collector.domain_names,
+            "run_hist_total": collector.run_hist_total.astype(int).tolist(),
+            "run_hist_by_domain": collector.run_hist_by_domain.astype(int).tolist(),
+        },
+        "feature_frequency_summary": build_feature_frequency_summary(collector),
+        "relative_score_config": {
+            "target_domain": target_domain,
+            "baseline_domain": baseline_domain,
+            "smoothing": "max(raw_density, 1 / domain_token_count) for target and baseline",
+            "strength_quantiles": [0.95, 0.99],
+        },
         "features": [],
     }
 
     for layer_idx in range(collector.n_layers):
         for feature_idx in range(collector.n_features):
             stats = collector.stats[layer_idx][feature_idx]
-
             if stats.activation_count == 0:
                 continue
+            metadata["features"].append(
+                build_feature_metadata_entry(
+                    collector=collector,
+                    stats=stats,
+                    layer_idx=layer_idx,
+                    feature_idx=feature_idx,
+                    target_domain=target_domain,
+                    baseline_domain=baseline_domain,
+                )
+            )
+    return metadata
 
-            total_acts = stats.activation_count
 
-            # Domain distributions
-            domain_density = {}
-            domain_fraction = {}
-            for domain, count in stats.domain_counts.items():
-                domain_tokens = collector.tokens_per_domain.get(domain, 0)
-                domain_density[domain] = count / domain_tokens if domain_tokens > 0 else 0
-                domain_fraction[domain] = count / total_acts
-
-            # Region distributions
-            region_density = {}
-            region_fraction = {}
-            for region, count in stats.region_counts.items():
-                region_tokens = collector.tokens_per_region.get(region, 0)
-                region_density[region] = count / region_tokens if region_tokens > 0 else 0
-                region_fraction[region] = count / total_acts
-
-            # Thinking position distributions
-            thinking_density = []
-            thinking_fraction = []
-            thinking_total = sum(stats.thinking_position_counts)
-            for bin_idx in range(10):
-                bin_acts = stats.thinking_position_counts[bin_idx]
-                bin_tokens = collector.tokens_per_thinking_bin[bin_idx]
-                thinking_density.append(bin_acts / bin_tokens if bin_tokens > 0 else 0)
-                thinking_fraction.append(bin_acts / thinking_total if thinking_total > 0 else 0)
-
-            feature_meta = {
-                "layer": layer_idx,
-                "feature": feature_idx,
-                "cantor_id": cantor_pair(layer_idx, feature_idx),
-                "activation_count": total_acts,
-                "activation_freq": total_acts / collector.total_tokens,
-                "domain_density": domain_density,
-                "domain_fraction": domain_fraction,
-                "region_density": region_density,
-                "region_fraction": region_fraction,
-                "thinking_position_density": thinking_density,
-                "thinking_position_fraction": thinking_fraction,
-            }
-            metadata["features"].append(feature_meta)
-
+def export_metadata(
+    collector: FeatureCollector,
+    output_dir: Path,
+    target_domain: str,
+    baseline_domain: str,
+) -> None:
+    """Export rich metadata to JSON for analysis."""
+    logger.info("Exporting metadata...")
+    if target_domain not in collector.domain_names or baseline_domain not in collector.domain_names:
+        logger.warning(
+            "Relative scores skipped for missing domains: target=%r baseline=%r available=%s",
+            target_domain,
+            baseline_domain,
+            collector.domain_names,
+        )
+    metadata = build_metadata_payload(
+        collector=collector,
+        target_domain=target_domain,
+        baseline_domain=baseline_domain,
+    )
     with open(output_dir / "feature_metadata.json", 'w') as f:
         json.dump(metadata, f)
 
@@ -775,11 +1150,34 @@ def main():
                         help="Number of top activating examples per feature per domain")
     parser.add_argument("--n_random", type=int, default=10,
                         help="Number of random samples per feature")
+    parser.add_argument(
+        "--activation_example_ranges",
+        type=str,
+        default=DEFAULT_ACTIVATION_EXAMPLE_RANGES,
+        help=(
+            "Comma-separated activation ranges formatted as lo:hi. "
+            "The collector stores bounded per-feature/per-domain examples for these ranges "
+            "so medium activations can be inspected in the dashboard."
+        ),
+    )
+    parser.add_argument(
+        "--activation_range_examples_per_domain",
+        type=int,
+        default=1,
+        help=(
+            "Reservoir-sampled examples per feature, per domain, per configured activation range. "
+            "Set to 0 to disable activation-range example tabs."
+        ),
+    )
+    parser.add_argument("--relative_target_domain", type=str, default="chat",
+                        help="Target domain for relative feature scores")
+    parser.add_argument("--relative_baseline_domain", type=str, default="fineweb",
+                        help="Baseline domain for relative feature scores")
     parser.add_argument("--context_before", type=int, default=50,
                         help="Context tokens before activating token")
     parser.add_argument("--context_after", type=int, default=20,
                         help="Context tokens after activating token")
-    parser.add_argument("--batch_size", type=int, default=40,
+    parser.add_argument("--batch_size", type=int, default=16,
                         help=(
                             "Max sequences per forward pass. GPU memory budget is auto-computed; "
                             "this caps CPU-side work (per-token bookkeeping) per batch. "
@@ -813,6 +1211,12 @@ def main():
                         help="Max sequence length (longer sequences truncated)")
 
     args = parser.parse_args()
+    try:
+        activation_example_ranges = parse_activation_example_ranges(
+            args.activation_example_ranges
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.shuffle_seed is not None:
         shuffle_seed: int | None = args.shuffle_seed
@@ -905,17 +1309,6 @@ def main():
 
     logger.info(f"Processing {total_samples} samples total across {len(loaded_sources)} source(s)")
 
-    # Create collector
-    collector = FeatureCollector(
-        n_layers=n_layers,
-        n_features=n_features,
-        top_k=args.top_k,
-        n_random=args.n_random,
-        domain_top_k=args.domain_top_k,
-        context_before=args.context_before,
-        context_after=args.context_after,
-    )
-
     # Pre-extract all items across sources, filtering malformed ones
     items: list[tuple[list[int], str, dict]] = []
     skipped = 0
@@ -956,6 +1349,23 @@ def main():
             f"(has_thinking={has_thinking}, skipped={skipped}). Exiting."
         )
         return
+
+    domain_names = sorted({domain for _, domain, _ in items})
+    logger.info(f"Activation histogram domains: {domain_names}")
+
+    # Create collector now that all concrete domain labels are known.
+    collector = FeatureCollector(
+        n_layers=n_layers,
+        n_features=n_features,
+        top_k=args.top_k,
+        n_random=args.n_random,
+        domain_top_k=args.domain_top_k,
+        context_before=args.context_before,
+        context_after=args.context_after,
+        domain_names=domain_names,
+        activation_example_ranges=activation_example_ranges,
+        activation_range_examples_per_domain=args.activation_range_examples_per_domain,
+    )
 
     # Sort by length so similarly-sized sequences are batched together (less padding waste)
     items.sort(key=lambda x: len(x[0]))
@@ -1046,11 +1456,18 @@ def main():
 
     # Export
     export_circuit_tracer_json(collector, logit_lens_data, tokenizer, output_dir)
-    export_metadata(collector, output_dir)
+    export_activation_histograms(collector, output_dir)
+    export_metadata(
+        collector,
+        output_dir,
+        target_domain=args.relative_target_domain,
+        baseline_domain=args.relative_baseline_domain,
+    )
     annotate_collected_features(output_dir)
 
     logger.info(f"Done! Output written to {output_dir}")
     logger.info("  features/: Circuit tracer JSON files")
+    logger.info("  activation_histograms.npz: Exact activation histogram sidecar")
     logger.info("  feature_metadata.json: Rich metadata for analysis")
     logger.info("  feature_annotations.json: Automatic feature annotations")
 

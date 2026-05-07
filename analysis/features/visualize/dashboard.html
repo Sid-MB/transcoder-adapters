@@ -374,6 +374,7 @@
     return (meta.features || []).map((f) => ({
       ...f,
       _skew: domainSkew(f),
+      _relative: f.relative_domain_scores || null,
     }));
   }
 
@@ -428,12 +429,29 @@
         h += `<div class="bar-row"><span class="bar-label">${i / 10}-${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
       }
     }
+    const hs = meta.activation_histogram_summary;
+    if (hs && hs.bin_lower_bounds && hs.run_hist_total) {
+      h += '<h2>Nonzero activation histogram</h2>';
+      h += renderHistogramBars(hs.bin_lower_bounds, hs.run_hist_total, '');
+      const domains = hs.domain_names || [];
+      const byDomain = hs.run_hist_by_domain || [];
+      const tokens = meta.tokens_per_domain || {};
+      for (let i = 0; i < domains.length; i++) {
+        const domain = domains[i];
+        const denom = tokens[domain] || 0;
+        if (!denom || !byDomain[i]) continue;
+        h += `<h2>Nonzero activation density · ${escapeHtml(domain)}</h2>`;
+        h += renderHistogramBars(hs.bin_lower_bounds, byDomain[i].map((c) => c / denom), '');
+      }
+    }
+    h += renderFeatureFrequencySummary(meta);
+    h += renderRelativeScatter(rows);
     od.innerHTML = h;
   }
 
   function thead() {
     const tr = el('thead-row');
-    let h = '<th>L</th><th>F</th><th>Cantor</th><th>Tags</th><th>Freq</th><th>Skew</th>';
+    let h = '<th>L</th><th>F</th><th>Cantor</th><th>Tags</th><th>Freq</th><th>Rel</th><th>P95x</th><th>P99x</th><th>Maxx</th><th>Skew</th>';
     for (const dk of domainKeys) {
       h += `<th title="${escapeHtml(dk)}">${escapeHtml(dk.length > 10 ? dk.slice(0, 9) + '…' : dk)}</th>`;
     }
@@ -446,6 +464,22 @@
     else if (sortKey === 'layer') { va = a.layer; vb = b.layer; }
     else if (sortKey === 'skew') { va = a._skew; vb = b._skew; }
     else if (sortKey === 'cantor') { va = a.cantor_id; vb = b.cantor_id; }
+    else if (sortKey === 'rel') {
+      va = a._relative && a._relative.log2_density_lift != null ? a._relative.log2_density_lift : -Infinity;
+      vb = b._relative && b._relative.log2_density_lift != null ? b._relative.log2_density_lift : -Infinity;
+    }
+    else if (sortKey === 'p95_ratio') {
+      va = a._relative && a._relative.p95_ratio != null ? a._relative.p95_ratio : -Infinity;
+      vb = b._relative && b._relative.p95_ratio != null ? b._relative.p95_ratio : -Infinity;
+    }
+    else if (sortKey === 'p99_ratio') {
+      va = a._relative && a._relative.p99_ratio != null ? a._relative.p99_ratio : -Infinity;
+      vb = b._relative && b._relative.p99_ratio != null ? b._relative.p99_ratio : -Infinity;
+    }
+    else if (sortKey === 'max_ratio') {
+      va = a._relative && a._relative.max_nonzero_bin_ratio != null ? a._relative.max_nonzero_bin_ratio : -Infinity;
+      vb = b._relative && b._relative.max_nonzero_bin_ratio != null ? b._relative.max_nonzero_bin_ratio : -Infinity;
+    }
     else if (sortKey.startsWith('d_')) {
       const k = decodeURIComponent(sortKey.slice(2));
       va = (a.domain_density || {})[k] ?? 0;
@@ -498,6 +532,10 @@
         <td class="num">${f.cantor_id}</td>
         <td class="tag-cell">${tagsHtml(annotationFor(f.cantor_id).tags || [])}</td>
         <td class="num">${f.activation_freq != null ? f.activation_freq.toExponential(3) : ''}</td>
+        <td class="num">${f._relative && f._relative.log2_density_lift != null ? f._relative.log2_density_lift.toFixed(2) : '–'}</td>
+        <td class="num">${f._relative && f._relative.p95_ratio != null ? f._relative.p95_ratio.toFixed(2) : '–'}</td>
+        <td class="num">${f._relative && f._relative.p99_ratio != null ? f._relative.p99_ratio.toFixed(2) : '–'}</td>
+        <td class="num">${f._relative && f._relative.max_nonzero_bin_ratio != null ? f._relative.max_nonzero_bin_ratio.toFixed(2) : '–'}</td>
         <td class="num">${f._skew.toFixed(3)}</td>
         ${dens}
       </tr>`;
@@ -554,6 +592,66 @@
     return v.toExponential(4);
   }
 
+  function renderHistogramBars(binLowerBounds, counts, labelPrefix) {
+    const maxCount = counts.length ? Math.max(...counts, 1) : 1;
+    return counts.map((count, i) => {
+      const lo = binLowerBounds[i];
+      const hi = i + 1 < binLowerBounds.length ? binLowerBounds[i + 1] : null;
+      const label = hi == null ? `${labelPrefix}${formatScalar(lo)}+` : `${labelPrefix}${formatScalar(lo)}-${formatScalar(hi)}`;
+      const width = Math.max(1, 100 * count / maxCount);
+      return `<div class="bar-row"><span class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div><span>${escapeHtml(formatScalar(count))}</span></div>`;
+    }).join('');
+  }
+
+  function renderRelativeScatter(featureRows) {
+    const pts = featureRows.filter((f) => f._relative && f._relative.target_density != null && f._relative.baseline_density != null);
+    if (!pts.length) return '';
+    const sample = pts.slice(0, 2500);
+    const maxX = Math.max(...sample.map((f) => f._relative.baseline_density), 1e-12);
+    const maxY = Math.max(...sample.map((f) => f._relative.target_density), 1e-12);
+    const circles = sample.map((f) => {
+      const x = 36 + 250 * Math.sqrt(Math.max(0, f._relative.baseline_density) / maxX);
+      const y = 286 - 250 * Math.sqrt(Math.max(0, f._relative.target_density) / maxY);
+      const lift = f._relative.log2_density_lift || 0;
+      const fill = lift >= 0 ? '#58a6ff' : '#f85149';
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.2" fill="${fill}" opacity="0.55"><title>L${f.layer} F${f.feature} log2_lift=${formatScalar(lift)}</title></circle>`;
+    }).join('');
+    return `<h2>Joint domain distribution</h2>
+      <div class="meta-mini">Each point is one feature. X = baseline-domain density, Y = target-domain density; blue means target-enriched.</div>
+      <svg viewBox="0 0 320 310" width="100%" height="240" role="img">
+        <line x1="36" y1="286" x2="302" y2="286" stroke="var(--border)" />
+        <line x1="36" y1="286" x2="36" y2="20" stroke="var(--border)" />
+        <line x1="36" y1="286" x2="286" y2="36" stroke="var(--muted)" opacity="0.45" />
+        ${circles}
+      </svg>`;
+  }
+
+  function renderFeatureFrequencySummary(meta) {
+    const fs = meta.feature_frequency_summary;
+    if (!fs || !fs.frequency_bin_lower_bounds) return '';
+    let h = '<h2>Feature firing frequency distribution</h2>';
+    h += '<div class="meta-mini">Histograms are over all features, including zero-firing features. Per-domain frequency is feature fires divided by tokens in that domain.</div>';
+    h += renderHistogramBars(
+      fs.frequency_bin_lower_bounds,
+      fs.feature_frequency_hist_total || [],
+      ''
+    );
+    const domains = fs.domain_names || [];
+    const byDomain = fs.feature_frequency_hist_by_domain || {};
+    const globalDensity = fs.global_nonzero_density_by_domain || {};
+    const activeCounts = fs.active_feature_count_by_domain || {};
+    for (const domain of domains) {
+      const hist = byDomain[domain];
+      if (!hist) continue;
+      const density = globalDensity[domain] != null ? formatScalar(globalDensity[domain]) : '0';
+      const active = activeCounts[domain] != null ? activeCounts[domain] : 0;
+      h += `<h2>Feature firing frequency · ${escapeHtml(domain)}</h2>`;
+      h += `<div class="meta-mini">Run-level nonzero token-feature density ${escapeHtml(density)}; active features ${escapeHtml(active)} / ${escapeHtml(fs.all_features_total || 0)}.</div>`;
+      h += renderHistogramBars(fs.frequency_bin_lower_bounds, hist, '');
+    }
+    return h;
+  }
+
   function exampleTranscript(ex) {
     return (ex.tokens || []).join('');
   }
@@ -600,7 +698,7 @@
     } else {
       pct = 50;
     }
-    return `<div class="act-scale-wrap" title="Heatmap colors use act_min–act_max from global Top + Random examples only.">
+    return `<div class="act-scale-wrap" title="Heatmap colors use act_min–act_max from the feature JSON examples.">
       <div class="act-scale-row">
         <div class="act-scale-side">
           <div class="act-scale-tag">act_min</div>
@@ -637,6 +735,29 @@
     }
     html += '</div>';
     return html;
+  }
+
+  async function loadFeatureHistogram(cantorId) {
+    const target = el('feature-histograms');
+    if (!target) return;
+    try {
+      const res = await fetch('/api/feature_hist/' + cantorId);
+      if (!res.ok) throw new Error(await res.text());
+      const payload = await res.json();
+      let html = '<h2>Total</h2>' + renderHistogramBars(payload.bin_lower_bounds, payload.total_counts, '');
+      for (const domain of payload.domain_names || []) {
+        const counts = payload.by_domain_counts ? payload.by_domain_counts[domain] : null;
+        if (!counts) continue;
+        html += `<h2>${escapeHtml(domain)} counts</h2>` + renderHistogramBars(payload.bin_lower_bounds, counts, '');
+        const density = payload.by_domain_token_density ? payload.by_domain_token_density[domain] : null;
+        if (density) html += `<h2>${escapeHtml(domain)} token density</h2>` + renderHistogramBars(payload.bin_lower_bounds, density, '');
+        const fraction = payload.by_domain_activation_fraction ? payload.by_domain_activation_fraction[domain] : null;
+        if (fraction) html += `<h2>${escapeHtml(domain)} conditional magnitude distribution</h2>` + renderHistogramBars(payload.bin_lower_bounds, fraction, '');
+      }
+      target.innerHTML = html;
+    } catch (e) {
+      target.innerHTML = `<span class="err">Histogram load failed: ${escapeHtml(e.message)}</span>`;
+    }
   }
 
   async function loadDetail(cantorId) {
@@ -697,16 +818,42 @@
         const w = Math.min(100, ((td[i] || 0) / maxT) * 100);
         h += `<div class="bar-row"><span class="bar-label">${i / 10}–${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div></div>`;
       }
+      if (metaRow.relative_domain_scores) {
+        const r = metaRow.relative_domain_scores;
+        h += `<h2>Relative domain score</h2>
+          <div class="logit-box">
+            target ${escapeHtml(r.target_domain)} density ${escapeHtml(formatScalar(r.target_density))}<br/>
+            baseline ${escapeHtml(r.baseline_domain)} density ${escapeHtml(formatScalar(r.baseline_density))}<br/>
+            log2 lift ${escapeHtml(formatScalar(r.log2_density_lift))}<br/>
+            target p95 ${escapeHtml(formatScalar(r.target_p95))}<br/>
+            baseline p95 ${escapeHtml(formatScalar(r.baseline_p95))}<br/>
+            p95 ratio ${escapeHtml(formatScalar(r.p95_ratio))}<br/>
+            target p99 ${escapeHtml(formatScalar(r.target_p99))}<br/>
+            baseline p99 ${escapeHtml(formatScalar(r.baseline_p99))}<br/>
+            p99 ratio ${escapeHtml(formatScalar(r.p99_ratio))}<br/>
+            target max bin ${escapeHtml(formatScalar(r.target_max_nonzero_bin))}<br/>
+            baseline max bin ${escapeHtml(formatScalar(r.baseline_max_nonzero_bin))}<br/>
+            max-bin ratio ${escapeHtml(formatScalar(r.max_nonzero_bin_ratio))}
+          </div>`;
+      }
     }
 
     const tops = feat.top_logits || [];
     const bots = feat.bottom_logits || [];
     h += '<h2>Logit lens</h2><div class="logit-grid"><div class="logit-box"><strong>Top</strong><br/>' + tops.map(escapeHtml).join(' · ') + '</div><div class="logit-box"><strong>Bottom</strong><br/>' + bots.map(escapeHtml).join(' · ') + '</div></div>';
 
+    const hasHistogramSidecar = rawMeta && rawMeta.activation_histograms_file;
+    if (hasHistogramSidecar) {
+      h += '<h2>Activation histograms</h2><div id="feature-histograms" class="meta-mini">Loading histograms...</div>';
+    }
+
     const quants = feat.examples_quantiles || [];
     h += '<div class="quantile-tabs" id="qtabs"></div><div id="qbody"></div>';
 
     detail.innerHTML = h;
+    if (hasHistogramSidecar) {
+      loadFeatureHistogram(cantorId);
+    }
 
     el('ann-save').onclick = async () => {
       const tags = el('ann-tags').value.split(',').map((x) => x.trim()).filter(Boolean);
@@ -842,6 +989,10 @@
     el('sort-key').innerHTML = [
       '<option value="freq">Activation freq</option>',
       '<option value="layer">Layer</option>',
+      '<option value="rel">Relative density lift</option>',
+      '<option value="p95_ratio">P95 activation ratio</option>',
+      '<option value="p99_ratio">P99 activation ratio</option>',
+      '<option value="max_ratio">Max nonzero-bin ratio</option>',
       '<option value="skew">Domain skew (max−min fraction)</option>',
       '<option value="cantor">Cantor id</option>',
       ...domainKeys.map((k) => `<option value="d_${encodeURIComponent(k)}">Density · ${escapeHtml(k)}</option>`),

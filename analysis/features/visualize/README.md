@@ -7,6 +7,7 @@ Local browser UI for outputs of [`collect_feature_activations`](../collect_featu
 Run `collect_feature_activations` first, pointing `--output_dir` at a directory that will contain:
 
 - `feature_metadata.json` — global token counts and per-feature stats (including per-domain density/fraction when multiple `val_data` sources are used)
+- `activation_histograms.npz` — exact all-nonzero activation magnitude histograms for new runs
 - `features/{cantor_id}.json` — circuit-tracer-style feature records (examples, logit lens, etc.)
 
 <!-- Example:
@@ -64,6 +65,7 @@ pane. Manual edits are saved back to the same JSON file.
 ## What you’ll see
 
 - **Overview:** validation mix by domain, regions, and (when applicable) thinking-position bins.
+- **Histograms and activation-range examples:** new collection runs show global and per-domain activation magnitude distributions, `feature_frequency_summary` firing-frequency distributions across all features, normalized per-domain activation densities, conditional per-feature magnitude distributions, run-level nonzero token-feature density by domain, and a joint target-vs-baseline feature-density scatter. Feature detail pages also expose bounded `Activation range ...` example tabs for configured bands such as `2.5:3.0`. Older runs without `activation_histograms.npz` still load, but histogram sections are hidden.
 - **Table:** browse features with frequency, annotation tags, domain skew, and per-domain activation density; sort and filter by layer or tag.
 - **Detail:** click a row to load that feature’s JSON — editable annotations, per-domain bars, regions, thinking bins, logit lens, and example tabs (global top, per-domain top quantiles, random samples). Each example includes a **scale bar**: `act_min` and `act_max` (from the feature JSON) at the ends, **peak** (highlighted token) as a dot with its numeric value; per-token activations still appear in hover tooltips. Re-run collection to get an explicit `peak_activation` field in each example; older runs still derive the peak from `tokens_acts_list`. Example controls can copy the full decoded transcript or save the transcript through the highlighted token under `analysis/attribution/prompts/<run-name>/` as a raw attribution prompt. Saved dashboard prompts preserve the model-native transcript, so run attribution with `--prompt_format raw`.
 

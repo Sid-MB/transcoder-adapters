@@ -26,6 +26,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import numpy as np
+
 from helpers.log import logger, setup_logging
 
 _STATIC_DIR = Path(__file__).resolve().parent
@@ -123,6 +125,63 @@ def _save_annotations(path: Path, annotations: dict) -> None:
     tmp_path.replace(path)
 
 
+def _load_feature_histogram_payload(
+    *,
+    data_dir: Path,
+    histograms_file: str,
+    feature_meta: dict,
+    tokens_per_domain: dict[str, int],
+    layer_cache: dict[int, dict],
+) -> dict:
+    hist_path = data_dir / histograms_file
+    if not hist_path.is_file():
+        raise FileNotFoundError(f"Missing activation histogram sidecar: {hist_path}")
+
+    layer_idx = int(feature_meta["layer"])
+    feature_idx = int(feature_meta["feature"])
+    if layer_idx not in layer_cache:
+        with np.load(hist_path, allow_pickle=False) as data:
+            layer_cache[layer_idx] = {
+                "bin_lower_bounds": data["bin_lower_bounds"].astype(float),
+                "domain_names": data["domain_names"].astype(str).tolist(),
+                "feature_hist_total": data[f"feature_hist_total_layer_{layer_idx}"],
+                "feature_hist_by_domain": data[f"feature_hist_by_domain_layer_{layer_idx}"],
+            }
+    layer_data = layer_cache[layer_idx]
+    bins = layer_data["bin_lower_bounds"].tolist()
+    domain_names = layer_data["domain_names"]
+    total_arr = layer_data["feature_hist_total"][feature_idx]
+    by_domain_arr = layer_data["feature_hist_by_domain"][:, feature_idx, :]
+    by_domain_counts = {
+        domain: by_domain_arr[i].astype(int).tolist()
+        for i, domain in enumerate(domain_names)
+    }
+    by_domain_token_density = {}
+    by_domain_activation_fraction = {}
+    for i, domain in enumerate(domain_names):
+        counts = by_domain_arr[i].astype(float)
+        domain_tokens = int(tokens_per_domain.get(domain) or 0)
+        domain_total = float(counts.sum())
+        by_domain_token_density[domain] = (
+            (counts / domain_tokens).tolist()
+            if domain_tokens > 0
+            else [0.0] * len(counts)
+        )
+        by_domain_activation_fraction[domain] = (
+            (counts / domain_total).tolist()
+            if domain_total > 0
+            else [0.0] * len(counts)
+        )
+    return {
+        "bin_lower_bounds": bins,
+        "domain_names": domain_names,
+        "total_counts": total_arr.astype(int).tolist(),
+        "by_domain_counts": by_domain_counts,
+        "by_domain_token_density": by_domain_token_density,
+        "by_domain_activation_fraction": by_domain_activation_fraction,
+    }
+
+
 def _json_response(handler: BaseHTTPRequestHandler, payload: bytes, status: int = 200) -> None:
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -166,6 +225,22 @@ def make_handler_class(
     prompt_output_dir = (prompt_output_dir or _DEFAULT_PROMPT_OUTPUT_DIR).resolve()
     annotations_lock = threading.Lock()
     prompt_save_lock = threading.Lock()
+    feature_index_by_cantor: dict[str, dict] = {}
+    tokens_per_domain: dict[str, int] = {}
+    histogram_layer_cache: dict[int, dict] = {}
+    metadata_path = data_dir / "feature_metadata.json"
+    histograms_file = "activation_histograms.npz"
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text())
+            histograms_file = metadata.get("activation_histograms_file") or histograms_file
+            tokens_per_domain = metadata.get("tokens_per_domain") or {}
+            feature_index_by_cantor = {
+                str(feature["cantor_id"]): feature
+                for feature in metadata.get("features") or []
+            }
+        except Exception as exc:
+            logger.warning("Could not pre-load feature metadata index: %s", exc)
 
     class DashboardHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -225,6 +300,34 @@ def make_handler_class(
                     )
                     return
                 _json_response(self, feat_path.read_bytes())
+                return
+
+            m = re.match(r"^/api/feature_hist/(\d+)$", path)
+            if m:
+                cantor_id = m.group(1)
+                feature_meta = feature_index_by_cantor.get(cantor_id)
+                if feature_meta is None:
+                    _json_response(
+                        self,
+                        json.dumps({"error": f"No metadata for feature {cantor_id}"}).encode(),
+                        status=404,
+                    )
+                    return
+                try:
+                    payload = _load_feature_histogram_payload(
+                        data_dir=data_dir,
+                        histograms_file=histograms_file,
+                        feature_meta=feature_meta,
+                        tokens_per_domain=tokens_per_domain,
+                        layer_cache=histogram_layer_cache,
+                    )
+                    _json_response(self, json.dumps(payload).encode())
+                except Exception as exc:
+                    _json_response(
+                        self,
+                        json.dumps({"error": str(exc)}).encode(),
+                        status=404,
+                    )
                 return
 
             # Optional: serve other static files from _STATIC_DIR
