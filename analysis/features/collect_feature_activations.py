@@ -108,6 +108,7 @@ class ActivatingExample:
     region: str  # bos, user_marker, question, assistant_marker, think_start, thinking, think_end, answer
     thinking_position: float | None  # 0-1 if in thinking region, else None
     sequence_idx: int
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __lt__(self, other):
         """For heap comparison (min-heap on activation)."""
@@ -291,6 +292,7 @@ class FeatureCollector:
         region: str,
         thinking_position: float | None,
         sequence_idx: int,
+        source_metadata: dict[str, Any],
     ):
         """Add example to top-k heap, domain top-k heap, and/or random reservoir."""
         # Check if this could make it into global top-k
@@ -340,6 +342,7 @@ class FeatureCollector:
             region=region,
             thinking_position=thinking_position,
             sequence_idx=sequence_idx,
+            source_metadata=source_metadata,
         )
 
         # Add to global top-k heap
@@ -403,6 +406,7 @@ class FeatureCollector:
         region: str,
         thinking_position: float | None,
         sequence_idx: int,
+        source_metadata: dict[str, Any],
     ) -> None:
         if self.activation_range_examples_per_domain <= 0:
             return
@@ -447,6 +451,7 @@ class FeatureCollector:
             region=region,
             thinking_position=thinking_position,
             sequence_idx=sequence_idx,
+            source_metadata=source_metadata,
         )
         if replace_idx is None:
             kept_examples.append(example)
@@ -460,6 +465,7 @@ class FeatureCollector:
         batch_domains: list[str],
         batch_markers: list[dict],
         batch_seq_idxs: list[int],
+        batch_source_metadata: list[dict[str, Any]],
         pad_token_id: int = 0,
     ):
         """Process a batch of sequences in one forward pass."""
@@ -487,6 +493,7 @@ class FeatureCollector:
             domain = batch_domains[b]
             markers = batch_markers[b]
             sequence_idx = batch_seq_idxs[b]
+            source_metadata = batch_source_metadata[b]
 
             regions, thinking_positions = precompute_regions(tokens, markers)
 
@@ -545,10 +552,11 @@ class FeatureCollector:
                         region,
                         think_pos,
                         sequence_idx,
+                        source_metadata,
                     )
                     self._maybe_add_example(
                         stats, act, tokens, pos, features_gpu, feature_idx,
-                        domain, region, think_pos, sequence_idx
+                        domain, region, think_pos, sequence_idx, source_metadata
                     )
 
         self._layer_activations = {}
@@ -608,13 +616,16 @@ def cantor_pair(x: int, y: int) -> int:
 def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
     """Format an ActivatingExample for circuit tracer JSON."""
     tokens = [tokenizer.decode([tok_id]) for tok_id in ex.context_tokens]
-    return {
+    formatted = {
         "tokens": tokens,
         "tokens_acts_list": ex.context_activations,
         "train_token_ind": ex.position_in_context,
         "peak_activation": ex.activation,
         "is_repeated_datapoint": False,
     }
+    if ex.source_metadata:
+        formatted["source_metadata"] = dict(ex.source_metadata)
+    return formatted
 
 
 def _build_examples_quantiles(
@@ -732,13 +743,13 @@ def _format_bytes(n_bytes: float) -> str:
 
 
 def _estimate_token_json_bytes(
-    items: list[tuple[list[int], str, dict]],
+    items: list[tuple[list[int], str, dict, dict[str, Any]]],
     tokenizer,
     max_sample_tokens: int = 2048,
 ) -> float:
     """Estimate bytes for one decoded token string in feature JSON."""
     sampled_token_ids: list[int] = []
-    for tokens, _, _ in items:
+    for tokens, _, _, _ in items:
         remaining = max_sample_tokens - len(sampled_token_ids)
         if remaining <= 0:
             break
@@ -758,7 +769,7 @@ def log_startup_output_size_estimate(
     *,
     n_layers: int,
     n_features: int,
-    items: list[tuple[list[int], str, dict]],
+    items: list[tuple[list[int], str, dict, dict[str, Any]]],
     tokenizer,
     top_k: int,
     n_random: int,
@@ -1215,6 +1226,63 @@ def _parse_val_data_entry(entry: str) -> tuple[str | None, str]:
     return None, entry
 
 
+def _source_row_metadata(dataset: Any, idx: int) -> dict[str, Any]:
+    """Extract source IDs from a dataset row without retaining full transcripts."""
+    row = None
+    if hasattr(dataset, "ds"):
+        row = dataset.ds[idx]
+    else:
+        try:
+            row = dataset[idx]
+        except Exception:
+            row = None
+
+    if not isinstance(row, dict):
+        return {}
+
+    metadata = {}
+    for key in ("conversation_id", "id"):
+        value = row.get(key)
+        if value is not None:
+            metadata[key] = value
+    return metadata
+
+
+def _build_example_source_metadata(
+    *,
+    dataset: Any,
+    examples_meta: list[dict] | None,
+    item: dict,
+    dataset_row_idx: int,
+    source_idx: int,
+    source_path: str,
+    domain_label: str | None,
+    domain: str,
+    prepared_item_idx: int,
+) -> dict[str, Any]:
+    """Build locator metadata for a retained activation example."""
+    metadata: dict[str, Any] = {
+        "source_idx": source_idx,
+        "source_path": source_path,
+        "dataset_row_idx": dataset_row_idx,
+        "prepared_item_idx": prepared_item_idx,
+        "domain": domain,
+    }
+    if domain_label is not None:
+        metadata["domain_label"] = domain_label
+
+    if examples_meta is not None:
+        metadata.update(examples_meta[dataset_row_idx])
+
+    for candidate in (item, _source_row_metadata(dataset, dataset_row_idx)):
+        for key in ("conversation_id", "id"):
+            value = candidate.get(key)
+            if value is not None:
+                metadata[key] = value
+
+    return metadata
+
+
 class ArgumentDefaultsRawTextHelpFormatter(
     argparse.ArgumentDefaultsHelpFormatter,
     argparse.RawTextHelpFormatter,
@@ -1496,7 +1564,7 @@ def main():
     logger.info(f"Processing {total_samples} samples total across {len(loaded_sources)} source(s)")
 
     # Pre-extract all items across sources, filtering malformed ones
-    items: list[tuple[list[int], str, dict]] = []
+    items: list[tuple[list[int], str, dict, dict[str, Any]]] = []
     skipped = 0
     for source_idx, (dataset, examples_meta) in enumerate(loaded_sources):
         domain_label = val_data_sources[source_idx][0]
@@ -1517,6 +1585,17 @@ def main():
                 tokens = tokens.tolist()
             domain = meta.get('domain', domain_label or 'unknown')
             markers = find_token_positions(tokens, special_tokens)
+            source_metadata = _build_example_source_metadata(
+                dataset=dataset,
+                examples_meta=examples_meta,
+                item=item,
+                dataset_row_idx=idx,
+                source_idx=source_idx,
+                source_path=val_data_sources[source_idx][1],
+                domain_label=domain_label,
+                domain=domain,
+                prepared_item_idx=len(items),
+            )
 
             if has_thinking and (markers['think_start'] is None or markers['think_end'] is None):
                 if skipped < 5:
@@ -1524,7 +1603,7 @@ def main():
                 skipped += 1
                 continue
 
-            items.append((tokens, domain, markers))
+            items.append((tokens, domain, markers, source_metadata))
 
     if skipped > 0:
         logger.warning(f"Skipped {skipped} samples due to missing <think> tags")
@@ -1536,7 +1615,7 @@ def main():
         )
         return
 
-    domain_names = sorted({domain for _, domain, _ in items})
+    domain_names = sorted({domain for _, domain, _, _ in items})
     logger.info(f"Activation histogram domains: {domain_names}")
     log_startup_output_size_estimate(
         n_layers=n_layers,
@@ -1590,8 +1669,8 @@ def main():
                 f"per-token budget: {total_bytes_per_token / 1e6:.1f} MB "
                 f"(hooks {hook_bytes_per_token / 1e6:.1f} × {slack:.2f} + scratch {scratch_bytes_per_token / 1e6:.1f}), "
                 f"token budget: {max_batch_tokens:,}")
-    batches: list[list[tuple[list[int], str, dict]]] = []
-    current_batch: list[tuple[list[int], str, dict]] = []
+    batches: list[list[tuple[list[int], str, dict, dict[str, Any]]]] = []
+    current_batch: list[tuple[list[int], str, dict, dict[str, Any]]] = []
     current_max_len = 0
     for item in items:
         item_len = len(item[0])
@@ -1632,16 +1711,18 @@ def main():
 
     # Process batches
     collector.register_hooks(model)
-    sequence_idx = 0
     for batch in tqdm(batches, desc="Processing batches"):
-        batch_tokens = [t for t, _, _ in batch]
-        batch_domains = [d for _, d, _ in batch]
-        batch_markers = [m for _, _, m in batch]
-        batch_seq_idxs = list(range(sequence_idx, sequence_idx + len(batch)))
+        batch_tokens = [t for t, _, _, _ in batch]
+        batch_domains = [d for _, d, _, _ in batch]
+        batch_markers = [m for _, _, m, _ in batch]
+        batch_source_metadata = [source_meta for _, _, _, source_meta in batch]
+        batch_seq_idxs = [
+            int(source_meta["prepared_item_idx"])
+            for source_meta in batch_source_metadata
+        ]
 
         collector.process_batch(model, batch_tokens, batch_domains, batch_markers,
-                                batch_seq_idxs, pad_token_id)
-        sequence_idx += len(batch)
+                                batch_seq_idxs, batch_source_metadata, pad_token_id)
 
     collector.remove_hooks()
 

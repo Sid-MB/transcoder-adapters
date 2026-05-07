@@ -106,6 +106,114 @@ def _save_prompt_example(
     }
 
 
+def _load_jsonl_row(path: Path, row_idx: int) -> dict:
+    with path.open() as f:
+        for i, line in enumerate(f):
+            if i == row_idx:
+                return json.loads(line)
+    raise IndexError(f"Row {row_idx} not found in {path}")
+
+
+def _download_hf_jsonl_row(source_path: str, row_idx: int) -> dict:
+    from huggingface_hub import hf_hub_download
+
+    hf_path = source_path[len("hf://") :]
+    parts = hf_path.split("/", 2)
+    if len(parts) != 3:
+        raise ValueError(f"Expected hf://org/repo/path.jsonl, got {source_path!r}")
+    repo_id = f"{parts[0]}/{parts[1]}"
+    filename = parts[2]
+    local_path = hf_hub_download(repo_id=repo_id, filename=filename, repo_type="dataset")
+    return _load_jsonl_row(Path(local_path), row_idx)
+
+
+def _load_hf_dataset_row(source_path: str, row_idx: int) -> tuple[dict, str]:
+    from datasets import load_dataset
+
+    dataset = load_dataset(source_path, trust_remote_code=True)
+    for split_name in ("val", "validation", "test"):
+        if split_name in dataset:
+            split = dataset[split_name]
+            return dict(split[row_idx]), split_name
+    available = list(dataset.keys())
+    raise ValueError(
+        f"No validation split found in {source_path!r}; available splits: {available}"
+    )
+
+
+def _normalize_conversation_value(value: object) -> list[dict]:
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, list):
+        raise ValueError("Conversation column is not a list")
+    conversation = []
+    for msg in value:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role") or msg.get("from") or msg.get("speaker") or "unknown"
+        content = msg.get("content")
+        if content is None:
+            content = msg.get("value", "")
+        conversation.append({"role": str(role), "content": str(content)})
+    return conversation
+
+
+def _format_source_row_transcript(row: dict) -> tuple[str, str]:
+    for conv_col in ("conversation", "conversations"):
+        if conv_col not in row:
+            continue
+        conversation = _normalize_conversation_value(row[conv_col])
+        lines = []
+        for msg in conversation:
+            lines.append(f"{msg['role']}:\n{msg['content']}")
+        return "\n\n".join(lines), conv_col
+
+    for text_col in ("text", "content", "prompt"):
+        value = row.get(text_col)
+        if value is not None:
+            return str(value), text_col
+
+    return json.dumps(row, indent=2, sort_keys=True), "json"
+
+
+def _load_source_transcript(source_metadata: dict) -> dict:
+    source_path = source_metadata.get("source_path")
+    if not isinstance(source_path, str) or not source_path:
+        raise ValueError("source_metadata.source_path is required")
+    try:
+        row_idx = int(source_metadata["dataset_row_idx"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("source_metadata.dataset_row_idx is required") from exc
+
+    split_name = None
+    if source_path.startswith("hf://"):
+        row = _download_hf_jsonl_row(source_path, row_idx)
+        source_kind = "hf_jsonl"
+    elif source_path.endswith(".jsonl") or Path(source_path).is_file():
+        row = _load_jsonl_row(Path(source_path), row_idx)
+        source_kind = "jsonl"
+    else:
+        row, split_name = _load_hf_dataset_row(source_path, row_idx)
+        source_kind = "hf_dataset"
+
+    transcript, transcript_field = _format_source_row_transcript(row)
+    ids = {
+        key: row[key]
+        for key in ("conversation_id", "id")
+        if key in row and row[key] is not None
+    }
+    return {
+        "ok": True,
+        "source_kind": source_kind,
+        "source_path": source_path,
+        "split": split_name,
+        "dataset_row_idx": row_idx,
+        "transcript_field": transcript_field,
+        "transcript": transcript,
+        "ids": ids,
+    }
+
+
 def _load_annotations(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -252,7 +360,7 @@ def make_handler_class(
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
 
-            if path == "/" or path == "/index.html":
+            if path == "/" or path == "/index.html" or re.match(r"^/cantor/\d+$", path):
                 html_path = _STATIC_DIR / "dashboard.html"
                 if not html_path.is_file():
                     _html_response(
@@ -356,6 +464,25 @@ def make_handler_class(
                             data_dir=data_dir,
                             payload=payload,
                         )
+                    _json_response(self, json.dumps(result).encode())
+                except Exception as exc:
+                    _json_response(
+                        self,
+                        json.dumps({"error": str(exc)}).encode(),
+                        status=400,
+                    )
+                return
+
+            if path == "/api/source_transcript":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("Expected JSON object")
+                    source_metadata = payload.get("source_metadata")
+                    if not isinstance(source_metadata, dict):
+                        raise ValueError("source_metadata must be an object")
+                    result = _load_source_transcript(source_metadata)
                     _json_response(self, json.dumps(result).encode())
                 except Exception as exc:
                     _json_response(

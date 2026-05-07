@@ -7,6 +7,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from analysis.features.visualize.feature_dashboard import (
+    _load_source_transcript,
     _save_prompt_example,
     _safe_path_component,
     make_handler_class,
@@ -116,6 +117,64 @@ class FeatureDashboardPromptExportTests(unittest.TestCase):
             saved_path = Path(payload["path"])
             self.assertEqual(saved_path.read_text(), "raw transcript")
             self.assertEqual(payload["prompt_format"], "raw")
+
+    def test_load_source_transcript_reads_local_jsonl_conversation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = Path(tmpdir) / "data.jsonl"
+            rows = [
+                {"conversation_id": "conv-1", "conversation": [{"role": "user", "content": "Hi"}]},
+                {
+                    "conversation_id": "conv-2",
+                    "conversation": [
+                        {"role": "user", "content": "What is 2 + 2?"},
+                        {"role": "assistant", "content": "4"},
+                    ],
+                },
+            ]
+            jsonl_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+            payload = _load_source_transcript({
+                "source_path": str(jsonl_path),
+                "dataset_row_idx": 1,
+            })
+
+            self.assertEqual(payload["ids"]["conversation_id"], "conv-2")
+            self.assertIn("user:\nWhat is 2 + 2?", payload["transcript"])
+            self.assertIn("assistant:\n4", payload["transcript"])
+
+    def test_source_transcript_endpoint_returns_original_row_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "run"
+            data_dir.mkdir()
+            jsonl_path = Path(tmpdir) / "fineweb.jsonl"
+            jsonl_path.write_text(json.dumps({"id": "doc-1", "text": "full document text"}) + "\n")
+            handler = make_handler_class(data_dir)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            try:
+                body = json.dumps({
+                    "source_metadata": {
+                        "source_path": str(jsonl_path),
+                        "dataset_row_idx": 0,
+                    }
+                }).encode()
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/source_transcript",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request) as response:
+                    payload = json.loads(response.read())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(payload["ids"]["id"], "doc-1")
+            self.assertEqual(payload["transcript"], "full document text")
 
 
 if __name__ == "__main__":

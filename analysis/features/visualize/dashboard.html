@@ -104,6 +104,11 @@
       border-radius: 2px 2px 0 0;
     }
     .histogram-bar.zero { background: transparent; }
+    .histogram-bar.range-link { cursor: pointer; }
+    .histogram-bar.range-link:hover {
+      outline: 1px solid var(--text);
+      outline-offset: -1px;
+    }
     .histogram-marker {
       position: absolute;
       top: 0;
@@ -424,6 +429,30 @@
     .prompt-status {
       margin: 6px 0 0 0;
       min-height: 16px;
+    }
+    .source-transcript {
+      margin-top: 8px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+    }
+    .source-transcript-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .source-transcript-body {
+      max-height: 520px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.55;
     }
     .tok-line {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -863,6 +892,60 @@
     return formatMultiple(r[key]);
   }
 
+  function cantorIdFromPath() {
+    const match = /^\/cantor\/(\d+)\/?$/.exec(window.location.pathname);
+    return match ? Number(match[1]) : null;
+  }
+
+  function cantorPath(cantorId) {
+    return `/cantor/${encodeURIComponent(String(cantorId))}`;
+  }
+
+  function updateCantorUrl(cantorId, replace = false) {
+    const path = cantorId == null ? '/' : cantorPath(cantorId);
+    if (window.location.pathname === path) return;
+    const state = cantorId == null ? {} : { cantorId };
+    if (replace) {
+      window.history.replaceState(state, '', path);
+    } else {
+      window.history.pushState(state, '', path);
+    }
+  }
+
+  function rowForCantor(cantorId) {
+    return Array.from(el('tbody').querySelectorAll('tr[data-cantor]')).find(
+      (tr) => tr.getAttribute('data-cantor') === String(cantorId)
+    );
+  }
+
+  async function selectCantor(cantorId, options = {}) {
+    const row = rows.find((f) => f.cantor_id === cantorId);
+    if (!row) {
+      if (options.updateUrl) updateCantorUrl(null, true);
+      return false;
+    }
+    selectedCantor = cantorId;
+    const filteredIndex = filtered.findIndex((f) => f.cantor_id === cantorId);
+    if (filteredIndex >= 0) {
+      const targetPage = Math.floor(filteredIndex / PAGE);
+      if (targetPage !== page) {
+        page = targetPage;
+        renderTable();
+      }
+    } else {
+      renderTable();
+    }
+    const tr = rowForCantor(cantorId);
+    if (tr) {
+      el('tbody').querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
+      tr.classList.add('selected');
+      if (options.scroll !== false) tr.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    if (options.updateUrl) updateCantorUrl(cantorId, options.replaceUrl === true);
+    await loadDetail(cantorId);
+    return true;
+  }
+
   function renderTable() {
     const tbody = el('tbody');
     const start = page * PAGE;
@@ -894,10 +977,7 @@
     tbody.querySelectorAll('tr').forEach((tr) => {
       tr.onclick = () => {
         const id = Number(tr.getAttribute('data-cantor'));
-        selectedCantor = id;
-        tbody.querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
-        tr.classList.add('selected');
-        loadDetail(id);
+        selectCantor(id, { updateUrl: true, scroll: false });
       };
     });
 
@@ -952,6 +1032,41 @@
     return hi == null ? `${labelPrefix}${formatScalar(lo)}+` : `${labelPrefix}${formatScalar(lo)}-${formatScalar(hi)}`;
   }
 
+  function parseActivationRangeQuantileName(name) {
+    const match = /^Activation range ([^ ]+)-([^ ]+) \((.*)\)$/.exec(String(name || ''));
+    if (!match) return null;
+    const lo = Number(match[1]);
+    const hi = Number(match[2]);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+    return { lo, hi, domain: match[3] };
+  }
+
+  function findActivationRangeTabIndex(domain, binLo, binHi) {
+    const qtabs = el('qtabs');
+    if (!qtabs || domain == null || binLo == null || Number.isNaN(binLo)) return -1;
+    const effectiveHi = binHi == null || Number.isNaN(binHi) ? Number.POSITIVE_INFINITY : binHi;
+    const eps = 1e-6;
+    const buttons = Array.from(qtabs.querySelectorAll('button[data-quantile-index]'));
+    return buttons.findIndex((button) => {
+      const range = parseActivationRangeQuantileName(button.getAttribute('data-quantile-name'));
+      if (!range || range.domain !== domain) return false;
+      return binLo + eps >= range.lo && effectiveHi <= range.hi + eps;
+    });
+  }
+
+  function openActivationRangeTab(domain, binLo, binHi) {
+    const qtabs = el('qtabs');
+    if (!qtabs) return false;
+    const buttons = Array.from(qtabs.querySelectorAll('button[data-quantile-index]'));
+    const idx = findActivationRangeTabIndex(domain, binLo, binHi);
+    if (idx < 0 || !buttons[idx]) return false;
+    buttons[idx].click();
+    buttons[idx].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const qbody = el('qbody');
+    if (qbody) qbody.scrollIntoView({ block: 'start', inline: 'nearest' });
+    return true;
+  }
+
   function histogramQuantileBinIndex(values, q) {
     const total = (values || []).reduce((acc, v) => acc + Math.max(0, Number(v) || 0), 0);
     if (total <= 0) return null;
@@ -994,7 +1109,7 @@
     return markers;
   }
 
-  function renderHistogramBars(binLowerBounds, counts, labelPrefix, sharedScaleMax, displayBinCount, markers) {
+  function renderHistogramBars(binLowerBounds, counts, labelPrefix, sharedScaleMax, displayBinCount, markers, clickMeta) {
     const values = counts || [];
     if (!values.length && displayBinCount == null) return '';
     const nBins = Math.min(
@@ -1009,9 +1124,18 @@
       : (maxCount > 0 ? maxCount : 1);
     const bars = visibleCounts.map((count, i) => {
       const label = histogramBinLabel(binLowerBounds, i, labelPrefix);
+      const lo = binLowerBounds[i];
+      const hi = i + 1 < binLowerBounds.length ? binLowerBounds[i + 1] : null;
       const height = count > 0 ? Math.max(1, 100 * count / scaleMax) : 0;
-      const cls = count > 0 ? 'histogram-bar' : 'histogram-bar zero';
-      return `<div class="${cls}" style="height:${height}%" title="${escapeHtml(label)}: ${escapeHtml(formatScalar(count))}"></div>`;
+      const clickable = clickMeta && clickMeta.domain != null && count > 0;
+      const cls = count > 0
+        ? `histogram-bar${clickable ? ' range-link' : ''}`
+        : 'histogram-bar zero';
+      const dataAttrs = clickable
+        ? ` data-activation-range-domain="${escapeHtml(clickMeta.domain)}" data-activation-range-lo="${escapeHtml(lo)}"${hi == null ? '' : ` data-activation-range-hi="${escapeHtml(hi)}"`}`
+        : '';
+      const hint = clickable ? ' Click to open matching activation-range examples.' : '';
+      return `<div class="${cls}" style="height:${height}%" title="${escapeHtml(label)}: ${escapeHtml(formatScalar(count))}${hint}"${dataAttrs}></div>`;
     }).join('');
     const markerHtml = (markers || []).filter((marker) =>
       marker && marker.binIndex != null && marker.binIndex >= 0 && marker.binIndex < nBins
@@ -1136,6 +1260,64 @@
     target.textContent = message;
   }
 
+  function sourceMetadataLabel(sourceMetadata) {
+    if (!sourceMetadata) return '';
+    const pieces = [];
+    if (sourceMetadata.conversation_id != null) pieces.push(`conversation_id=${sourceMetadata.conversation_id}`);
+    if (sourceMetadata.id != null) pieces.push(`id=${sourceMetadata.id}`);
+    if (sourceMetadata.dataset_row_idx != null) pieces.push(`row=${sourceMetadata.dataset_row_idx}`);
+    if (sourceMetadata.source_path) pieces.push(String(sourceMetadata.source_path));
+    return pieces.join(' · ');
+  }
+
+  function renderSourceMetadata(ex) {
+    const sourceMetadata = ex.source_metadata;
+    if (!sourceMetadata) return '';
+    const label = sourceMetadataLabel(sourceMetadata);
+    if (!label) return '';
+    return `<div class="meta-mini">Source: ${escapeHtml(label)}</div>`;
+  }
+
+  async function showSourceTranscript(example, container) {
+    const panel = container.querySelector('.source-transcript');
+    const body = panel ? panel.querySelector('.source-transcript-body') : null;
+    if (!panel || !body) return;
+    if (panel.hidden === false && body.getAttribute('data-loaded') === 'true') {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    body.removeAttribute('data-loaded');
+    body.classList.remove('err');
+    body.textContent = 'Loading...';
+    try {
+      const res = await fetch('/api/source_transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_metadata: example.source_metadata }),
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+      const idParts = [];
+      for (const [key, value] of Object.entries(payload.ids || {})) {
+        idParts.push(`${key}=${value}`);
+      }
+      const meta = [
+        payload.source_path,
+        payload.split ? `split=${payload.split}` : null,
+        `row=${payload.dataset_row_idx}`,
+        idParts.join(' · '),
+      ].filter(Boolean).join(' · ');
+      const head = panel.querySelector('.source-transcript-head span');
+      if (head) head.textContent = meta;
+      body.textContent = payload.transcript || '';
+      body.setAttribute('data-loaded', 'true');
+    } catch (e) {
+      body.textContent = `Transcript load failed: ${e.message}`;
+      body.classList.add('err');
+    }
+  }
+
   function renderActScaleBar(peak, actMin, actMax) {
     if (peak == null || Number.isNaN(peak)) return '';
     if (actMin == null || actMax == null || !Number.isFinite(actMin) || !Number.isFinite(actMax)) {
@@ -1189,9 +1371,9 @@
 
   function histogramExplanation(mode) {
     const explanations = {
-      counts: 'Counts are exact positive activations for this feature in each activation-magnitude bin. Dataset cards share a y-axis scale. Vertical markers show p95, p99, and max occupied activation bins for each dataset.',
-      density: 'Token density divides each bin count by total tokens from that domain. Dataset cards share a y-axis scale. Vertical markers show p95, p99, and max occupied activation bins for each dataset.',
-      magnitude: "Conditional magnitude distribution divides each bin count by this feature's total positive activations in that domain, so bars sum to 1 within a domain. Dataset cards share a y-axis scale. Vertical markers show p95, p99, and max occupied activation bins for each dataset.",
+      counts: 'Counts are exact positive activations for this feature in each activation-magnitude bin. Dataset cards share a y-axis scale. Click a bar when that bin falls inside a saved activation-range tab for that dataset.',
+      density: 'Token density divides each bin count by total tokens from that domain. Dataset cards share a y-axis scale. Click a bar when that bin falls inside a saved activation-range tab for that dataset.',
+      magnitude: "Conditional magnitude distribution divides each bin count by this feature's total positive activations in that domain, so bars sum to 1 within a domain. Dataset cards share a y-axis scale. Click a bar when that bin falls inside a saved activation-range tab for that dataset.",
     };
     return `<div class="feature-hist-footer">${escapeHtml(explanations[mode] || explanations.counts)}</div>`;
   }
@@ -1226,7 +1408,8 @@
           '',
           sharedScaleMax,
           nBins,
-          histogramStatisticMarkers(binLowerBounds, entry.markerValues || entry.values || [], entry.title)
+          histogramStatisticMarkers(binLowerBounds, entry.markerValues || entry.values || [], entry.title),
+          entry.domain ? { domain: entry.domain } : null
         )}
       </div>
     `).join('')}</div>
@@ -1244,6 +1427,7 @@
           subtitle: 'raw activation counts',
           values: counts,
           markerValues: counts,
+          domain,
         });
       }
       if (entries.length) return entries;
@@ -1260,6 +1444,7 @@
         subtitle: 'count / domain tokens',
         values: payload.by_domain_token_density ? payload.by_domain_token_density[domain] || [] : [],
         markerValues: payload.by_domain_counts ? payload.by_domain_counts[domain] || [] : [],
+        domain,
       })).filter((entry) => entry.values.length);
     }
     return domains.map((domain) => ({
@@ -1267,6 +1452,7 @@
       subtitle: 'count / feature fires in domain',
       values: payload.by_domain_activation_fraction ? payload.by_domain_activation_fraction[domain] || [] : [],
       markerValues: payload.by_domain_counts ? payload.by_domain_counts[domain] || [] : [],
+      domain,
     })).filter((entry) => entry.values.length);
   }
 
@@ -1283,6 +1469,20 @@
       entries,
       featureHistogramDisplayBinCount(payload)
     ) + histogramExplanation(mode);
+    panel.querySelectorAll('[data-activation-range-domain]').forEach((bar) => {
+      const domain = bar.getAttribute('data-activation-range-domain');
+      const lo = Number(bar.getAttribute('data-activation-range-lo'));
+      const hiAttr = bar.getAttribute('data-activation-range-hi');
+      const hi = hiAttr == null ? null : Number(hiAttr);
+      if (findActivationRangeTabIndex(domain, lo, hi) < 0) {
+        bar.classList.remove('range-link');
+        bar.title = bar.title.replace(' Click to open matching activation-range examples.', '');
+        return;
+      }
+      bar.onclick = () => {
+        openActivationRangeTab(domain, lo, hi);
+      };
+    });
   }
 
   function activateFeatureHistogramTab(container, payload, mode) {
@@ -1478,14 +1678,30 @@
           <div class="example-head">
             <div class="meta-mini">${escapeHtml(q.quantile_name)} · #${j + 1}</div>
             <div class="example-actions">
+              ${ex.source_metadata ? `<button type="button" data-show-source-transcript="${j}">Show transcript</button>` : ''}
               <button type="button" data-copy-transcript="${j}">Copy transcript</button>
               <button type="button" data-save-prompt="${j}">Save prompt</button>
             </div>
           </div>
+          ${renderSourceMetadata(ex)}
           ${renderExample(ex, lo, hi)}
+          <div class="source-transcript" hidden>
+            <div class="source-transcript-head"><span></span></div>
+            <div class="source-transcript-body"></div>
+          </div>
           <div class="prompt-status meta-mini"></div>
         </div>`
       ).join('');
+
+      qbody.querySelectorAll('[data-show-source-transcript]').forEach((button) => {
+        button.onclick = async () => {
+          const exampleIndex = Number(button.getAttribute('data-show-source-transcript'));
+          const container = button.closest('.example-block');
+          await showSourceTranscript(exs[exampleIndex] || {}, container);
+          const panel = container.querySelector('.source-transcript');
+          button.textContent = panel && !panel.hidden ? 'Hide transcript' : 'Show transcript';
+        };
+      });
 
       qbody.querySelectorAll('[data-copy-transcript]').forEach((button) => {
         button.onclick = async () => {
@@ -1536,7 +1752,10 @@
 
     quants.forEach((q, i) => {
       const b = document.createElement('button');
-      b.textContent = q.quantile_name || ('Quantile ' + i);
+      const quantileName = q.quantile_name || ('Quantile ' + i);
+      b.textContent = quantileName;
+      b.setAttribute('data-quantile-index', String(i));
+      b.setAttribute('data-quantile-name', quantileName);
       if (i === 0) b.classList.add('active');
       b.onclick = () => {
         qi = i;
@@ -1601,8 +1820,22 @@
     el('next').onclick = () => {
       if ((page + 1) * PAGE < filtered.length) { page++; renderTable(); }
     };
+    window.onpopstate = () => {
+      const cantorId = cantorIdFromPath();
+      if (cantorId == null) {
+        selectedCantor = null;
+        renderTable();
+        el('detail').innerHTML = '<div class="detail-empty">Select a feature from the table.</div>';
+        return;
+      }
+      selectCantor(cantorId, { updateUrl: false });
+    };
 
     applyFilter();
+    const initialCantor = cantorIdFromPath();
+    if (initialCantor != null) {
+      selectCantor(initialCantor, { updateUrl: false, scroll: true });
+    }
   }
 
   boot();

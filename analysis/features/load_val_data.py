@@ -102,10 +102,11 @@ def _load_hf_dataset(
 
     logger.info(f"Using split '{split_name}' with {len(split)} examples")
     cols = split.column_names
+    examples_meta = _build_source_id_metadata(split)
 
     # Already tokenized
     if "input_ids" in cols:
-        return split, None
+        return split, examples_meta
 
     # Chat conversation column (LMSYS "conversation" or OpenThoughts "conversations")
     conv_col = None
@@ -144,7 +145,24 @@ def _load_hf_dataset(
 
     split = split.map(tokenize_fn, batched=True, remove_columns=cols)
     split.set_format("torch")
-    return split, None
+    return split, examples_meta
+
+
+def _build_source_id_metadata(split: Any) -> list[dict] | None:
+    """Keep stable source IDs before tokenization drops raw dataset columns."""
+    id_columns = [col for col in ("conversation_id", "id") if col in split.column_names]
+    if not id_columns:
+        return None
+    column_values = {col: split[col] for col in id_columns}
+    metadata: list[dict] = []
+    for row_idx in range(len(split)):
+        row_meta = {}
+        for col, values in column_values.items():
+            value = values[row_idx]
+            if value is not None:
+                row_meta[col] = value
+        metadata.append(row_meta)
+    return metadata
 
 
 def _load_chat_dataset(

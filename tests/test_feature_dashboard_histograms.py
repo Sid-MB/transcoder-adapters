@@ -104,6 +104,29 @@ class FeatureDashboardHistogramTests(unittest.TestCase):
                 thread.join(timeout=5)
                 server.server_close()
 
+    def test_cantor_route_serves_dashboard_shell(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / "feature_metadata.json").write_text(json.dumps({
+                "features": [{"cantor_id": 2, "layer": 0, "feature": 1}],
+            }))
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler_class(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_port}/cantor/2",
+                    timeout=5,
+                ) as response:
+                    body = response.read().decode("utf-8")
+                self.assertIn("<title>Feature activations</title>", body)
+                self.assertIn("function cantorIdFromPath()", body)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

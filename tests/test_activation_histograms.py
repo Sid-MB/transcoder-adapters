@@ -237,10 +237,12 @@ class ActivationHistogramTests(unittest.TestCase):
             region="all",
             thinking_position=None,
             sequence_idx=0,
+            source_metadata={"conversation_id": "abc123"},
         )
         kept = stats.activation_range_examples["chat|2.5-3.0"]
         self.assertEqual(len(kept), 1)
         self.assertEqual(kept[0].activation, 2.7)
+        self.assertEqual(kept[0].source_metadata["conversation_id"], "abc123")
 
     def test_build_examples_quantiles_includes_activation_ranges_in_scale(self):
         import torch
@@ -278,13 +280,50 @@ class ActivationHistogramTests(unittest.TestCase):
             region="all",
             thinking_position=None,
             sequence_idx=0,
+            source_metadata={"id": "fineweb-doc-1"},
         )
 
         quantiles, act_min, act_max = _build_examples_quantiles(stats, TinyTokenizer())
         names = [q["quantile_name"] for q in quantiles]
         self.assertIn("Activation range 2.5-3.0 (chat)", names)
+        range_quantile = next(
+            q for q in quantiles
+            if q["quantile_name"] == "Activation range 2.5-3.0 (chat)"
+        )
+        self.assertEqual(
+            range_quantile["examples"][0]["source_metadata"]["id"],
+            "fineweb-doc-1",
+        )
         self.assertLessEqual(act_min, 2.7)
         self.assertGreaterEqual(act_max, 2.7)
+
+    def test_build_example_source_metadata_keeps_dataset_locator(self):
+        from analysis.features.collect_feature_activations import (
+            _build_example_source_metadata,
+        )
+
+        class DummyDataset:
+            ds = [
+                {"conversation_id": "conv-1", "conversation": []},
+                {"conversation_id": "conv-2", "conversation": []},
+            ]
+
+        source_metadata = _build_example_source_metadata(
+            dataset=DummyDataset(),
+            examples_meta=None,
+            item={"input_ids": [1, 2, 3]},
+            dataset_row_idx=1,
+            source_idx=0,
+            source_path="org/lmsys-split",
+            domain_label="chat",
+            domain="chat",
+            prepared_item_idx=7,
+        )
+
+        self.assertEqual(source_metadata["source_path"], "org/lmsys-split")
+        self.assertEqual(source_metadata["dataset_row_idx"], 1)
+        self.assertEqual(source_metadata["prepared_item_idx"], 7)
+        self.assertEqual(source_metadata["conversation_id"], "conv-2")
 
     def test_metadata_summary_and_relative_scores_are_json_safe(self):
         from analysis.features.collect_feature_activations import (
