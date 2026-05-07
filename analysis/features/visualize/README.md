@@ -40,6 +40,7 @@ uv run python -m analysis.features.visualize.feature_dashboard --data_dir /nlp/s
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `8765` | Port |
 | `--annotations_file` | `<data_dir>/feature_annotations.json` | Persistent feature tags and notes |
+| `--prompt_output_dir` | `analysis/attribution/prompts` | Root directory for saved raw attribution prompts |
 | `--no-open` | off | Do not open a browser automatically |
 
 Stop the server with **Ctrl+C**.
@@ -64,7 +65,7 @@ pane. Manual edits are saved back to the same JSON file.
 
 - **Overview:** validation mix by domain, regions, and (when applicable) thinking-position bins.
 - **Table:** browse features with frequency, annotation tags, domain skew, and per-domain activation density; sort and filter by layer or tag.
-- **Detail:** click a row to load that feature’s JSON — editable annotations, per-domain bars, regions, thinking bins, logit lens, and example tabs (global top, per-domain top quantiles, random samples). Each example includes a **scale bar**: `act_min` and `act_max` (from the feature JSON) at the ends, **peak** (highlighted token) as a dot with its numeric value; per-token activations still appear in hover tooltips. Re-run collection to get an explicit `peak_activation` field in each example; older runs still derive the peak from `tokens_acts_list`.
+- **Detail:** click a row to load that feature’s JSON — editable annotations, per-domain bars, regions, thinking bins, logit lens, and example tabs (global top, per-domain top quantiles, random samples). Each example includes a **scale bar**: `act_min` and `act_max` (from the feature JSON) at the ends, **peak** (highlighted token) as a dot with its numeric value; per-token activations still appear in hover tooltips. Re-run collection to get an explicit `peak_activation` field in each example; older runs still derive the peak from `tokens_acts_list`. Example controls can copy the full decoded transcript or save the transcript through the highlighted token under `analysis/attribution/prompts/<run-name>/` as a raw attribution prompt. Saved dashboard prompts preserve the model-native transcript, so run attribution with `--prompt_format raw`.
 
 ## Troubleshooting
 

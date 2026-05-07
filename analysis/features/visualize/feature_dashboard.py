@@ -29,6 +29,79 @@ from urllib.parse import unquote, urlparse
 from helpers.log import logger, setup_logging
 
 _STATIC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _STATIC_DIR.parents[2]
+_DEFAULT_PROMPT_OUTPUT_DIR = _REPO_ROOT / "analysis" / "attribution" / "prompts"
+
+
+def _safe_path_component(
+    value: object,
+    fallback: str,
+    max_length: int = 96,
+    lower: bool = False,
+) -> str:
+    text = str(value or "")
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("._-")
+    if lower:
+        text = text.lower()
+    if not text:
+        text = fallback
+    return text[:max_length].strip("._-") or fallback
+
+
+def _next_available_path(directory: Path, stem: str, suffix: str = ".txt") -> Path:
+    candidate = directory / f"{stem}{suffix}"
+    if not candidate.exists():
+        return candidate
+    for i in range(2, 10000):
+        candidate = directory / f"{stem}_{i}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not find an available filename for {stem}{suffix}")
+
+
+def _save_prompt_example(
+    prompt_output_dir: Path,
+    data_dir: Path,
+    payload: dict,
+) -> dict:
+    transcript = payload.get("transcript")
+    if not isinstance(transcript, str) or not transcript:
+        raise ValueError("transcript must be a non-empty string")
+
+    layer = _safe_path_component(payload.get("layer"), fallback="L")
+    feature = _safe_path_component(payload.get("feature"), fallback="F")
+    cantor_id = _safe_path_component(payload.get("cantor_id"), fallback="cantor")
+    quantile = _safe_path_component(
+        payload.get("quantile_name"),
+        fallback="example",
+        lower=True,
+    )
+    example_index = payload.get("example_index", 0)
+    try:
+        example_number = int(example_index) + 1
+    except (TypeError, ValueError):
+        example_number = 1
+
+    folder_name = _safe_path_component(data_dir.name, fallback="feature_run")
+    prompt_dir = prompt_output_dir / folder_name
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = f"L{layer}_F{feature}_{cantor_id}_{quantile}_{example_number:02d}"
+    path = _next_available_path(prompt_dir, stem)
+    path.write_text(transcript)
+
+    try:
+        display_path = str(path.relative_to(_REPO_ROOT))
+    except ValueError:
+        display_path = str(path)
+
+    return {
+        "ok": True,
+        "path": str(path),
+        "display_path": display_path,
+        "prompt_format": "raw",
+    }
 
 
 def _load_annotations(path: Path) -> dict:
@@ -83,10 +156,16 @@ def _file_response(handler: BaseHTTPRequestHandler, path: Path) -> None:
     handler.wfile.write(data)
 
 
-def make_handler_class(data_dir: Path, annotations_file: Path | None = None):
+def make_handler_class(
+    data_dir: Path,
+    annotations_file: Path | None = None,
+    prompt_output_dir: Path | None = None,
+):
     data_dir = data_dir.resolve()
     annotations_path = (annotations_file or (data_dir / "feature_annotations.json")).resolve()
+    prompt_output_dir = (prompt_output_dir or _DEFAULT_PROMPT_OUTPUT_DIR).resolve()
     annotations_lock = threading.Lock()
+    prompt_save_lock = threading.Lock()
 
     class DashboardHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -162,6 +241,27 @@ def make_handler_class(data_dir: Path, annotations_file: Path | None = None):
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
 
+            if path == "/api/save_prompt":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("Expected JSON object")
+                    with prompt_save_lock:
+                        result = _save_prompt_example(
+                            prompt_output_dir=prompt_output_dir,
+                            data_dir=data_dir,
+                            payload=payload,
+                        )
+                    _json_response(self, json.dumps(result).encode())
+                except Exception as exc:
+                    _json_response(
+                        self,
+                        json.dumps({"error": str(exc)}).encode(),
+                        status=400,
+                    )
+                return
+
             if path != "/api/annotations":
                 self.send_error(404, "Not found")
                 return
@@ -218,6 +318,12 @@ def main() -> None:
         help="JSON file for persistent feature annotations. Defaults to [data_dir]/feature_annotations.json",
     )
     parser.add_argument(
+        "--prompt_output_dir",
+        type=str,
+        default=str(_DEFAULT_PROMPT_OUTPUT_DIR),
+        help="Directory where saved raw attribution prompts are written",
+    )
+    parser.add_argument(
         "--no-open",
         action="store_true",
         help="Do not open a browser tab automatically",
@@ -229,11 +335,13 @@ def main() -> None:
         raise SystemExit(f"data_dir is not a directory: {data_dir}")
 
     annotations_file = Path(args.annotations_file) if args.annotations_file else None
-    handler = make_handler_class(data_dir, annotations_file)
+    prompt_output_dir = Path(args.prompt_output_dir)
+    handler = make_handler_class(data_dir, annotations_file, prompt_output_dir)
     server = ThreadingHTTPServer((args.host, args.port), handler)
     url = f"http://{args.host}:{args.port}/"
     logger.info("Feature dashboard serving %s at %s", data_dir, url)
     logger.info("Annotations file: %s", (annotations_file or (data_dir / "feature_annotations.json")).resolve())
+    logger.info("Saved prompts directory: %s", prompt_output_dir.resolve())
     logger.info("Press Ctrl+C to stop.")
 
     if not args.no_open:

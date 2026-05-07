@@ -214,6 +214,27 @@
       border: 1px solid var(--border);
       border-radius: 8px;
     }
+    .example-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .example-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .example-actions button {
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+    .prompt-status {
+      margin: 6px 0 0 0;
+      min-height: 16px;
+    }
     .tok-line {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px;
@@ -533,6 +554,40 @@
     return v.toExponential(4);
   }
 
+  function exampleTranscript(ex) {
+    return (ex.tokens || []).join('');
+  }
+
+  function attributionPromptTranscript(ex) {
+    const toks = ex.tokens || [];
+    const idx = ex.train_token_ind;
+    if (idx == null || idx < 0 || idx >= toks.length) return exampleTranscript(ex);
+    return toks.slice(0, idx + 1).join('');
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+
+  function setPromptStatus(container, message, isError) {
+    const target = container.querySelector('.prompt-status');
+    if (!target) return;
+    target.className = isError ? 'prompt-status meta-mini err' : 'prompt-status meta-mini';
+    target.textContent = message;
+  }
+
   function renderActScaleBar(peak, actMin, actMax) {
     if (peak == null || Number.isNaN(peak)) return '';
     if (actMin == null || actMax == null || !Number.isFinite(actMin) || !Number.isFinite(actMax)) {
@@ -688,8 +743,64 @@
       const lo = feat.act_min ?? 0;
       const hi = feat.act_max ?? 1;
       qbody.innerHTML = exs.map((ex, j) =>
-        `<div class="example-block"><div class="meta-mini">${escapeHtml(q.quantile_name)} · #${j + 1}</div>${renderExample(ex, lo, hi)}</div>`
+        `<div class="example-block" data-example-index="${j}">
+          <div class="example-head">
+            <div class="meta-mini">${escapeHtml(q.quantile_name)} · #${j + 1}</div>
+            <div class="example-actions">
+              <button type="button" data-copy-transcript="${j}">Copy transcript</button>
+              <button type="button" data-save-prompt="${j}">Save prompt</button>
+            </div>
+          </div>
+          ${renderExample(ex, lo, hi)}
+          <div class="prompt-status meta-mini"></div>
+        </div>`
       ).join('');
+
+      qbody.querySelectorAll('[data-copy-transcript]').forEach((button) => {
+        button.onclick = async () => {
+          const exampleIndex = Number(button.getAttribute('data-copy-transcript'));
+          const container = button.closest('.example-block');
+          const transcript = exampleTranscript(exs[exampleIndex] || {});
+          try {
+            await copyText(transcript);
+            setPromptStatus(container, 'Copied transcript.', false);
+          } catch (e) {
+            setPromptStatus(container, `Copy failed: ${e.message}`, true);
+          }
+        };
+      });
+
+      qbody.querySelectorAll('[data-save-prompt]').forEach((button) => {
+        button.onclick = async () => {
+          const exampleIndex = Number(button.getAttribute('data-save-prompt'));
+          const container = button.closest('.example-block');
+          const transcript = attributionPromptTranscript(exs[exampleIndex] || {});
+          setPromptStatus(container, 'Saving prompt…', false);
+          try {
+            const res = await fetch('/api/save_prompt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                transcript,
+                cantor_id: cantorId,
+                layer: feat.layer,
+                feature: feat.feature,
+                quantile_name: q.quantile_name || ('Quantile ' + qi),
+                example_index: exampleIndex,
+              }),
+            });
+            const payload = await res.json();
+            if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+            setPromptStatus(
+              container,
+              `Saved ${payload.display_path || payload.path} · prompt_format=${payload.prompt_format}`,
+              false
+            );
+          } catch (e) {
+            setPromptStatus(container, `Save failed: ${e.message}`, true);
+          }
+        };
+      });
     }
 
     quants.forEach((q, i) => {

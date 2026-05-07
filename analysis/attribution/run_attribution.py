@@ -27,7 +27,10 @@ After running, start the frontend with:
 
 import os
 import argparse
+import subprocess
+import sys
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Literal
 
 import torch
@@ -42,6 +45,226 @@ DEEPSEEK_ASSISTANT_TOKEN = "<｜Assistant｜>"
 QWEN_IM_START = "<|im_start|>"
 QWEN_IM_END = "<|im_end|>"
 PromptFormat = Literal["auto", "raw", "chat"]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run RelP attribution on multiple prompts",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # Required args - explicit for accounting
+    parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
+    parser.add_argument("--run_name", type=str, required=True, help="Name for this run (used in output: {run_name}__{prompt}.json)")
+    parser.add_argument("--prompts", type=str, required=True, help="Directory with .txt prompt files, or path to a single .txt file")
+    parser.add_argument("--output_dir", type=str, required=True, help="Output directory for graphs")
+
+    # Optional: override scan name (defaults to run_name)
+    parser.add_argument("--scan", type=str, default=None, help="Scan name for features (default: run_name)")
+    parser.add_argument(
+        "--prompt_format",
+        type=str,
+        choices=["auto", "raw", "chat"],
+        default="auto",
+        help=(
+            "How to tokenize prompt files. 'raw' preserves file text exactly; "
+            "'chat' parses marked prompt files and applies the tokenizer chat template; "
+            "'auto' uses chat formatting for Gemma2 checkpoints with marked prompt files."
+        ),
+    )
+
+    # Attribution parameters
+    parser.add_argument("--max_n_logits", type=int, default=10)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--max_feature_nodes", type=int, default=10000)
+    parser.add_argument("--node_threshold", type=float, default=0.8)
+    parser.add_argument("--edge_threshold", type=float, default=0.98)
+
+    parser.add_argument("--device", type=str, default="cuda", help="Device (ignored if --device_map is set)")
+    parser.add_argument("--device_map", type=str, default=None, help="Device map for multi-GPU. Use 'auto' to split layers across GPUs.")
+    parser.add_argument(
+        "--auto_shard_gpus",
+        action="store_true",
+        help=(
+            "Detect visible CUDA GPUs and launch one attribution worker per GPU, "
+            "with each worker processing a disjoint prompt shard."
+        ),
+    )
+    parser.add_argument(
+        "--num_shards",
+        type=int,
+        default=1,
+        help="Total number of prompt shards. Used internally by --auto_shard_gpus, but can also be set manually.",
+    )
+    parser.add_argument(
+        "--shard_index",
+        type=int,
+        default=0,
+        help="Zero-based prompt shard index for this process.",
+    )
+
+    return parser
+
+
+def _validate_shard_args(num_shards: int, shard_index: int):
+    if num_shards < 1:
+        raise ValueError(f"--num_shards must be >= 1, got {num_shards}")
+    if shard_index < 0 or shard_index >= num_shards:
+        raise ValueError(
+            f"--shard_index must be in [0, {num_shards}), got {shard_index}"
+        )
+
+
+def _select_shard_items[T](
+    items: Sequence[T],
+    *,
+    num_shards: int,
+    shard_index: int,
+) -> list[T]:
+    _validate_shard_args(num_shards, shard_index)
+    if num_shards == 1:
+        return list(items)
+    return [
+        item
+        for item_index, item in enumerate(items)
+        if item_index % num_shards == shard_index
+    ]
+
+
+def _list_prompt_files(prompts_dir: str | Path) -> list[Path]:
+    prompts_path = Path(prompts_dir)
+    if not prompts_path.exists():
+        raise ValueError(f"Prompts path does not exist: {prompts_dir}")
+    if prompts_path.is_file():
+        if prompts_path.suffix != ".txt":
+            raise ValueError(f"Prompt file must be a .txt file: {prompts_dir}")
+        return [prompts_path]
+    return sorted(prompts_path.glob("*.txt"))
+
+
+def _parse_visible_cuda_devices(
+    cuda_visible_devices: str | None,
+    *,
+    device_count: int,
+) -> list[str]:
+    if device_count <= 0:
+        return []
+    if cuda_visible_devices is not None and cuda_visible_devices.strip():
+        devices = [
+            device.strip()
+            for device in cuda_visible_devices.split(",")
+            if device.strip()
+        ]
+        if devices == ["-1"]:
+            return []
+        return devices[:device_count]
+
+    return [str(device_index) for device_index in range(device_count)]
+
+
+def _build_auto_shard_worker_command(
+    args: argparse.Namespace,
+    *,
+    num_shards: int,
+    shard_index: int,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "analysis.attribution.run_attribution",
+        "--checkpoint",
+        args.checkpoint,
+        "--run_name",
+        args.run_name,
+        "--prompts",
+        args.prompts,
+        "--output_dir",
+        args.output_dir,
+        "--prompt_format",
+        args.prompt_format,
+        "--max_n_logits",
+        str(args.max_n_logits),
+        "--batch_size",
+        str(args.batch_size),
+        "--max_feature_nodes",
+        str(args.max_feature_nodes),
+        "--node_threshold",
+        str(args.node_threshold),
+        "--edge_threshold",
+        str(args.edge_threshold),
+        "--device",
+        "cuda",
+        "--num_shards",
+        str(num_shards),
+        "--shard_index",
+        str(shard_index),
+    ]
+    if args.scan is not None:
+        command.extend(["--scan", args.scan])
+    return command
+
+
+def _run_auto_sharded_attribution(args: argparse.Namespace) -> bool:
+    if not args.auto_shard_gpus:
+        return False
+    if args.num_shards != 1 or args.shard_index != 0:
+        raise ValueError("--auto_shard_gpus cannot be combined with manual shard args")
+    if args.device_map is not None:
+        raise ValueError("--auto_shard_gpus cannot be combined with --device_map")
+    if args.device not in {"cuda", "cuda:0"}:
+        raise ValueError("--auto_shard_gpus requires --device cuda or --device cuda:0")
+
+    prompt_count = len(_list_prompt_files(args.prompts))
+    if prompt_count == 0:
+        raise ValueError(f"No .txt prompt files found in {args.prompts}")
+
+    visible_devices = _parse_visible_cuda_devices(
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        device_count=torch.cuda.device_count(),
+    )
+    if not visible_devices:
+        raise RuntimeError("No visible CUDA GPUs found for --auto_shard_gpus")
+
+    num_workers = min(len(visible_devices), prompt_count)
+    if num_workers == 1:
+        logger.info("--auto_shard_gpus found one usable GPU/prompt; running in this process")
+        return False
+
+    logger.info(
+        f"Launching {num_workers} attribution workers across {len(visible_devices)} visible GPU(s)"
+    )
+    processes: list[tuple[int, subprocess.Popen]] = []
+    for worker_index, cuda_device in enumerate(visible_devices[:num_workers]):
+        command = _build_auto_shard_worker_command(
+            args,
+            num_shards=num_workers,
+            shard_index=worker_index,
+        )
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = cuda_device
+        logger.info(
+            f"Worker {worker_index}: CUDA_VISIBLE_DEVICES={cuda_device}, "
+            f"shard {worker_index}/{num_workers}"
+        )
+        processes.append((worker_index, subprocess.Popen(command, env=env)))
+
+    failures = []
+    for worker_index, process in processes:
+        returncode = process.wait()
+        if returncode != 0:
+            failures.append((worker_index, returncode))
+
+    if failures:
+        formatted_failures = ", ".join(
+            f"worker {worker_index} exited {returncode}"
+            for worker_index, returncode in failures
+        )
+        raise RuntimeError(f"Attribution worker failure(s): {formatted_failures}")
+
+    logger.info("All attribution workers completed successfully")
+    logger.info(f"\nTo view graphs run:")
+    logger.info(f"  circuit-tracer start-server --graph_file_dir {args.output_dir}")
+    return True
 
 #%%
 def _parse_chat_prompt_text(text: str) -> tuple[str, str] | None:
@@ -132,6 +355,11 @@ def load_prompt_file(
     text = path.read_text()
     if _should_chat_format_prompt(text, prompt_format, model_type):
         return _load_chat_formatted_prompt(text, tokenizer)
+    if prompt_format == "auto":
+        logger.warning(
+            "Prompt format auto did not detect chat markers in %s; falling back to raw tokenization",
+            path,
+        )
 
     full_tokens = tokenizer.encode(text, add_special_tokens=False)
     if not full_tokens:
@@ -147,6 +375,8 @@ def load_prompts(
     tokenizer,
     prompt_format: PromptFormat = "auto",
     model_type: str | None = None,
+    num_shards: int = 1,
+    shard_index: int = 0,
 ) -> dict[str, dict]:
     """
     Load prompts from a directory of .txt files.
@@ -154,12 +384,15 @@ def load_prompts(
     Returns dict mapping slug to {tokens, target, text}.
     """
     prompts = {}
-    prompts_path = Path(prompts_dir)
+    txt_files = _list_prompt_files(prompts_dir)
+    if not txt_files:
+        raise ValueError(f"No .txt files found in {prompts_dir}")
 
-    if not prompts_path.exists():
-        raise ValueError(f"Prompts directory does not exist: {prompts_dir}")
-
-    for txt_file in sorted(prompts_path.glob("*.txt")):
+    for txt_file in _select_shard_items(
+        txt_files,
+        num_shards=num_shards,
+        shard_index=shard_index,
+    ):
         slug = txt_file.stem
         tokens, target, text = load_prompt_file(
             txt_file,
@@ -174,9 +407,6 @@ def load_prompts(
         }
         target_str = tokenizer.decode([target])
         logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
-
-    if not prompts:
-        raise ValueError(f"No .txt files found in {prompts_dir}")
 
     return prompts
 
@@ -248,43 +478,15 @@ def run_attribution_for_prompt(
 
 #%%
 def main():
-    parser = argparse.ArgumentParser(
-        description="Run RelP attribution on multiple prompts",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    # Required args - explicit for accounting
-    parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
-    parser.add_argument("--run_name", type=str, required=True, help="Name for this run (used in output: {run_name}__{prompt}.json)")
-    parser.add_argument("--prompts", type=str, required=True, help="Directory with .txt prompt files, or path to a single .txt file")
-    parser.add_argument("--output_dir", type=str, required=True, help="Output directory for graphs")
-
-    # Optional: override scan name (defaults to run_name)
-    parser.add_argument("--scan", type=str, default=None, help="Scan name for features (default: run_name)")
-    parser.add_argument(
-        "--prompt_format",
-        type=str,
-        choices=["auto", "raw", "chat"],
-        default="auto",
-        help=(
-            "How to tokenize prompt files. 'raw' preserves file text exactly; "
-            "'chat' parses marked prompt files and applies the tokenizer chat template; "
-            "'auto' uses chat formatting for Gemma2 checkpoints with marked prompt files."
-        ),
-    )
-
-    # Attribution parameters
-    parser.add_argument("--max_n_logits", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--max_feature_nodes", type=int, default=10000)
-    parser.add_argument("--node_threshold", type=float, default=0.8)
-    parser.add_argument("--edge_threshold", type=float, default=0.98)
-
-    parser.add_argument("--device", type=str, default="cuda", help="Device (ignored if --device_map is set)")
-    parser.add_argument("--device_map", type=str, default=None, help="Device map for multi-GPU. Use 'auto' to split layers across GPUs.")
-
+    parser = build_parser()
     args = parser.parse_args()
     setup_logging()
+    try:
+        _validate_shard_args(args.num_shards, args.shard_index)
+        if _run_auto_sharded_attribution(args):
+            return
+    except Exception as e:
+        parser.error(str(e))
 
     # Default scan to run_name
     if args.scan is None:
@@ -300,6 +502,8 @@ def main():
     logger.info(f"Prompt fmt:  {args.prompt_format}")
     logger.info(f"Output:      {args.output_dir}")
     logger.info(f"Scan:        {args.scan}")
+    if args.num_shards > 1:
+        logger.info(f"Shard:       {args.shard_index}/{args.num_shards}")
     logger.info("=" * 60)
 
     # Create output directory
@@ -321,22 +525,31 @@ def main():
     logger.info("\nLoading prompts...")
     prompts_path = Path(args.prompts)
     if prompts_path.is_file():
-        slug = prompts_path.stem
-        tokens, target, text = load_prompt_file(
-            prompts_path,
-            model.tokenizer,
-            prompt_format=args.prompt_format,
-            model_type=model_type,
-        )
-        prompts = {slug: {"tokens": tokens, "target": target, "text": text}}
-        target_str = model.tokenizer.decode([target])
-        logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
+        if _select_shard_items(
+            [prompts_path],
+            num_shards=args.num_shards,
+            shard_index=args.shard_index,
+        ):
+            slug = prompts_path.stem
+            tokens, target, text = load_prompt_file(
+                prompts_path,
+                model.tokenizer,
+                prompt_format=args.prompt_format,
+                model_type=model_type,
+            )
+            prompts = {slug: {"tokens": tokens, "target": target, "text": text}}
+            target_str = model.tokenizer.decode([target])
+            logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
+        else:
+            prompts = {}
     else:
         prompts = load_prompts(
             args.prompts,
             model.tokenizer,
             prompt_format=args.prompt_format,
             model_type=model_type,
+            num_shards=args.num_shards,
+            shard_index=args.shard_index,
         )
     prompt_items = list(prompts.items())
     logger.info(f"Found {len(prompt_items)} prompt(s)")

@@ -10,11 +10,21 @@
 #
 # Fuller Gemma2 run over all curated prompts:
 # ./sh/slurm_batch_attribution.sh --checkpoint siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --run_name gemma2_relp_l0_1p4 --prompts analysis/attribution/prompts_l0_1p4 --output_dir products/attribution/gemma2_relp_l0_1p4 --max_feature_nodes 10000 --batch_size 16 --max_n_logits 10 --node_threshold 0.8 --edge_threshold 0.98
+#
+# Multi-GPU auto-sharded run:
+# ATTRIBUTION_GPUS=4 ./sh/slurm_batch_attribution.sh --checkpoint siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --run_name gemma2_relp_l0_1p4 --prompts analysis/attribution/prompts_l0_1p4 --output_dir products/attribution/gemma2_relp_l0_1p4 --max_feature_nodes 10000 --batch_size 16 --max_n_logits 10 --node_threshold 0.8 --edge_threshold 0.98 --auto_shard_gpus
+
+ATTRIBUTION_GPUS="${ATTRIBUTION_GPUS:-1}"
+
+if ! [[ "$ATTRIBUTION_GPUS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: ATTRIBUTION_GPUS must be a positive integer, got '$ATTRIBUTION_GPUS'" >&2
+  exit 1
+fi
 
 export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
 
 ./sh/sbatch \
-  --gres=gpu:1 \
+  --gres="gpu:${ATTRIBUTION_GPUS}" \
   --constraint=48G \
   --mem=128G \
   --partition=jag-standard \

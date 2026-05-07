@@ -13,7 +13,7 @@ logger.error("message")
 ```
 
 ## Tools
-Use `uv run python` for Python.
+Use `uv run python` for Python. Run all Python code requiring CUDA or PyTorch or a GPU outside of the sandbox!
 
 ## Debugging
 Try to validate changes by running your programs with really simple and quick parameters or on a toy model / example. For programs requiring model loading or a gpu, if you're on a GPU, you can run directly with `uv run python -m`, otherwise you can use slurm to start a GPU job. For example, to test analysis/simple_load/simple_load.py, you can use the following script on the GPU:
