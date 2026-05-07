@@ -1,4 +1,5 @@
 import json
+import argparse
 import tempfile
 import unittest
 from pathlib import Path
@@ -339,6 +340,56 @@ class ActivationHistogramTests(unittest.TestCase):
         self.assertIn("chat", frequency_summary["feature_frequency_hist_by_domain"])
         self.assertIn("fineweb", frequency_summary["feature_frequency_hist_by_domain"])
         self.assertGreater(frequency_summary["global_nonzero_density_by_domain"]["chat"], 0)
+
+    def test_export_run_arguments_writes_replay_command_and_full_json(self):
+        from analysis.features.collect_feature_activations import export_run_arguments
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--model_path", required=True)
+        parser.add_argument("--val_data", nargs="+", required=True)
+        parser.add_argument("--output_dir", default=None)
+        parser.add_argument("--max_samples", type=int, default=None)
+        parser.add_argument("--top_k", type=int, default=20)
+        parser.add_argument("--shuffle", action="store_true")
+        parser.add_argument(
+            "--shuffle_batches",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+        )
+        parser.add_argument("--tokenizer", default=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            args = parser.parse_args([
+                "--model_path",
+                "org/model",
+                "--val_data",
+                "chat:org/chat",
+                "web:org/web",
+                "--shuffle",
+                "--no-shuffle_batches",
+            ])
+            args.output_dir = str(output_dir)
+
+            export_run_arguments(parser, args, output_dir)
+
+            command = (output_dir / "collect_feature_activations_command.sh").read_text()
+            self.assertIn("--model_path=org/model", command)
+            self.assertIn("--val_data chat:org/chat web:org/web", command)
+            self.assertIn(f"--output_dir={output_dir}", command)
+            self.assertIn("--top_k=20", command)
+            self.assertIn("--shuffle", command)
+            self.assertIn("--no-shuffle_batches", command)
+            self.assertNotIn("--max_samples", command)
+            self.assertNotIn("--tokenizer", command)
+
+            payload = json.loads(
+                (output_dir / "collect_feature_activations_args.json").read_text()
+            )
+            self.assertEqual(payload["top_k"], 20)
+            self.assertEqual(payload["max_samples"], None)
+            self.assertEqual(payload["shuffle"], True)
+            self.assertEqual(payload["shuffle_batches"], False)
 
 
 if __name__ == "__main__":

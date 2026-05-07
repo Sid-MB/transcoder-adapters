@@ -46,7 +46,9 @@ Output:
     │   ├── {cantor_id}.json   # cantor_pair(layer, feature) -> unique int
     │   └── ...
     ├── activation_histograms.npz  # Exact all-nonzero activation histograms
-    └── feature_metadata.json  # Activation frequencies, domain/region breakdowns
+    ├── feature_metadata.json  # Activation frequencies, domain/region breakdowns
+    ├── collect_feature_activations_args.json  # Full parsed CLI settings
+    └── collect_feature_activations_command.sh  # Pasteable replay command
 
     Browse results locally:
         python -m analysis.features.visualize.feature_dashboard --data_dir {output_dir}
@@ -60,6 +62,7 @@ import argparse
 import json
 import random
 import heapq
+import shlex
 import textwrap
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -1219,6 +1222,76 @@ class ArgumentDefaultsRawTextHelpFormatter(
     """Preserve intentional help formatting while still showing defaults."""
 
 
+def _value_to_flag_string(action: argparse.Action, value: Any) -> str | None:
+    """Format one argparse value as a pasteable CLI flag, or omit non-values."""
+    if value is None:
+        return None
+    if isinstance(action, argparse._StoreTrueAction):
+        return action.option_strings[0] if value else None
+    if isinstance(action, argparse._StoreFalseAction):
+        return action.option_strings[0] if not value else None
+    if isinstance(action, argparse.BooleanOptionalAction):
+        for option in action.option_strings:
+            if value and not option.startswith("--no-"):
+                return option
+            if not value and option.startswith("--no-"):
+                return option
+        return None
+
+    option = action.option_strings[0] if action.option_strings else None
+    if option is None:
+        return None
+
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        quoted_values = " ".join(shlex.quote(str(item)) for item in value)
+        return f"{option} {quoted_values}"
+
+    return f"{option}={shlex.quote(str(value))}"
+
+
+def build_replay_command(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    """Build a pasteable collector command from the fully parsed args namespace."""
+    parts = ["uv run python -m analysis.features.collect_feature_activations"]
+    for action in parser._actions:
+        if action.dest in {"help", argparse.SUPPRESS}:
+            continue
+        if not action.option_strings:
+            continue
+        flag = _value_to_flag_string(action, getattr(args, action.dest, None))
+        if flag is not None:
+            parts.append(flag)
+    return " \\\n    ".join(parts)
+
+
+def export_run_arguments(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> None:
+    """Write parsed run settings and a pasteable replay command."""
+    args_payload = {
+        key: value
+        for key, value in vars(args).items()
+    }
+    args_json_path = output_dir / "collect_feature_activations_args.json"
+    command_path = output_dir / "collect_feature_activations_command.sh"
+    command = build_replay_command(parser, args)
+
+    with open(args_json_path, "w") as f:
+        json.dump(args_payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    with open(command_path, "w") as f:
+        f.write("#!/usr/bin/env bash\n")
+        f.write("set -euo pipefail\n\n")
+        f.write(command)
+        f.write("\n")
+
+    logger.info(f"Saved parsed run arguments to {args_json_path}")
+    logger.info(f"Saved pasteable replay command to {command_path}")
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(
@@ -1348,6 +1421,7 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
+    export_run_arguments(parser, args, output_dir)
 
     tokenizer = load_tokenizer(args.model_path, tokenizer_path=args.tokenizer)
 
@@ -1596,6 +1670,8 @@ def main():
     logger.info("  activation_histograms.npz: Exact activation histogram sidecar")
     logger.info("  feature_metadata.json: Rich metadata for analysis")
     logger.info("  feature_annotations.json: Automatic feature annotations")
+    logger.info("  collect_feature_activations_args.json: Full parsed CLI settings")
+    logger.info("  collect_feature_activations_command.sh: Pasteable replay command")
 
 
 if __name__ == "__main__":
