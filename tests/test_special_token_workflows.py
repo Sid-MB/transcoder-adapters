@@ -9,6 +9,7 @@ from analysis.attribution.run_attribution import (
     DEEPSEEK_USER_TOKEN,
     load_prompt_file,
 )
+from analysis.evals.compute_token_metrics_onpolicy import tokenize_chat_prompt_response
 from training.dataset.gemma2.lmsys_chat import LMSYSChatDataset
 from training.dataset.openthoughts.open_thoughts import OpenThoughtsDataset
 
@@ -184,6 +185,27 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
         self.assertIsInstance(ids, list)
         self.assertTrue(all(isinstance(token_id, int) for token_id in ids))
         self.assertEqual(ids[0], dataset.tokenizer.bos_token_id)
+
+    def test_eval_tokenize_chat_accepts_batch_encoding_template_output(self):
+        class BatchEncodingChatTokenizer(GemmaLikeChatTokenizer):
+            def apply_chat_template(self, *args, **kwargs):
+                ids = super().apply_chat_template(*args, **kwargs)
+                if kwargs.get("tokenize", False):
+                    return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+                return ids
+
+        tokenizer = BatchEncodingChatTokenizer()
+        prompt_ids, response_ids = tokenize_chat_prompt_response(
+            tokenizer,
+            [{"role": "user", "content": "Problem?"}],
+            "Answer!",
+        )
+
+        self.assertIsInstance(prompt_ids, list)
+        self.assertIsInstance(response_ids, list)
+        self.assertTrue(all(isinstance(token_id, int) for token_id in prompt_ids))
+        self.assertTrue(all(isinstance(token_id, int) for token_id in response_ids))
+        self.assertEqual(prompt_ids[0], tokenizer.bos_token_id)
 
 
 if __name__ == "__main__":

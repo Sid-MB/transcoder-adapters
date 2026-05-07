@@ -23,6 +23,7 @@ import glob
 import torch
 import numpy as np
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 
@@ -314,6 +315,40 @@ def sample_deduplicated(examples: list, n_samples: int, seed: int):
 # ============================================================================
 # TOKENIZATION
 # ============================================================================
+def _extract_input_ids(tokenized_output) -> list[int]:
+    """Return input_ids from tokenizer outputs that may be plain IDs or mappings."""
+    if isinstance(tokenized_output, Mapping):
+        tokenized_output = tokenized_output["input_ids"]
+    if isinstance(tokenized_output, torch.Tensor):
+        tokenized_output = tokenized_output.tolist()
+    if tokenized_output and isinstance(tokenized_output[0], list):
+        if len(tokenized_output) != 1:
+            raise ValueError(f"Expected a single input_ids sequence, got {len(tokenized_output)}")
+        tokenized_output = tokenized_output[0]
+    return list(tokenized_output)
+
+
+def _json_safe(value):
+    """Convert NumPy values in nested structures to JSON-native Python values."""
+    if isinstance(value, Mapping):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
+def _model_input_device(model) -> torch.device:
+    """Return the device expected by a model's input IDs."""
+    embeddings = model.get_input_embeddings()
+    return embeddings.weight.device
+
+
 def tokenize_chat_prompt_response(
     tokenizer,
     prompt_messages: list[dict],
@@ -330,20 +365,22 @@ def tokenize_chat_prompt_response(
         tokenize=True,
         add_generation_prompt=True,
     )
+    prompt_ids = _extract_input_ids(prompt_ids)
     full_ids = tokenizer.apply_chat_template(
         [*prompt_messages, {"role": "assistant", "content": response}],
         tokenize=True,
         add_generation_prompt=False,
     )
+    full_ids = _extract_input_ids(full_ids)
 
     if full_ids[:len(prompt_ids)] == prompt_ids:
-        return list(prompt_ids), list(full_ids[len(prompt_ids):])
+        return prompt_ids, full_ids[len(prompt_ids):]
 
     logger.warning(
         "Chat template prefix mismatch while tokenizing response; falling back "
         "to content-only response tokens without template stop markers."
     )
-    return list(prompt_ids), tokenizer.encode(response, add_special_tokens=False)
+    return prompt_ids, tokenizer.encode(response, add_special_tokens=False)
 
 
 def tokenize_example(ex: dict, tokenizer, max_length: int):
@@ -435,27 +472,40 @@ def compute_token_metrics(logits_model_resp, logits_ref_resp, chunk_size: int = 
 # ============================================================================
 # MAIN EVALUATION
 # ============================================================================
-def load_model(model_path: str, use_transcoder: bool = False):
+def _from_pretrained_device_kwargs(device_placement: str) -> dict:
+    if device_placement == "auto":
+        return {"device_map": "auto"}
+    return {}
+
+
+def _place_loaded_model(model, device_placement: str):
+    if device_placement in ("cuda", "cpu"):
+        model = model.to(device_placement)
+    return model
+
+
+def load_model(model_path: str, use_transcoder: bool = False, device_placement: str = "auto"):
     """Load model, optionally as transcoder (auto-detects architecture)."""
+    device_kwargs = _from_pretrained_device_kwargs(device_placement)
     if use_transcoder:
         from models.auto import AutoModelForCausalLMWithTranscoder
         model = AutoModelForCausalLMWithTranscoder.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
             trust_remote_code=True,
+            **device_kwargs,
         )
         logger.info(f"  Loaded as transcoder model (auto-detected arch)")
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
             trust_remote_code=True,
+            **device_kwargs,
         )
         logger.info(f"  Loaded as AutoModelForCausalLM")
 
-    return model
+    return _place_loaded_model(model, device_placement)
 
 
 @log_group("Token-level evaluation")
@@ -519,21 +569,22 @@ def run_token_metrics_eval(
 
     for i, ex in enumerate(tqdm(examples, desc="Evaluating")):
         tokens = tokenize_example(ex, tokenizer, max_length)
-        input_ids = tokens['input_ids'].unsqueeze(0).to(device)
-        labels = tokens['labels'].unsqueeze(0).to(device)
+        input_ids = tokens['input_ids'].unsqueeze(0)
+        labels = tokens['labels'].unsqueeze(0)
         benchmark = ex['benchmark']
 
         with torch.no_grad():
-            logits_ref = ref_model(input_ids=input_ids).logits
-            logits_model = eval_model(input_ids=input_ids).logits
+            logits_ref = ref_model(input_ids=input_ids.to(_model_input_device(ref_model))).logits
+            logits_model = eval_model(input_ids=input_ids.to(_model_input_device(eval_model))).logits
 
             # Slice to response tokens and free full-sequence logits before
             # the chunked softmax computation, which would otherwise hold both
             # in memory simultaneously.
             labels_shifted = labels[:, 1:]
-            response_mask = labels_shifted[0] != -100
-            logits_ref_resp = logits_ref[0, :-1][response_mask]
-            logits_model_resp = logits_model[0, :-1][response_mask]
+            ref_response_mask = labels_shifted[0].to(logits_ref.device) != -100
+            model_response_mask = labels_shifted[0].to(logits_model.device) != -100
+            logits_ref_resp = logits_ref[0, :-1][ref_response_mask]
+            logits_model_resp = logits_model[0, :-1][model_response_mask].to(logits_ref_resp.device)
             del logits_ref, logits_model
 
             if logits_ref_resp.shape[0] == 0:
@@ -679,7 +730,7 @@ def run_token_metrics_eval(
         }
 
         with open(output_path, 'w') as f:
-            json.dump(output_data, f, indent=2)
+            json.dump(_json_safe(output_data), f, indent=2)
         logger.info(f"\nSaved token-level evaluation results to {output_path}")
 
     return results
@@ -707,6 +758,10 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Show de-tokenized samples for debugging")
     parser.add_argument("--transcoder", action="store_true", help="Load model as transcoder (auto-detects arch)")
     parser.add_argument("--hybrid", action="store_true", help="Disable transcoders (use hybrid model: ref attention + base MLP)")
+    parser.add_argument("--device_placement", type=str, default="auto", choices=("auto", "cuda", "cpu"),
+                        help="Model placement strategy. 'auto' uses Transformers device_map auto; "
+                             "'cuda' loads models normally and moves each whole model to CUDA; "
+                             "'cpu' keeps models on CPU.")
     args = parser.parse_args()
 
     reference_model = args.reference_model
@@ -758,16 +813,18 @@ def main():
 
     # Load models
     logger.info(f"\nLoading reference model: {reference_model}")
+    device_kwargs = _from_pretrained_device_kwargs(args.device_placement)
     ref_model = AutoModelForCausalLM.from_pretrained(
         reference_model,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
         trust_remote_code=True,
+        **device_kwargs,
     )
+    ref_model = _place_loaded_model(ref_model, args.device_placement)
     ref_model.eval()
 
     logger.info(f"\nLoading eval model: {args.model}")
-    eval_model = load_model(args.model, use_transcoder=args.transcoder or args.hybrid)
+    eval_model = load_model(args.model, use_transcoder=args.transcoder or args.hybrid, device_placement=args.device_placement)
     
     if args.hybrid:
         logger.info("Disabling transcoders for hybrid model evaluation")
