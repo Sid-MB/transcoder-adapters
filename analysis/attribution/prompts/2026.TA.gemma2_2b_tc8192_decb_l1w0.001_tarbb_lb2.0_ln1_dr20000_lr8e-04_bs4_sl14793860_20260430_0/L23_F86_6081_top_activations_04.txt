@@ -1,0 +1,15 @@
+<bos><start_of_turn>user
+say hello<end_of_turn>
+<start_of_turn>model
+Hello! How can I assist you today?<end_of_turn>
+<start_of_turn>user
+Pretend you are a Jewelry sales person. Write a plain and factual product description for a Tanzanite gemstone with the provided product details. Use a(n) Expert tone for the product description. Only use the provided information, do not make up any claims or information. You have a limit of 1000 characters. Only include the description in your response. Separate your response into paragraphs. Indent the beginning of each paragraph only, and add a space between paragraphs.
+
+Use the following factual information in your description:
+
+Title Description: N/A
+Primary Gem Material Color: Blue,
+Product Type: Single Gemstone,
+Primary Material Name: Gemstone<end_of_turn>
+<start_of_turn>model
+This exquisite Single Gemstone is a Tanzanite of the highest quality. Its mesmerizing blue color captures the essence of the deep sea and the vast sky, all embodied in one magnificent gemstone. This is the

@@ -24,7 +24,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
@@ -290,6 +290,58 @@ def _load_feature_histogram_payload(
     }
 
 
+def _build_top_logit_index(data_dir: Path) -> list[dict]:
+    features_dir = data_dir / "features"
+    if not features_dir.is_dir():
+        return []
+    index = []
+    for feature_path in sorted(features_dir.glob("*.json")):
+        try:
+            feature_data = json.loads(feature_path.read_text())
+        except Exception as exc:
+            logger.warning("Could not load feature JSON for logit search: %s", exc)
+            continue
+        top_logits = feature_data.get("top_logits")
+        if not isinstance(top_logits, list):
+            continue
+        try:
+            cantor_id = int(feature_path.stem)
+        except ValueError:
+            continue
+        index.append({
+            "cantor_id": cantor_id,
+            "layer": feature_data.get("layer"),
+            "feature": feature_data.get("feature"),
+            "top_logits": [
+                str(token)
+                for token in top_logits
+                if token is not None
+            ],
+        })
+    return index
+
+
+def _search_top_logits(index: list[dict], query: str) -> dict:
+    needle = query.casefold()
+    if not needle:
+        return {"query": query, "count": 0, "matches": []}
+    matches = []
+    for entry in index:
+        matched_logits = [
+            token
+            for token in entry["top_logits"]
+            if needle in token.casefold()
+        ]
+        if matched_logits:
+            matches.append({
+                "cantor_id": entry["cantor_id"],
+                "layer": entry["layer"],
+                "feature": entry["feature"],
+                "matched_top_logits": matched_logits,
+            })
+    return {"query": query, "count": len(matches), "matches": matches}
+
+
 def _json_response(handler: BaseHTTPRequestHandler, payload: bytes, status: int = 200) -> None:
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -336,6 +388,8 @@ def make_handler_class(
     feature_index_by_cantor: dict[str, dict] = {}
     tokens_per_domain: dict[str, int] = {}
     histogram_layer_cache: dict[int, dict] = {}
+    top_logit_index: list[dict] | None = None
+    top_logit_index_lock = threading.Lock()
     metadata_path = data_dir / "feature_metadata.json"
     histograms_file = "activation_histograms.npz"
     if metadata_path.is_file():
@@ -357,6 +411,7 @@ def make_handler_class(
             logger.debug("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
+            nonlocal top_logit_index
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
 
@@ -388,6 +443,22 @@ def make_handler_class(
                     with annotations_lock:
                         annotations = _load_annotations(annotations_path)
                     _json_response(self, json.dumps(annotations).encode())
+                except Exception as exc:
+                    _json_response(
+                        self,
+                        json.dumps({"error": str(exc)}).encode(),
+                        status=500,
+                    )
+                return
+
+            if path == "/api/logit_search":
+                query = parse_qs(parsed.query).get("q", [""])[0]
+                try:
+                    with top_logit_index_lock:
+                        if top_logit_index is None:
+                            top_logit_index = _build_top_logit_index(data_dir)
+                    payload = _search_top_logits(top_logit_index, query)
+                    _json_response(self, json.dumps(payload).encode())
                 except Exception as exc:
                     _json_response(
                         self,
@@ -464,6 +535,27 @@ def make_handler_class(
                             data_dir=data_dir,
                             payload=payload,
                         )
+                    _json_response(self, json.dumps(result).encode())
+                except Exception as exc:
+                    _json_response(
+                        self,
+                        json.dumps({"error": str(exc)}).encode(),
+                        status=400,
+                    )
+                return
+
+            if path == "/api/logit_search":
+                try:
+                    nonlocal top_logit_index
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("Expected JSON object")
+                    query = str(payload.get("query") or "")
+                    with top_logit_index_lock:
+                        if top_logit_index is None:
+                            top_logit_index = _build_top_logit_index(data_dir)
+                    result = _search_top_logits(top_logit_index, query)
                     _json_response(self, json.dumps(result).encode())
                 except Exception as exc:
                     _json_response(

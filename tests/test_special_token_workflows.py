@@ -148,6 +148,34 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
         self.assertEqual(target, tokenizer.encode("!", add_special_tokens=False)[0])
         self.assertNotIn(tokenizer._char_id("｜"), prompt_tokens)
 
+    def test_gemma_attribution_chat_accepts_batch_encoding_template_output(self):
+        class BatchEncodingChatTokenizer(GemmaLikeChatTokenizer):
+            def apply_chat_template(self, *args, **kwargs):
+                ids = super().apply_chat_template(*args, **kwargs)
+                if kwargs.get("tokenize", False):
+                    return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+                return ids
+
+        tokenizer = BatchEncodingChatTokenizer()
+        raw_prompt = (
+            f"{DEEPSEEK_BOS_TOKEN}{DEEPSEEK_USER_TOKEN}Problem?"
+            f"{DEEPSEEK_ASSISTANT_TOKEN}A!"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prompt_path = Path(tmpdir) / "prompt.txt"
+            prompt_path.write_text(raw_prompt)
+            prompt_tokens, target, _ = load_prompt_file(
+                prompt_path,
+                tokenizer,
+                prompt_format="chat",
+                model_type="gemma2",
+            )
+
+        self.assertIsInstance(prompt_tokens, list)
+        self.assertTrue(all(isinstance(token_id, int) for token_id in prompt_tokens))
+        self.assertEqual(target, tokenizer.encode("!", add_special_tokens=False)[0])
+
     def test_attribution_raw_prompt_format_preserves_file_text(self):
         tokenizer = GemmaLikeChatTokenizer()
         raw_prompt = (

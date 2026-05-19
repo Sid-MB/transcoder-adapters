@@ -1,5 +1,6 @@
 prefix_rule(pattern=["uv", "run"], decision="allow")
 prefix_rule(pattern=["uv", "sync"], decision="allow")
+prefix_rule(pattern=["SBATCH_WAIT=1"], decision="allow")
 prefix_rule(pattern=["nvidia-smi"], decision="allow")
 prefix_rule(pattern=["./sh/slurm_batch_train.sh"], decision="allow")
 prefix_rule(pattern=["sbatch"], decision="allow")

@@ -252,6 +252,19 @@
       border-color: var(--accent);
       background: rgba(88, 166, 255, 0.12);
     }
+    .control-explanations {
+      width: 100%;
+      display: grid;
+      gap: 4px;
+      padding-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .control-explanations strong {
+      color: var(--text);
+      font-weight: 600;
+    }
     input[type="search"], select, input[type="text"] {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -523,6 +536,8 @@
       <div class="overview" id="overview"></div>
       <div class="controls">
         <input type="search" id="q" placeholder="Search layer, feature, cantor…" />
+        <input type="search" id="logit-q" placeholder="Top logit token…" />
+        <span class="meta-mini" id="logit-status"></span>
         <label style="font-size:12px;color:var(--muted)">Tag
           <select id="tag-filter"><option value="">All</option></select>
         </label>
@@ -535,6 +550,10 @@
           <option value="asc">Asc</option>
         </select>
         <div class="relative-presets" id="relative-presets" hidden></div>
+        <div class="control-explanations">
+          <div id="sort-explainer"></div>
+          <div id="relative-explainer"></div>
+        </div>
       </div>
       <div class="scroll">
         <table>
@@ -572,6 +591,9 @@
   let relativePreset = 'all';
   let page = 0;
   let selectedCantor = null;
+  let logitSearchIds = null;
+  let logitSearchTimer = null;
+  let logitSearchSerial = 0;
 
   function el(id) { return document.getElementById(id); }
 
@@ -665,6 +687,7 @@
       target.hidden = true;
       target.innerHTML = '';
       relativePreset = 'all';
+      renderControlExplanations();
       return;
     }
     const labels = relativeDomains();
@@ -685,6 +708,7 @@
       button.onclick = () => {
         relativePreset = button.getAttribute('data-relative-preset') || 'all';
         renderRelativePresets();
+        renderControlExplanations();
         applyFilter();
       };
     });
@@ -709,6 +733,75 @@
     if (relativePreset === 'target_frequent_strong') return targetFrequent && targetStrong;
     if (relativePreset === 'target_frequent_baseline_strong') return targetFrequent && baselineStrong;
     return true;
+  }
+
+  function sortExplanation() {
+    const labels = relativeDomains();
+    if (sortKey === 'freq') {
+      return 'Activation frequency ranks by activation_count / total_tokens. activation_count counts every positive activation for this feature across all collected tokens and domains.';
+    }
+    if (sortKey === 'layer') {
+      return 'Layer orders features by transformer layer index. Ties fall back to Cantor id.';
+    }
+    if (sortKey === 'skew') {
+      return 'Domain skew ranks by max(domain_fraction) - min(domain_fraction). domain_fraction is each domain\'s share of this feature\'s positive activations.';
+    }
+    if (sortKey === 'cantor') {
+      return 'Cantor id orders by the stable packed id cantor_pair(layer, feature), which is also the per-feature JSON filename.';
+    }
+    if (sortKey === 'rel') {
+      return `${labels.target} / ${labels.baseline} frequency lift ranks by log2(smoothed ${labels.target} density / smoothed ${labels.baseline} density). Raw density is domain_count / tokens_per_domain; smoothing floors each density at 1 / domain_tokens.`;
+    }
+    if (sortKey === 'p95_ratio') {
+      return `${labels.target} / ${labels.baseline} p95 strength ranks by ${labels.target} p95 activation / ${labels.baseline} p95 activation. Each p95 is approximated from this feature's exact per-domain activation-magnitude histogram.`;
+    }
+    if (sortKey === 'p99_ratio') {
+      return `${labels.target} / ${labels.baseline} p99 strength ranks by ${labels.target} p99 activation / ${labels.baseline} p99 activation. Each p99 is approximated from this feature's exact per-domain activation-magnitude histogram.`;
+    }
+    if (sortKey === 'max_ratio') {
+      return `${labels.target} / ${labels.baseline} max-bin strength ranks by ${labels.target} strongest occupied activation bin / ${labels.baseline} strongest occupied activation bin, using the lower bound of each domain's highest nonzero activation-magnitude bin.`;
+    }
+    if (sortKey.startsWith('d_')) {
+      const domain = decodeURIComponent(sortKey.slice(2));
+      return `Density for ${domain} ranks by this feature's positive activation count in ${domain} divided by tokens_per_domain["${domain}"].`;
+    }
+    return '';
+  }
+
+  function relativePresetExplanation() {
+    if (!hasRelativeScores()) return '';
+    const labels = relativeDomains();
+    const freq = `frequency lift = smoothed ${labels.target} activation density / smoothed ${labels.baseline} activation density, where raw density is feature activations in a domain divided by that domain's token count`;
+    const strength = `strength ratio = ${labels.target} activation strength / ${labels.baseline} activation strength, using p99 when available, then p95, then max occupied activation bin`;
+    if (relativePreset === 'all') {
+      return `All keeps every feature with no relative-domain filtering. The relative metrics shown in the table still compare ${labels.target} against ${labels.baseline}.`;
+    }
+    if (relativePreset === 'target_frequent') {
+      return `${labels.target} frequent keeps features where ${freq}, and the lift is greater than 1.`;
+    }
+    if (relativePreset === 'target_strong') {
+      return `${labels.target} strong keeps features where ${strength}, and the ratio is greater than 1.`;
+    }
+    if (relativePreset === 'target_frequent_strong') {
+      return `${labels.target} freq + strong keeps features satisfying both conditions: frequency lift greater than 1 and strength ratio greater than 1.`;
+    }
+    if (relativePreset === 'target_frequent_baseline_strong') {
+      return `${labels.target} freq + ${labels.baseline} strong keeps features that fire more frequently in ${labels.target} (frequency lift greater than 1) but have stronger activations in ${labels.baseline} (strength ratio less than 1).`;
+    }
+    return '';
+  }
+
+  function renderControlExplanations() {
+    const sortTarget = el('sort-explainer');
+    const relativeTarget = el('relative-explainer');
+    if (sortTarget) {
+      const text = sortExplanation();
+      sortTarget.innerHTML = text ? `<strong>Sort:</strong> ${escapeHtml(text)}` : '';
+    }
+    if (relativeTarget) {
+      const text = relativePresetExplanation();
+      relativeTarget.innerHTML = text ? `<strong>Relative filter:</strong> ${escapeHtml(text)}` : '';
+    }
   }
 
   function histogramDisplayBinCount(binLowerBounds, histograms) {
@@ -855,11 +948,13 @@
     const lmax = el('layer-max').value;
     sortKey = el('sort-key').value;
     sortDir = el('sort-dir').value;
+    renderControlExplanations();
 
     filtered = rows.filter((f) => {
       if (lmin !== '' && f.layer < Number(lmin)) return false;
       if (lmax !== '' && f.layer > Number(lmax)) return false;
       if (!relativePresetPass(f)) return false;
+      if (logitSearchIds && !logitSearchIds.has(Number(f.cantor_id))) return false;
       const ann = annotationFor(f.cantor_id);
       if (tagFilter && !(ann.tags || []).includes(tagFilter)) return false;
       if (!q) return true;
@@ -869,6 +964,49 @@
     filtered.sort(cmp);
     page = 0;
     renderTable();
+  }
+
+  function updateLogitSearchStatus(message, isError) {
+    const target = el('logit-status');
+    if (!target) return;
+    target.className = isError ? 'meta-mini err' : 'meta-mini';
+    target.textContent = message || '';
+  }
+
+  async function runLogitSearch(query, serial) {
+    if (!query) {
+      logitSearchIds = null;
+      updateLogitSearchStatus('', false);
+      applyFilter();
+      return;
+    }
+    updateLogitSearchStatus('Searching top logits...', false);
+    try {
+      const res = await fetch('/api/logit_search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      const payload = await res.json();
+      if (serial !== logitSearchSerial) return;
+      if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+      logitSearchIds = new Set((payload.matches || []).map((m) => Number(m.cantor_id)));
+      updateLogitSearchStatus(`${payload.count || 0} matches`, false);
+      applyFilter();
+    } catch (e) {
+      if (serial !== logitSearchSerial) return;
+      logitSearchIds = new Set();
+      updateLogitSearchStatus(`Logit search failed: ${e.message}`, true);
+      applyFilter();
+    }
+  }
+
+  function scheduleLogitSearch() {
+    const query = el('logit-q').value.trim();
+    logitSearchSerial += 1;
+    const serial = logitSearchSerial;
+    if (logitSearchTimer) clearTimeout(logitSearchTimer);
+    logitSearchTimer = setTimeout(() => runLogitSearch(query, serial), query ? 250 : 0);
   }
 
   function relativeCellTitle(r, kind) {
@@ -1811,6 +1949,7 @@
     el('sort-key').innerHTML = sortOptions.join('');
 
     el('q').oninput = applyFilter;
+    el('logit-q').oninput = scheduleLogitSearch;
     el('tag-filter').onchange = applyFilter;
     el('layer-min').oninput = applyFilter;
     el('layer-max').oninput = applyFilter;

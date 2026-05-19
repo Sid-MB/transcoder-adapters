@@ -36,6 +36,7 @@ from typing import Literal
 import torch
 
 from helpers.log import logger, setup_logging
+from models.tokens import _input_ids_from_chat_template_output
 
 from analysis.attribution.relp_model import RelPReplacementModel
 
@@ -325,11 +326,11 @@ def _load_chat_formatted_prompt(
 
     target_token = assistant_ids[-1]
     assistant_prefix = tokenizer.decode(assistant_ids[:-1])
-    prompt_tokens = tokenizer.apply_chat_template(
+    prompt_tokens = _input_ids_from_chat_template_output(tokenizer.apply_chat_template(
         [{"role": "user", "content": user_content}],
         tokenize=True,
         add_generation_prompt=True,
-    )
+    ))
     prompt_tokens = list(prompt_tokens) + tokenizer.encode(
         assistant_prefix,
         add_special_tokens=False,

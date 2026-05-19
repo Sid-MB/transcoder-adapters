@@ -7,8 +7,8 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "torch>=2.11.0",
-    "transformers @ git+https://github.com/huggingface/transformers.git@a8f43eca15b8d1c63deb33f6b97dfab30419e5da",
-    "huggingface-hub>=1.5.0,<2.0",
+    "transformers<5.0",
+    "huggingface-hub<2.0",
     "numpy>=2.0.0",
     "safetensors>=0.7.0",
     "pyyaml>=6.0.3",
@@ -16,6 +16,7 @@ dependencies = [
     "wandb>=0.26.1",
     "accelerate>=1.13.0",
     "datasets>=4.8.5",
+    "circuit-tracer",
 ]
 
 [project.optional-dependencies]
@@ -35,3 +36,6 @@ vllm = [
 all = [
     "transcoder-adapters[analysis,vllm]",
 ]
+
+[tool.uv.sources]
+circuit-tracer = { git = "https://github.com/safety-research/circuit-tracer.git" }

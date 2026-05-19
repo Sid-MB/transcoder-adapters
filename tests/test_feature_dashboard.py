@@ -7,7 +7,9 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from analysis.features.visualize.feature_dashboard import (
+    _build_top_logit_index,
     _load_source_transcript,
+    _search_top_logits,
     _save_prompt_example,
     _safe_path_component,
     make_handler_class,
@@ -175,6 +177,68 @@ class FeatureDashboardPromptExportTests(unittest.TestCase):
 
             self.assertEqual(payload["ids"]["id"], "doc-1")
             self.assertEqual(payload["transcript"], "full document text")
+
+    def test_top_logit_search_finds_matching_feature_tokens(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "run"
+            features_dir = data_dir / "features"
+            features_dir.mkdir(parents=True)
+            (features_dir / "10.json").write_text(json.dumps({
+                "layer": 1,
+                "feature": 2,
+                "top_logits": [" hello", "world"],
+            }))
+            (features_dir / "11.json").write_text(json.dumps({
+                "layer": 1,
+                "feature": 3,
+                "top_logits": ["other"],
+            }))
+
+            index = _build_top_logit_index(data_dir)
+            payload = _search_top_logits(index, "HELLO")
+
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["matches"][0]["cantor_id"], 10)
+            self.assertEqual(payload["matches"][0]["matched_top_logits"], [" hello"])
+
+    def test_logit_search_endpoint_returns_matches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "run"
+            features_dir = data_dir / "features"
+            features_dir.mkdir(parents=True)
+            (features_dir / "20.json").write_text(json.dumps({
+                "layer": 2,
+                "feature": 5,
+                "top_logits": ["Answer", " final"],
+            }))
+            handler = make_handler_class(data_dir)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            try:
+                body = json.dumps({"query": "answer"}).encode()
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/logit_search",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request) as response:
+                    post_payload = json.loads(response.read())
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_port}/api/logit_search?q=answer"
+                ) as response:
+                    get_payload = json.loads(response.read())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(post_payload["count"], 1)
+            self.assertEqual(post_payload["matches"][0]["cantor_id"], 20)
+            self.assertEqual(get_payload["count"], 1)
+            self.assertEqual(get_payload["matches"][0]["cantor_id"], 20)
 
 
 if __name__ == "__main__":
