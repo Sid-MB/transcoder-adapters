@@ -210,6 +210,7 @@ class FeatureCollector:
         self.tokens_per_domain: dict[str, int] = defaultdict(int)
         self.tokens_per_region: dict[str, int] = defaultdict(int)
         self.tokens_per_thinking_bin: list[int] = [0] * 10
+        self.retained_sequence_tokens: dict[int, list[int]] = {}
 
         # Exact activation histogram storage.
         self.domain_names = list(domain_names or [])
@@ -325,6 +326,7 @@ class FeatureCollector:
             return
 
         # Create example (only fetch context from GPU when actually keeping)
+        self.retained_sequence_tokens.setdefault(sequence_idx, list(tokens))
         context_tokens, pos_in_ctx = self._get_context(tokens, position)
         ctx_start = max(0, position - self.context_before)
         ctx_end = min(len(tokens), position + self.context_after + 1)
@@ -436,6 +438,7 @@ class FeatureCollector:
         if not add_example:
             return
 
+        self.retained_sequence_tokens.setdefault(sequence_idx, list(tokens))
         context_tokens, pos_in_ctx = self._get_context(tokens, position)
         ctx_start = max(0, position - self.context_before)
         ctx_end = min(len(tokens), position + self.context_after + 1)
@@ -694,6 +697,25 @@ def _write_feature_json(args: tuple) -> None:
     filepath, feature_json = args
     with open(filepath, 'w') as f:
         json.dump(feature_json, f)
+
+
+def export_source_token_transcripts(
+    collector: FeatureCollector,
+    tokenizer,
+    output_dir: Path,
+) -> None:
+    """Save model-native decoded token transcripts for retained examples."""
+    if not collector.retained_sequence_tokens:
+        return
+
+    transcripts = {}
+    for sequence_idx, token_ids in sorted(collector.retained_sequence_tokens.items()):
+        transcripts[str(sequence_idx)] = [tokenizer.decode([tok_id]) for tok_id in token_ids]
+
+    path = output_dir / "source_token_transcripts.json"
+    with path.open("w") as f:
+        json.dump({"token_transcripts": transcripts}, f)
+    logger.info("Saved %s source token transcripts to %s", len(transcripts), path)
 
 
 def _drain_completed_writes(
@@ -1737,6 +1759,7 @@ def main():
 
     # Export
     export_circuit_tracer_json(collector, logit_lens_data, tokenizer, output_dir)
+    export_source_token_transcripts(collector, tokenizer, output_dir)
     export_activation_histograms(collector, output_dir)
     export_metadata(
         collector,

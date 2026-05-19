@@ -176,7 +176,50 @@ def _format_source_row_transcript(row: dict) -> tuple[str, str]:
     return json.dumps(row, indent=2, sort_keys=True), "json"
 
 
-def _load_source_transcript(source_metadata: dict) -> dict:
+def _load_source_token_transcript(data_dir: Path, source_metadata: dict) -> dict | None:
+    try:
+        sequence_idx = int(source_metadata["prepared_item_idx"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    path = data_dir / "source_token_transcripts.json"
+    if not path.is_file():
+        return None
+
+    with path.open() as f:
+        payload = json.load(f)
+    token_transcripts = payload.get("token_transcripts")
+    if not isinstance(token_transcripts, dict):
+        raise ValueError(f"Expected token_transcripts object in {path}")
+    tokens = token_transcripts.get(str(sequence_idx))
+    if not isinstance(tokens, list):
+        return None
+    decoded_tokens = [str(token) for token in tokens]
+    ids = {
+        key: source_metadata[key]
+        for key in ("conversation_id", "id")
+        if key in source_metadata and source_metadata[key] is not None
+    }
+    return {
+        "ok": True,
+        "source_kind": "source_token_transcript",
+        "source_path": source_metadata.get("source_path", ""),
+        "split": None,
+        "dataset_row_idx": source_metadata.get("dataset_row_idx"),
+        "prepared_item_idx": sequence_idx,
+        "transcript_field": "source_token_transcripts.json",
+        "transcript": "".join(decoded_tokens),
+        "transcript_tokens": decoded_tokens,
+        "ids": ids,
+    }
+
+
+def _load_source_transcript(source_metadata: dict, data_dir: Path | None = None) -> dict:
+    if data_dir is not None:
+        token_result = _load_source_token_transcript(data_dir, source_metadata)
+        if token_result is not None:
+            return token_result
+
     source_path = source_metadata.get("source_path")
     if not isinstance(source_path, str) or not source_path:
         raise ValueError("source_metadata.source_path is required")
@@ -574,7 +617,7 @@ def make_handler_class(
                     source_metadata = payload.get("source_metadata")
                     if not isinstance(source_metadata, dict):
                         raise ValueError("source_metadata must be an object")
-                    result = _load_source_transcript(source_metadata)
+                    result = _load_source_transcript(source_metadata, data_dir=data_dir)
                     _json_response(self, json.dumps(result).encode())
                 except Exception as exc:
                     _json_response(

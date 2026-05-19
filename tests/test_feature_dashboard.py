@@ -144,6 +144,37 @@ class FeatureDashboardPromptExportTests(unittest.TestCase):
             self.assertIn("user:\nWhat is 2 + 2?", payload["transcript"])
             self.assertIn("assistant:\n4", payload["transcript"])
 
+    def test_load_source_transcript_prefers_token_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "run"
+            data_dir.mkdir()
+            (data_dir / "source_token_transcripts.json").write_text(json.dumps({
+                "token_transcripts": {
+                    "7": ["<bos>", "<start_of_turn>", "user\n", "Hi"],
+                },
+            }))
+
+            payload = _load_source_transcript(
+                {
+                    "source_path": "missing.jsonl",
+                    "dataset_row_idx": 3,
+                    "prepared_item_idx": 7,
+                    "conversation_id": "conv-7",
+                },
+                data_dir=data_dir,
+            )
+
+            self.assertEqual(payload["source_kind"], "source_token_transcript")
+            self.assertEqual(
+                payload["transcript"],
+                "<bos><start_of_turn>user\nHi",
+            )
+            self.assertEqual(
+                payload["transcript_tokens"],
+                ["<bos>", "<start_of_turn>", "user\n", "Hi"],
+            )
+            self.assertEqual(payload["ids"]["conversation_id"], "conv-7")
+
     def test_source_transcript_endpoint_returns_original_row_text(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "run"
