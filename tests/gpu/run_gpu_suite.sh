@@ -3,4 +3,5 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-uv run python -m unittest discover -s tests/gpu -p 'test_*.py'
+echo "Running GPU test suite."
+uv run python -m unittest discover -v -s tests/gpu -p 'test_*.py'
