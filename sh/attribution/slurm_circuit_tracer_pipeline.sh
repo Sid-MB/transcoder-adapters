@@ -6,10 +6,13 @@
 # Example:
 #   ./sh/attribution/slurm_circuit_tracer_pipeline.sh --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_dir /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format raw --max_feature_nodes 256 --batch_size 4 --max_n_logits 5
 # 
+# Duplicate work is skipped at each stage, so the transcoder model will only be converted once and the feature data will only be converted once (if it wasn't created with the --export_circuit_tracer_features flag, in which case it won't need to be converted at all). If run_name stays the same, then only new prompts have attribution run on them (prompts already attributed are skipped). This caching works becasue the file locations where things are saved are deterministic, so we can check if the model/features/attributions already exist. One caveat: if the prompt .txt files change but filenames don't, the change won't be registered: in this case, you'll have to remove the products: `rm <graph_output_dir>/<run_name>__<feature>.json`` and run again.
 #
-# Optional serving is intentionally separate and CPU-only. After the GPU job
-# finishes, run:
-#   uv run --extra viz circuit-tracer start-server --graph_file_dir <graph_output_dir> --features_dir <feature_output_dir>
+# Serving the tracing visualization
+# After the job finishes, run (no GPU needed):
+#   uv run --extra viz circuit-tracer start-server --graph_file_dir <graph_output_dir> --features_dir <feature_output_dir>/circuit_tracer_features
+# 
+# Note: the --features_dir=<feature_dir>/circuit_tracer_features is for features you collected through collect_feature_activations with the --export_circuit_tracer_features flag. Otherwise, you can manually convert features to the correct format by using analysis.attribution.export_circuit_tracer_feature_data and use that folder for --features_dir
 
 set -euo pipefail
 

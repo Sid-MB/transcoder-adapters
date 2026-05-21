@@ -1,5 +1,21 @@
 """Run the local circuit-tracer workflow for transcoder-adapter checkpoints.
 
+Skip behavior:
+    - Transcoder conversion is skipped when the target converted directory
+      already contains ``config.yaml``.
+    - Feature-data conversion is skipped when the target feature directory
+      already contains ``index.json.gz``.  If ``--feature_output_dir`` is not
+      provided, the pipeline first auto-detects and reuses
+      ``<feature_data_dir>/circuit_tracer_features/index.json.gz`` before
+      falling back to the deterministic ``PRODUCTS_DIR/circuit_tracer_features``
+      conversion path.
+    - Attribution skips any prompt whose graph JSON already exists.  When all
+      requested graph JSONs exist, ``run_attribution`` skips model loading and
+      attribution entirely.  Graph paths are keyed by
+      ``<graph_output_dir>/<run_name>__<prompt_file_stem>.json``; if a prompt
+      directory mixes old and new prompts, the existing graph JSONs are left
+      alone and only missing prompt graphs are computed.
+
 This is the all-in-one entrypoint for producing circuit-tracer graph JSONs from
 raw prompt files.  It reuses the lower-level conversion and attribution modules:
 
@@ -30,14 +46,19 @@ Optional input:
         A collected feature-data run directory, such as
         ``/nlp/scr/.../feature_data/<run>/``.  The directory must contain
         ``features/*.json`` and should contain ``feature_metadata.json`` so the
-        exporter can infer the layer and feature counts.
+        exporter can infer the layer and feature counts.  If the directory also
+        contains a complete ``circuit_tracer_features/`` packed cache produced
+        by ``collect_feature_activations --export_circuit_tracer_features``,
+        that cache is reused automatically unless ``--feature_output_dir`` is
+        set explicitly.
 
 Outputs:
     PRODUCTS_DIR/circuit_tracer_transcoders/<model>/
         ``config.yaml`` plus ``layer_N.safetensors`` files.
     PRODUCTS_DIR/circuit_tracer_features/<feature-run>/
         ``index.json.gz`` plus ``layer_N.bin`` files, only when
-        ``--feature_data_dir`` is provided.
+        ``--feature_data_dir`` is provided and no packed cache already exists
+        inside the collected feature-data directory.
     PRODUCTS_DIR/attribution_graphs/<run-name>_<model>/
         ``graph-metadata.json`` plus one ``{run_name}__{prompt}.json`` per
         prompt.
@@ -58,6 +79,7 @@ from pathlib import Path
 from analysis.attribution.export_circuit_tracer_feature_data import (
     default_output_dir as default_feature_output_dir,
     export_circuit_tracer_feature_data,
+    normalize_feature_data_dir,
 )
 from analysis.attribution.export_circuit_tracer_transcoders import (
     default_output_dir as default_transcoder_output_dir,
@@ -122,6 +144,14 @@ def ensure_feature_data_conversion(
     if feature_data_dir is None:
         return None
     if output_dir is None:
+        collected_packed_dir = normalize_feature_data_dir(feature_data_dir) / "circuit_tracer_features"
+        if (collected_packed_dir / "index.json.gz").exists():
+            default_output_dir = default_feature_output_dir(feature_data_dir)
+            logger.info(
+                "Auto-detected packed circuit-tracer features in the collected feature-data "
+                f"directory; using {collected_packed_dir} instead of {default_output_dir}"
+            )
+            return collected_packed_dir
         output_dir = default_feature_output_dir(feature_data_dir)
     completion_marker = output_dir / "index.json.gz"
     if completion_marker.exists():

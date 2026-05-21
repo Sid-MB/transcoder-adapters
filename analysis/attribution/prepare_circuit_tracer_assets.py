@@ -16,7 +16,9 @@ Inputs:
     --feature_data_dir:
         Optional collected feature-data run directory.  When provided, this
         script packs its ``features/*.json`` files into circuit-tracer local
-        feature-example files.
+        feature-example files unless the run already contains a complete
+        ``circuit_tracer_features/`` packed cache from
+        ``collect_feature_activations --export_circuit_tracer_features``.
 
 Outputs:
     PRODUCTS_DIR/circuit_tracer_transcoders/<model>/
@@ -24,8 +26,8 @@ Outputs:
         consistent output directory is missing.
     PRODUCTS_DIR/circuit_tracer_features/<feature-run>/
         ``index.json.gz`` and ``layer_N.bin`` files, created only if
-        ``--feature_data_dir`` is provided and the consistent output directory is
-        missing.
+        ``--feature_data_dir`` is provided and no packed cache already exists
+        inside the collected feature-data directory.
     --manifest_path:
         JSON file containing exact paths for the GPU attribution job:
         ``checkpoint``, ``prompts``, ``output_dir``, ``scan``, and
