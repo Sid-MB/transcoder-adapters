@@ -168,7 +168,7 @@ def compute_nmse_loss(
     # Create causal masks (full + sliding window if needed)
     mask_kwargs = {
         "config": backbone.config,
-        "inputs_embeds": h_adapt,
+        "input_embeds": h_adapt,
         "attention_mask": attention_mask,
         "cache_position": cache_position,
         "past_key_values": None,

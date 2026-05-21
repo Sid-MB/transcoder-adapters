@@ -83,7 +83,7 @@ def forward_mixed(
     # Create causal mask (use model1's config, should be same arch)
     mask_kwargs = {
         "config": backbone1.config,
-        "inputs_embeds": h,
+        "input_embeds": h,
         "attention_mask": attention_mask,
         "cache_position": cache_position,
         "past_key_values": None,
