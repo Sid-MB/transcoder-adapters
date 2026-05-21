@@ -218,7 +218,7 @@ def _preflight_existing_graphs(args: argparse.Namespace) -> dict[str, str] | Non
             f"[{index}/{len(prompt_names)}] {args.run_name}__{prompt_name} - SKIPPED (already exists)"
         )
     logger.info(f"Success: 0, Skipped: {len(prompt_names)}, Errors: 0 (total: {len(prompt_names)})")
-    _log_view_command(args.output_dir)
+    _log_view_command(args.output_dir, args.features_dir)
     if args.serve:
         _serve_graphs(args.output_dir, port=args.port, features_dir=args.features_dir)
     return {prompt_name: "skipped" for prompt_name in prompt_names}
@@ -344,15 +344,21 @@ def _run_auto_sharded_attribution(args: argparse.Namespace) -> bool:
         raise RuntimeError(f"Attribution worker failure(s): {formatted_failures}")
 
     logger.info("All attribution workers completed successfully")
-    _log_view_command(args.output_dir)
+    _log_view_command(args.output_dir, args.features_dir)
     if args.serve:
         _serve_graphs(args.output_dir, port=args.port, features_dir=args.features_dir)
     return True
 
 
-def _log_view_command(output_dir: Path | str) -> None:
-    logger.info(f"\nTo view graphs run:")
-    logger.info(f'  circuit-tracer start-server --graph_file_dir="{output_dir}"')
+def _log_view_command(output_dir: Path | str, features_dir: Path | str | None) -> None:
+    logger.info("\nTo view graphs, run:")
+    cmd = f'uv run --extra viz circuit-tracer start-server --graph_file_dir="{output_dir}"'
+    if features_dir is not None:
+        features_dir_path = Path(features_dir)
+        if (features_dir_path / "circuit_tracer_features").exists():
+            features_dir = features_dir_path / "circuit_tracer_features"
+        cmd += f' --features_dir="{features_dir}"'
+    logger.info(f'  {cmd}')
 
 
 def _cleanup_cuda_for_server() -> None:
@@ -744,7 +750,7 @@ def run_attribution(args: argparse.Namespace) -> dict[str, str]:
     errors = len(prompt_items) - success - skipped
     logger.info(f"Success: {success}, Skipped: {skipped}, Errors: {errors} (total: {len(prompt_items)})")
 
-    _log_view_command(args.output_dir)
+    _log_view_command(args.output_dir, args.features_dir)
     if args.serve:
         del model
         if "graph" in locals():

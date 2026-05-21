@@ -1,10 +1,13 @@
 import argparse
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from analysis.attribution.prepare_circuit_tracer_assets import prepare_assets
 from analysis.attribution.run_circuit_tracer_pipeline import (
+    LOCAL_FEATURE_SCAN,
     ensure_feature_data_conversion,
     run_pipeline,
 )
@@ -62,7 +65,7 @@ class RunCircuitTracerPipelineTest(unittest.TestCase):
             export_transcoders.assert_not_called()
             export_features.assert_not_called()
             attribution_args = run_attribution.call_args.args[0]
-            self.assertEqual(attribution_args.scan, str(feature_output_dir))
+            self.assertEqual(attribution_args.scan, LOCAL_FEATURE_SCAN)
             self.assertEqual(attribution_args.features_dir, str(feature_output_dir))
             self.assertEqual(attribution_args.output_dir, graph_output_dir)
             self.assertFalse(attribution_args.serve)
@@ -172,8 +175,54 @@ class RunCircuitTracerPipelineTest(unittest.TestCase):
             export_transcoders.assert_not_called()
             export_features.assert_not_called()
             attribution_args = run_attribution.call_args.args[0]
-            self.assertEqual(attribution_args.scan, str(packed_dir))
+            self.assertEqual(attribution_args.scan, LOCAL_FEATURE_SCAN)
             self.assertEqual(attribution_args.features_dir, str(packed_dir))
+
+    def test_prepare_manifest_uses_short_scan_and_real_features_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            transcoder_output_dir = root / "transcoders"
+            graph_output_dir = root / "graphs"
+            feature_data_dir = root / "feature_data"
+            packed_dir = feature_data_dir / "circuit_tracer_features"
+            prompts = root / "prompts"
+            manifest_path = root / "manifest.json"
+            transcoder_output_dir.mkdir()
+            packed_dir.mkdir(parents=True)
+            prompts.mkdir()
+            (transcoder_output_dir / "config.yaml").write_text("model_name: base\n")
+            (packed_dir / "index.json.gz").write_bytes(b"")
+
+            args = argparse.Namespace(
+                transcoder_model_path="org/model",
+                base_model="google/gemma-2-2b",
+                prompts=prompts,
+                feature_data_dir=str(feature_data_dir),
+                run_name="run",
+                transcoder_output_dir=transcoder_output_dir,
+                feature_output_dir=None,
+                graph_output_dir=graph_output_dir,
+                manifest_path=manifest_path,
+                n_layers=None,
+                n_features=None,
+                feature_input_hook="ln2.hook_normalized",
+                feature_output_hook="hook_mlp_out",
+                activation="relu",
+            )
+
+            with (
+                patch("analysis.attribution.run_circuit_tracer_pipeline.export_circuit_tracer_transcoders") as export_transcoders,
+                patch("analysis.attribution.run_circuit_tracer_pipeline.export_circuit_tracer_feature_data") as export_features,
+            ):
+                manifest = prepare_assets(args)
+
+            export_transcoders.assert_not_called()
+            export_features.assert_not_called()
+            self.assertEqual(manifest["scan"], LOCAL_FEATURE_SCAN)
+            self.assertEqual(manifest["features_dir"], str(packed_dir))
+            written_manifest = json.loads(manifest_path.read_text())
+            self.assertEqual(written_manifest["scan"], LOCAL_FEATURE_SCAN)
+            self.assertEqual(written_manifest["features_dir"], str(packed_dir))
 
 
 if __name__ == "__main__":

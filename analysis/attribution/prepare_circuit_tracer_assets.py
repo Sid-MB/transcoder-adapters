@@ -50,6 +50,7 @@ from analysis.attribution.run_circuit_tracer_pipeline import (
     default_transcoder_output_dir,
     ensure_feature_data_conversion,
     ensure_transcoder_conversion,
+    scan_name_for_feature_output,
 )
 from helpers.log import logger, setup_logging
 
@@ -102,7 +103,7 @@ def prepare_assets(args: argparse.Namespace) -> dict[str, Any]:
         run_name=args.run_name,
     )
     graph_output_dir.mkdir(parents=True, exist_ok=True)
-    scan = str(feature_output_dir) if feature_output_dir is not None else args.run_name
+    scan = scan_name_for_feature_output(feature_output_dir, args.run_name)
     features_dir = str(feature_output_dir) if feature_output_dir is not None else None
 
     manifest = {

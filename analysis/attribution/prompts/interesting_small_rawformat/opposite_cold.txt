@@ -1,0 +1,3 @@
+<bos><start_of_turn>user
+Answer with one word. What is the opposite of hot?<end_of_turn><start_of_turn>model
+cold

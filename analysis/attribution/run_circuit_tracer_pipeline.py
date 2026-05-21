@@ -15,6 +15,10 @@ Skip behavior:
       ``<graph_output_dir>/<run_name>__<prompt_file_stem>.json``; if a prompt
       directory mixes old and new prompts, the existing graph JSONs are left
       alone and only missing prompt graphs are computed.
+    - For local feature-example directories, graph metadata uses the short scan
+      label ``/features`` while the real path is passed separately to the local
+      server as ``features_dir``.  This keeps the circuit-tracer prompt dropdown
+      readable without changing how feature files are served.
 
 This is the all-in-one entrypoint for producing circuit-tracer graph JSONs from
 raw prompt files.  It reuses the lower-level conversion and attribution modules:
@@ -64,10 +68,10 @@ Outputs:
         prompt.
 
 Example without feature examples:
-    uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format raw --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --port 8042
+    uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --port 8042
 
 Example with local feature examples and serving:
-    uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_dir /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format raw --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --serve --port 8042
+    uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_dir /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --serve --port 8042
 """
 
 from __future__ import annotations
@@ -90,6 +94,7 @@ from helpers.log import logger, setup_logging
 from helpers.paths.output_path import generate_output_path
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+LOCAL_FEATURE_SCAN = "/features"
 
 
 def _slugify(value: str) -> str:
@@ -102,6 +107,12 @@ def default_graph_output_dir(*, transcoder_model_path: str, run_name: str) -> Pa
         f"{_slugify(run_name)}_{_slugify(transcoder_model_path)}",
         consistent=True,
     )
+
+
+def scan_name_for_feature_output(feature_output_dir: Path | None, run_name: str) -> str:
+    if feature_output_dir is None:
+        return run_name
+    return LOCAL_FEATURE_SCAN
 
 
 def ensure_transcoder_conversion(
@@ -230,7 +241,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, str]:
         transcoder_model_path=args.transcoder_model_path,
         run_name=args.run_name,
     )
-    scan = str(feature_output_dir) if feature_output_dir is not None else args.run_name
+    scan = scan_name_for_feature_output(feature_output_dir, args.run_name)
     features_dir = str(feature_output_dir) if feature_output_dir is not None else None
 
     attribution_args = argparse.Namespace(
