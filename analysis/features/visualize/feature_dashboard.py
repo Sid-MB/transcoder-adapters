@@ -28,7 +28,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
+from analysis.features.load_val_data import FeatureDataSourceSettings, tokenize_source_row
 from helpers.log import logger, setup_logging
+from models.auto import load_tokenizer
 
 _STATIC_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _STATIC_DIR.parents[2]
@@ -176,25 +178,60 @@ def _format_source_row_transcript(row: dict) -> tuple[str, str]:
     return json.dumps(row, indent=2, sort_keys=True), "json"
 
 
-def _load_source_token_transcript(data_dir: Path, source_metadata: dict) -> dict | None:
+def _tokenization_settings_from_metadata(metadata: dict | None) -> dict | None:
+    if not isinstance(metadata, dict):
+        return None
+    settings = metadata.get("tokenization_settings")
+    return settings if isinstance(settings, dict) else None
+
+
+def _source_settings_for_metadata(
+    source_metadata: dict,
+    tokenization_settings: dict | None,
+) -> FeatureDataSourceSettings | None:
+    if not tokenization_settings:
+        return None
+    data_sources = tokenization_settings.get("data_sources")
+    if not isinstance(data_sources, list):
+        return None
+
     try:
-        sequence_idx = int(source_metadata["prepared_item_idx"])
+        source_idx = int(source_metadata["source_idx"])
     except (KeyError, TypeError, ValueError):
+        source_idx = -1
+
+    if 0 <= source_idx < len(data_sources):
+        payload = data_sources[source_idx]
+        if isinstance(payload, dict):
+            return FeatureDataSourceSettings.from_json(payload)
+
+    source_path = source_metadata.get("source_path")
+    for payload in data_sources:
+        if isinstance(payload, dict) and payload.get("source_path") == source_path:
+            return FeatureDataSourceSettings.from_json(payload)
+
+    return None
+
+
+def _reconstruct_source_token_transcript(
+    source_metadata: dict,
+    tokenization_settings: dict | None,
+    tokenizer,
+) -> dict | None:
+    if tokenizer is None:
         return None
 
-    path = data_dir / "source_token_transcripts.json"
-    if not path.is_file():
+    source_settings = _source_settings_for_metadata(source_metadata, tokenization_settings)
+    if source_settings is None:
         return None
 
-    with path.open() as f:
-        payload = json.load(f)
-    token_transcripts = payload.get("token_transcripts")
-    if not isinstance(token_transcripts, dict):
-        raise ValueError(f"Expected token_transcripts object in {path}")
-    tokens = token_transcripts.get(str(sequence_idx))
-    if not isinstance(tokens, list):
-        return None
-    decoded_tokens = [str(token) for token in tokens]
+    try:
+        row_idx = int(source_metadata["dataset_row_idx"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("source_metadata.dataset_row_idx is required") from exc
+
+    token_ids = tokenize_source_row(source_settings, tokenizer, row_idx)
+    decoded_tokens = [tokenizer.decode([tok_id]) for tok_id in token_ids]
     ids = {
         key: source_metadata[key]
         for key in ("conversation_id", "id")
@@ -202,23 +239,30 @@ def _load_source_token_transcript(data_dir: Path, source_metadata: dict) -> dict
     }
     return {
         "ok": True,
-        "source_kind": "source_token_transcript",
-        "source_path": source_metadata.get("source_path", ""),
+        "source_kind": "model_native_token_transcript",
+        "source_path": source_settings.source_path,
         "split": None,
         "dataset_row_idx": source_metadata.get("dataset_row_idx"),
-        "prepared_item_idx": sequence_idx,
-        "transcript_field": "source_token_transcripts.json",
+        "prepared_item_idx": source_metadata.get("prepared_item_idx"),
+        "transcript_field": "reconstructed_input_ids",
         "transcript": "".join(decoded_tokens),
         "transcript_tokens": decoded_tokens,
         "ids": ids,
     }
 
 
-def _load_source_transcript(source_metadata: dict, data_dir: Path | None = None) -> dict:
-    if data_dir is not None:
-        token_result = _load_source_token_transcript(data_dir, source_metadata)
-        if token_result is not None:
-            return token_result
+def _load_source_transcript(
+    source_metadata: dict,
+    tokenization_settings: dict | None = None,
+    tokenizer=None,
+) -> dict:
+    token_result = _reconstruct_source_token_transcript(
+        source_metadata,
+        tokenization_settings,
+        tokenizer,
+    )
+    if token_result is not None:
+        return token_result
 
     source_path = source_metadata.get("source_path")
     if not isinstance(source_path, str) or not source_path:
@@ -433,11 +477,16 @@ def make_handler_class(
     histogram_layer_cache: dict[int, dict] = {}
     top_logit_index: list[dict] | None = None
     top_logit_index_lock = threading.Lock()
+    reconstruction_tokenizer = None
+    reconstruction_tokenizer_lock = threading.Lock()
     metadata_path = data_dir / "feature_metadata.json"
     histograms_file = "activation_histograms.npz"
+    metadata: dict = {}
+    tokenization_settings: dict | None = None
     if metadata_path.is_file():
         try:
             metadata = json.loads(metadata_path.read_text())
+            tokenization_settings = _tokenization_settings_from_metadata(metadata)
             histograms_file = metadata.get("activation_histograms_file") or histograms_file
             tokens_per_domain = metadata.get("tokens_per_domain") or {}
             feature_index_by_cantor = {
@@ -446,6 +495,22 @@ def make_handler_class(
             }
         except Exception as exc:
             logger.warning("Could not pre-load feature metadata index: %s", exc)
+
+    def get_reconstruction_tokenizer():
+        nonlocal reconstruction_tokenizer
+        if tokenization_settings is None:
+            return None
+        with reconstruction_tokenizer_lock:
+            if reconstruction_tokenizer is None:
+                model_path = tokenization_settings.get("model_path")
+                if not isinstance(model_path, str) or not model_path:
+                    return None
+                tokenizer_path = tokenization_settings.get("tokenizer_path")
+                reconstruction_tokenizer = load_tokenizer(
+                    model_path,
+                    tokenizer_path=tokenizer_path if isinstance(tokenizer_path, str) else None,
+                )
+            return reconstruction_tokenizer
 
     class DashboardHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -617,7 +682,16 @@ def make_handler_class(
                     source_metadata = payload.get("source_metadata")
                     if not isinstance(source_metadata, dict):
                         raise ValueError("source_metadata must be an object")
-                    result = _load_source_transcript(source_metadata, data_dir=data_dir)
+                    try:
+                        tokenizer = get_reconstruction_tokenizer()
+                    except Exception as exc:
+                        logger.warning("Could not load tokenizer for transcript reconstruction: %s", exc)
+                        tokenizer = None
+                    result = _load_source_transcript(
+                        source_metadata,
+                        tokenization_settings=tokenization_settings,
+                        tokenizer=tokenizer,
+                    )
                     _json_response(self, json.dumps(result).encode())
                 except Exception as exc:
                     _json_response(

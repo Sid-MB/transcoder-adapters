@@ -537,7 +537,7 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 11px;
       font-weight: 600;
-      color: var(--text);
+      color: rgba(145, 152, 161, 0.9);
       white-space: nowrap;
       pointer-events: none;
     }
@@ -547,9 +547,9 @@
       width: 18px;
       height: 18px;
       border-radius: 50%;
-      background: rgba(248, 81, 73, 0.38);
-      border: 2px solid rgba(248, 81, 73, 0.78);
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.22);
+      background: rgba(248, 81, 73, 0.24);
+      border: 2px solid rgba(248, 81, 73, 0.55);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.16);
       transform: translate(-50%, -50%);
       pointer-events: none;
     }
@@ -1401,13 +1401,6 @@
     return (ex.tokens || []).join('');
   }
 
-  function attributionPromptTranscript(ex) {
-    const toks = ex.tokens || [];
-    const idx = ex.train_token_ind;
-    if (idx == null || idx < 0 || idx >= toks.length) return exampleTranscript(ex);
-    return toks.slice(0, idx + 1).join('');
-  }
-
   function renderActivationTokenSpans(example, actMin, actMax) {
     const idx = example.train_token_ind;
     const toks = example.tokens || [];
@@ -1537,13 +1530,7 @@
     body.classList.remove('err');
     body.textContent = 'Loading...';
     try {
-      const res = await fetch('/api/source_transcript', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_metadata: example.source_metadata }),
-      });
-      const payload = await res.json();
-      if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+      const payload = await loadSourceTranscriptPayload(example, false);
       const idParts = [];
       for (const [key, value] of Object.entries(payload.ids || {})) {
         idParts.push(`${key}=${value}`);
@@ -1569,6 +1556,25 @@
       body.textContent = `Transcript load failed: ${e.message}`;
       body.classList.add('err');
     }
+  }
+
+  async function loadSourceTranscriptPayload(example, requireModelNative) {
+    if (!example.source_metadata) {
+      throw new Error('No source metadata is available for this example.');
+    }
+    const res = await fetch('/api/source_transcript', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_metadata: example.source_metadata }),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+    if (requireModelNative && payload.source_kind !== 'model_native_token_transcript') {
+      throw new Error(
+        'Full model-native transcript is unavailable for this run. Re-run collection with current code so feature_metadata.json records tokenization settings.'
+      );
+    }
+    return payload;
   }
 
   function renderActScaleBar(peak, actMin, actMax) {
@@ -1994,8 +2000,13 @@
         button.onclick = async () => {
           const exampleIndex = Number(button.getAttribute('data-copy-transcript'));
           const container = button.closest('.example-block');
-          const transcript = exampleTranscript(exs[exampleIndex] || {});
+          const example = exs[exampleIndex] || {};
           try {
+            let transcript = exampleTranscript(example);
+            if (example.source_metadata) {
+              const payload = await loadSourceTranscriptPayload(example, true);
+              transcript = payload.transcript || transcript;
+            }
             await copyText(transcript);
             setPromptStatus(container, 'Copied transcript.', false);
           } catch (e) {
@@ -2008,9 +2019,11 @@
         button.onclick = async () => {
           const exampleIndex = Number(button.getAttribute('data-save-prompt'));
           const container = button.closest('.example-block');
-          const transcript = attributionPromptTranscript(exs[exampleIndex] || {});
+          const example = exs[exampleIndex] || {};
           setPromptStatus(container, 'Saving prompt…', false);
           try {
+            const transcriptPayload = await loadSourceTranscriptPayload(example, true);
+            const transcript = transcriptPayload.transcript || '';
             const res = await fetch('/api/save_prompt', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -2023,11 +2036,11 @@
                 example_index: exampleIndex,
               }),
             });
-            const payload = await res.json();
-            if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+            const savePayload = await res.json();
+            if (!res.ok) throw new Error(savePayload.error || JSON.stringify(savePayload));
             setPromptStatus(
               container,
-              `Saved ${payload.display_path || payload.path} · prompt_format=${payload.prompt_format}`,
+              `Saved ${savePayload.display_path || savePayload.path} · prompt_format=${savePayload.prompt_format}`,
               false
             );
           } catch (e) {

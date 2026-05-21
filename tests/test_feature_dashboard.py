@@ -144,35 +144,72 @@ class FeatureDashboardPromptExportTests(unittest.TestCase):
             self.assertIn("user:\nWhat is 2 + 2?", payload["transcript"])
             self.assertIn("assistant:\n4", payload["transcript"])
 
-    def test_load_source_transcript_prefers_token_sidecar(self):
+    def test_load_source_transcript_reconstructs_model_native_tokens(self):
+        from analysis.features.load_val_data import FeatureDataSourceSettings
+
+        class TinyTokenizer:
+            bos_token_id = 2
+
+            def encode(self, text, add_special_tokens=False):
+                ids = [1000 + ord(char) for char in text]
+                if add_special_tokens:
+                    ids = [self.bos_token_id] + ids
+                return ids
+
+            def decode(self, token_ids):
+                pieces = []
+                for token_id in token_ids:
+                    if token_id == self.bos_token_id:
+                        pieces.append("<bos>")
+                    elif token_id >= 1000:
+                        pieces.append(chr(token_id - 1000))
+                return "".join(pieces)
+
+            def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+                text = "<bos>"
+                for message in messages:
+                    text += f"<start_of_turn>{message['role']}\n{message['content']}<end_of_turn>"
+                if add_generation_prompt:
+                    text += "<start_of_turn>assistant\n"
+                if tokenize:
+                    return self.encode(text, add_special_tokens=False)
+                return text
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir) / "run"
-            data_dir.mkdir()
-            (data_dir / "source_token_transcripts.json").write_text(json.dumps({
-                "token_transcripts": {
-                    "7": ["<bos>", "<start_of_turn>", "user\n", "Hi"],
-                },
-            }))
+            jsonl_path = Path(tmpdir) / "data.jsonl"
+            jsonl_path.write_text(json.dumps({
+                "conversation_id": "conv-7",
+                "conversations": [
+                    {"from": "user", "value": "Hi"},
+                    {"from": "assistant", "value": "Hello"},
+                ],
+            }) + "\n")
+            settings = FeatureDataSourceSettings(
+                source_path=str(jsonl_path),
+                max_length=128,
+                model_type="gemma2",
+                domain="chat",
+            )
 
             payload = _load_source_transcript(
                 {
-                    "source_path": "missing.jsonl",
-                    "dataset_row_idx": 3,
+                    "source_idx": 0,
+                    "source_path": str(jsonl_path),
+                    "dataset_row_idx": 0,
                     "prepared_item_idx": 7,
                     "conversation_id": "conv-7",
                 },
-                data_dir=data_dir,
+                tokenization_settings={
+                    "model_path": "unused",
+                    "tokenizer_path": None,
+                    "data_sources": [settings.to_json()],
+                },
+                tokenizer=TinyTokenizer(),
             )
 
-            self.assertEqual(payload["source_kind"], "source_token_transcript")
-            self.assertEqual(
-                payload["transcript"],
-                "<bos><start_of_turn>user\nHi",
-            )
-            self.assertEqual(
-                payload["transcript_tokens"],
-                ["<bos>", "<start_of_turn>", "user\n", "Hi"],
-            )
+            self.assertEqual(payload["source_kind"], "model_native_token_transcript")
+            self.assertIn("<bos><start_of_turn>user\nHi<end_of_turn>", payload["transcript"])
+            self.assertIn("<start_of_turn>assistant\nHello<end_of_turn>", payload["transcript"])
             self.assertEqual(payload["ids"]["conversation_id"], "conv-7")
 
     def test_source_transcript_endpoint_returns_original_row_text(self):

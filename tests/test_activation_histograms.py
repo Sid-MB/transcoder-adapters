@@ -297,26 +297,6 @@ class ActivationHistogramTests(unittest.TestCase):
         self.assertLessEqual(act_min, 2.7)
         self.assertGreaterEqual(act_max, 2.7)
 
-    def test_export_source_token_transcripts_saves_retained_sequences(self):
-        from analysis.features.collect_feature_activations import (
-            FeatureCollector,
-            export_source_token_transcripts,
-        )
-
-        class TinyTokenizer:
-            def decode(self, token_ids):
-                return f"tok{token_ids[0]}"
-
-        collector = FeatureCollector(n_layers=1, n_features=1)
-        collector.retained_sequence_tokens[4] = [10, 11, 12]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            export_source_token_transcripts(collector, TinyTokenizer(), output_dir)
-            payload = json.loads((output_dir / "source_token_transcripts.json").read_text())
-
-        self.assertEqual(payload["token_transcripts"]["4"], ["tok10", "tok11", "tok12"])
-
     def test_build_example_source_metadata_keeps_dataset_locator(self):
         from analysis.features.collect_feature_activations import (
             _build_example_source_metadata,
@@ -388,8 +368,12 @@ class ActivationHistogramTests(unittest.TestCase):
             collector=collector,
             target_domain="chat",
             baseline_domain="fineweb",
+            model_path="model/checkpoint",
+            tokenizer_path=None,
+            data_sources=[],
         )
         encoded = json.dumps(payload)
+        self.assertEqual(payload["tokenization_settings"]["model_path"], "model/checkpoint")
         self.assertIn("activation_histograms.npz", encoded)
         self.assertIn("activation_histogram_summary", payload)
         self.assertIn("feature_frequency_summary", payload)

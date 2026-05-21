@@ -87,7 +87,10 @@ from analysis.features.annotate.annotate_assistant_response_features import (
     AssistantResponseFeatureAnnotator,
 )
 from analysis.features.annotate.annotation_framework import run_annotation
-from analysis.features.load_val_data import load_val_data
+from analysis.features.load_val_data import (
+    FeatureDataSourceSettings,
+    load_val_data_from_settings,
+)
 
 
 # =============================================================================
@@ -210,8 +213,6 @@ class FeatureCollector:
         self.tokens_per_domain: dict[str, int] = defaultdict(int)
         self.tokens_per_region: dict[str, int] = defaultdict(int)
         self.tokens_per_thinking_bin: list[int] = [0] * 10
-        self.retained_sequence_tokens: dict[int, list[int]] = {}
-
         # Exact activation histogram storage.
         self.domain_names = list(domain_names or [])
         self.domain_to_index = {
@@ -326,7 +327,6 @@ class FeatureCollector:
             return
 
         # Create example (only fetch context from GPU when actually keeping)
-        self.retained_sequence_tokens.setdefault(sequence_idx, list(tokens))
         context_tokens, pos_in_ctx = self._get_context(tokens, position)
         ctx_start = max(0, position - self.context_before)
         ctx_end = min(len(tokens), position + self.context_after + 1)
@@ -438,7 +438,6 @@ class FeatureCollector:
         if not add_example:
             return
 
-        self.retained_sequence_tokens.setdefault(sequence_idx, list(tokens))
         context_tokens, pos_in_ctx = self._get_context(tokens, position)
         ctx_start = max(0, position - self.context_before)
         ctx_end = min(len(tokens), position + self.context_after + 1)
@@ -697,25 +696,6 @@ def _write_feature_json(args: tuple) -> None:
     filepath, feature_json = args
     with open(filepath, 'w') as f:
         json.dump(feature_json, f)
-
-
-def export_source_token_transcripts(
-    collector: FeatureCollector,
-    tokenizer,
-    output_dir: Path,
-) -> None:
-    """Save model-native decoded token transcripts for retained examples."""
-    if not collector.retained_sequence_tokens:
-        return
-
-    transcripts = {}
-    for sequence_idx, token_ids in sorted(collector.retained_sequence_tokens.items()):
-        transcripts[str(sequence_idx)] = [tokenizer.decode([tok_id]) for tok_id in token_ids]
-
-    path = output_dir / "source_token_transcripts.json"
-    with path.open("w") as f:
-        json.dump({"token_transcripts": transcripts}, f)
-    logger.info("Saved %s source token transcripts to %s", len(transcripts), path)
 
 
 def _drain_completed_writes(
@@ -1116,8 +1096,16 @@ def build_metadata_payload(
     collector: FeatureCollector,
     target_domain: str,
     baseline_domain: str,
+    model_path: str,
+    tokenizer_path: str | None,
+    data_sources: list[FeatureDataSourceSettings],
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
+        "tokenization_settings": {
+            "model_path": model_path,
+            "tokenizer_path": tokenizer_path,
+            "data_sources": [source.to_json() for source in data_sources],
+        },
         "total_tokens": collector.total_tokens,
         "tokens_per_domain": dict(collector.tokens_per_domain),
         "tokens_per_region": dict(collector.tokens_per_region),
@@ -1162,6 +1150,9 @@ def export_metadata(
     output_dir: Path,
     target_domain: str,
     baseline_domain: str,
+    model_path: str,
+    tokenizer_path: str | None,
+    data_sources: list[FeatureDataSourceSettings],
 ) -> None:
     """Export rich metadata to JSON for analysis."""
     logger.info("Exporting metadata...")
@@ -1176,6 +1167,9 @@ def export_metadata(
         collector=collector,
         target_domain=target_domain,
         baseline_domain=baseline_domain,
+        model_path=model_path,
+        tokenizer_path=tokenizer_path,
+        data_sources=data_sources,
     )
     with open(output_dir / "feature_metadata.json", 'w') as f:
         json.dump(metadata, f)
@@ -1541,17 +1535,20 @@ def main():
     val_data_sources: list[tuple[str | None, str]] = [
         _parse_val_data_entry(entry) for entry in args.val_data
     ]
+    data_source_settings = [
+        FeatureDataSourceSettings(
+            source_path=path,
+            max_length=args.max_length,
+            model_type=model_type,
+            domain=domain_label,
+        )
+        for domain_label, path in val_data_sources
+    ]
     logger.info(f"Loading {len(val_data_sources)} data source(s):")
     loaded_sources: list[tuple[Any, list[dict] | None]] = []
-    for domain_label, path in val_data_sources:
-        logger.info(f"  {path!r} (domain={domain_label!r})")
-        dataset, examples_meta = load_val_data(
-            path,
-            tokenizer,
-            args.max_length,
-            domain=domain_label,
-            model_type=model_type,
-        )
+    for source_settings in data_source_settings:
+        logger.info(f"  {source_settings.source_path!r} (domain={source_settings.domain!r})")
+        dataset, examples_meta = load_val_data_from_settings(source_settings, tokenizer)
         loaded_sources.append((dataset, examples_meta))
 
     total_samples = sum(
@@ -1759,13 +1756,15 @@ def main():
 
     # Export
     export_circuit_tracer_json(collector, logit_lens_data, tokenizer, output_dir)
-    export_source_token_transcripts(collector, tokenizer, output_dir)
     export_activation_histograms(collector, output_dir)
     export_metadata(
         collector,
         output_dir,
         target_domain=args.relative_target_domain,
         baseline_domain=args.relative_baseline_domain,
+        model_path=args.model_path,
+        tokenizer_path=args.tokenizer,
+        data_sources=data_source_settings,
     )
     annotate_collected_features(output_dir)
 
