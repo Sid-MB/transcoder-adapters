@@ -48,7 +48,11 @@ Output:
     ├── activation_histograms.npz  # Exact all-nonzero activation histograms
     ├── feature_metadata.json  # Activation frequencies, domain/region breakdowns
     ├── collect_feature_activations_args.json  # Full parsed CLI settings
-    └── collect_feature_activations_command.sh  # Pasteable replay command
+    ├── collect_feature_activations_command.sh  # Pasteable replay command
+    └── circuit_tracer_features/  # Optional packed cache from --export_circuit_tracer_features
+        ├── index.json.gz
+        ├── layer_0.bin
+        └── ...
 
     Browse results locally:
         python -m analysis.features.visualize.feature_dashboard --data_dir {output_dir}
@@ -59,10 +63,12 @@ from pathlib import Path
 from helpers.log import logger, setup_logging
 
 import argparse
+import gzip
 import json
 import random
 import heapq
 import shlex
+import struct
 import textwrap
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -72,7 +78,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import numpy as np
 import torch
 from tqdm import tqdm
-from ...helpers.paths.output_path import generate_output_path
+from helpers.paths.output_path import generate_output_path
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
 from analysis.features.activation_histograms import (
@@ -699,6 +705,13 @@ def _write_feature_json(args: tuple) -> None:
         json.dump(feature_json, f)
 
 
+def _pack_feature_for_circuit_tracer(feature_json: dict) -> bytes:
+    """Pack one feature payload using circuit-tracer's local feature format."""
+    json_bytes = json.dumps(feature_json, separators=(",", ":")).encode("utf-8")
+    compressed = gzip.compress(json_bytes)
+    return struct.pack("<I", len(compressed)) + compressed
+
+
 def _drain_completed_writes(
     pending: set[Future],
     progress,
@@ -840,12 +853,19 @@ def export_circuit_tracer_json(
     tokenizer,
     output_dir: Path,
     n_workers: int = 16,
+    export_circuit_tracer_features: bool = False,
 ):
     """Export feature data to circuit tracer JSON format."""
     features_dir = output_dir / "features"
     features_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Exporting features to {features_dir}...")
+    packed_features_dir = output_dir / "circuit_tracer_features"
+    packed_index: dict[str, Any] | None = None
+    if export_circuit_tracer_features:
+        packed_features_dir.mkdir(parents=True, exist_ok=True)
+        packed_index = {"version": "1.0", "format": "variable_chunks"}
+        logger.info(f"Exporting packed circuit-tracer features to {packed_features_dir}...")
 
     max_pending_writes = max(1, n_workers * 2)
     logger.info(
@@ -867,66 +887,86 @@ def export_circuit_tracer_json(
         ) as write_progress:
             for layer_idx in tqdm(range(collector.n_layers), desc="Building JSON"):
                 layer_logit_lens = logit_lens_data[layer_idx]
+                packed_bin_f = None
+                packed_offsets = [0]
+                packed_count = 0
+                if export_circuit_tracer_features:
+                    packed_bin_f = (packed_features_dir / f"layer_{layer_idx}.bin").open("wb")
 
-                for feature_idx in range(collector.n_features):
-                    stats = collector.stats[layer_idx][feature_idx]
+                try:
+                    for feature_idx in range(collector.n_features):
+                        stats = collector.stats[layer_idx][feature_idx]
 
-                    # Skip empty features
-                    if stats.activation_count == 0:
-                        continue
+                        # Skip empty features
+                        if stats.activation_count == 0:
+                            if packed_bin_f is not None:
+                                packed_offsets.append(packed_bin_f.tell())
+                            continue
 
-                    examples_quantiles, act_min, act_max = _build_examples_quantiles(
-                        stats,
-                        tokenizer,
-                    )
-
-                    # Get logit lens tokens
-                    top_logits = [
-                        tokenizer.decode([tok_id])
-                        for tok_id in layer_logit_lens['top_ids'][feature_idx]
-                    ]
-                    bottom_logits = [
-                        tokenizer.decode([tok_id])
-                        for tok_id in layer_logit_lens['bot_ids'][feature_idx]
-                    ]
-
-                    # Per-domain top examples (sorted by descending activation)
-                    domain_quantiles = []
-                    for domain_name, domain_heap in sorted(stats.domain_top_k_examples.items()):
-                        domain_sorted = sorted(domain_heap, key=lambda x: -x.activation)
-                        domain_formatted = [
-                            format_example_for_circuit_tracer(ex, tokenizer)
-                            for ex in domain_sorted
-                        ]
-                        domain_quantiles.append({
-                            "quantile_name": f"Top activations ({domain_name})",
-                            "examples": domain_formatted,
-                        })
-
-                    # Build JSON
-                    feature_json = {
-                        "top_logits": top_logits,
-                        "bottom_logits": bottom_logits,
-                        "act_min": act_min,
-                        "act_max": act_max,
-                        "examples_quantiles": examples_quantiles,
-                        "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
-                        "layer": layer_idx,
-                        "feature": feature_idx,
-                    }
-
-                    cantor_id = cantor_pair(layer_idx, feature_idx)
-                    filepath = features_dir / f"{cantor_id}.json"
-                    pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
-                    write_count += 1
-                    _release_feature_examples(stats)
-
-                    if len(pending_writes) >= max_pending_writes:
-                        pending_writes = _drain_completed_writes(
-                            pending_writes, write_progress
+                        examples_quantiles, act_min, act_max = _build_examples_quantiles(
+                            stats,
+                            tokenizer,
                         )
 
+                        # Get logit lens tokens
+                        top_logits = [
+                            tokenizer.decode([tok_id])
+                            for tok_id in layer_logit_lens['top_ids'][feature_idx]
+                        ]
+                        bottom_logits = [
+                            tokenizer.decode([tok_id])
+                            for tok_id in layer_logit_lens['bot_ids'][feature_idx]
+                        ]
+
+                        # Build JSON
+                        feature_json = {
+                            "top_logits": top_logits,
+                            "bottom_logits": bottom_logits,
+                            "act_min": act_min,
+                            "act_max": act_max,
+                            "examples_quantiles": examples_quantiles,
+                            "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
+                            "layer": layer_idx,
+                            "feature": feature_idx,
+                        }
+
+                        if packed_bin_f is not None:
+                            packed_bin_f.write(_pack_feature_for_circuit_tracer(feature_json))
+                            packed_offsets.append(packed_bin_f.tell())
+                            packed_count += 1
+
+                        cantor_id = cantor_pair(layer_idx, feature_idx)
+                        filepath = features_dir / f"{cantor_id}.json"
+                        pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
+                        write_count += 1
+                        _release_feature_examples(stats)
+
+                        if len(pending_writes) >= max_pending_writes:
+                            pending_writes = _drain_completed_writes(
+                                pending_writes, write_progress
+                            )
+                finally:
+                    if packed_bin_f is not None:
+                        packed_bin_f.close()
+
+                if packed_index is not None:
+                    packed_index[str(layer_idx)] = {
+                        "filename": f"layer_{layer_idx}.bin",
+                        "offsets": packed_offsets,
+                    }
+                    packed_size = (packed_features_dir / f"layer_{layer_idx}.bin").stat().st_size / 1e6
+                    logger.info(
+                        f"Packed layer {layer_idx}: {packed_size:.1f} MB, "
+                        f"{packed_count} features, {collector.n_features - packed_count} missing"
+                    )
+
             _drain_completed_writes(pending_writes, write_progress, block=True)
+
+    if packed_index is not None:
+        packed_index_path = packed_features_dir / "index.json.gz"
+        with gzip.open(packed_index_path, "wt") as f:
+            json.dump(packed_index, f)
+        logger.info(f"Wrote packed circuit-tracer index to {packed_index_path}")
 
     logger.info(f"Generated {write_count} feature files, skipped {skipped} empty features")
 
@@ -1394,6 +1434,19 @@ def main():
                         """).strip())
     parser.add_argument("--output_dir", type=str, default=None,
                         help="""Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)""")
+    parser.add_argument(
+        "--export_circuit_tracer_features",
+        action="store_true",
+        help=textwrap.dedent("""
+            Also write a packed circuit-tracer local feature cache while exporting feature JSON.
+
+            Output path:
+              {output_dir}/circuit_tracer_features/index.json.gz
+              {output_dir}/circuit_tracer_features/layer_N.bin
+
+            This avoids the later CPU-only conversion pass that rereads features/*.json and repacks them.
+        """).strip(),
+    )
 
     # Optional args
     parser.add_argument("--max_samples", type=int, default=None,
@@ -1752,7 +1805,13 @@ def main():
     logit_lens_data = compute_logit_lens(model, tokenizer)
 
     # Export
-    export_circuit_tracer_json(collector, logit_lens_data, tokenizer, output_dir)
+    export_circuit_tracer_json(
+        collector,
+        logit_lens_data,
+        tokenizer,
+        output_dir,
+        export_circuit_tracer_features=args.export_circuit_tracer_features,
+    )
     export_activation_histograms(collector, output_dir)
     export_metadata(
         collector,
@@ -1767,6 +1826,8 @@ def main():
 
     logger.info(f"Done! Output written to {output_dir}")
     logger.info("  features/: Circuit tracer JSON files")
+    if args.export_circuit_tracer_features:
+        logger.info("  circuit_tracer_features/: Packed circuit-tracer feature cache")
     logger.info("  activation_histograms.npz: Exact activation histogram sidecar")
     logger.info("  feature_metadata.json: Rich metadata for analysis")
     logger.info("  feature_annotations.json: Automatic feature annotations")
