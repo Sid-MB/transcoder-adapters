@@ -27,6 +27,7 @@ After running, start the frontend with:
 
 import os
 import argparse
+import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +37,7 @@ from typing import Literal
 import torch
 
 from helpers.log import logger, setup_logging
+from helpers.paths.output_path import generate_output_path
 from models.tokens import _input_ids_from_chat_template_output
 
 from analysis.attribution.relp_model import RelPReplacementModel
@@ -47,6 +49,10 @@ QWEN_IM_START = "<|im_start|>"
 QWEN_IM_END = "<|im_end|>"
 PromptFormat = Literal["auto", "raw", "chat"]
 
+def get_output_dir(*, run_name: str, checkpoint_name: str) -> Path:
+    specific_run_description = f"{run_name}_{checkpoint_name}"
+    return generate_output_path("attribution_graphs", specific_run_description)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -57,8 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Required args - explicit for accounting
     parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
     parser.add_argument("--run_name", type=str, required=True, help="Name for this run (used in output: {run_name}__{prompt}.json)")
-    parser.add_argument("--prompts", type=str, required=True, help="Directory with .txt prompt files, or path to a single .txt file")
-    parser.add_argument("--output_dir", type=str, required=True, help="Output directory for graphs")
+    parser.add_argument("--prompts", type=Path, required=True, help="Directory with .txt prompt files, or path to a single .txt file")
+    parser.add_argument("--output_dir", type=Path, default=None, help=f"""
+                        Output directory for graphs. Default: in the form
+                        {get_output_dir(run_name='{{run_name}}', checkpoint_name='{{checkpoint}}')}
+                        """)
 
     # Optional: override scan name (defaults to run_name)
     parser.add_argument("--scan", type=str, default=None, help="Scan name for features (default: run_name)")
@@ -103,6 +112,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Zero-based prompt shard index for this process.",
     )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Start a circuit-tracer server for the output graph directory after attribution finishes.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8041,
+        help="Port to use with --serve.",
+    )
+    parser.add_argument(
+        "--features_dir",
+        type=str,
+        default=None,
+        help="Optional feature directory passed to the circuit-tracer server.",
+    )
 
     return parser
 
@@ -141,6 +167,61 @@ def _list_prompt_files(prompts_dir: str | Path) -> list[Path]:
             raise ValueError(f"Prompt file must be a .txt file: {prompts_dir}")
         return [prompts_path]
     return sorted(prompts_path.glob("*.txt"))
+
+
+def _prompt_names_for_shard(
+    prompts: str | Path,
+    *,
+    num_shards: int,
+    shard_index: int,
+) -> list[str]:
+    return [
+        prompt_path.stem
+        for prompt_path in _select_shard_items(
+            _list_prompt_files(prompts),
+            num_shards=num_shards,
+            shard_index=shard_index,
+        )
+    ]
+
+
+def _preflight_existing_graphs(args: argparse.Namespace) -> dict[str, str] | None:
+    prompt_names = _prompt_names_for_shard(
+        args.prompts,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+    )
+    if not prompt_names:
+        return {}
+
+    missing_graphs = [
+        prompt_name
+        for prompt_name in prompt_names
+        if not (args.output_dir / f"{args.run_name}__{prompt_name}.json").exists()
+    ]
+    if missing_graphs:
+        return None
+
+    logger.info("=" * 60)
+    logger.info("RelP Attribution")
+    logger.info("=" * 60)
+    logger.info(f"Run name:    {args.run_name}")
+    logger.info(f"Checkpoint:  {args.checkpoint}")
+    logger.info(f"Prompts:     {args.prompts}")
+    logger.info(f"Output:      {args.output_dir}")
+    if args.num_shards > 1:
+        logger.info(f"Shard:       {args.shard_index}/{args.num_shards}")
+    logger.info("=" * 60)
+    logger.info("All requested graph JSONs already exist; skipping model load and attribution.")
+    for index, prompt_name in enumerate(prompt_names, 1):
+        logger.info(
+            f"[{index}/{len(prompt_names)}] {args.run_name}__{prompt_name} - SKIPPED (already exists)"
+        )
+    logger.info(f"Success: 0, Skipped: {len(prompt_names)}, Errors: 0 (total: {len(prompt_names)})")
+    _log_view_command(args.output_dir)
+    if args.serve:
+        _serve_graphs(args.output_dir, port=args.port, features_dir=args.features_dir)
+    return {prompt_name: "skipped" for prompt_name in prompt_names}
 
 
 def _parse_visible_cuda_devices(
@@ -263,9 +344,45 @@ def _run_auto_sharded_attribution(args: argparse.Namespace) -> bool:
         raise RuntimeError(f"Attribution worker failure(s): {formatted_failures}")
 
     logger.info("All attribution workers completed successfully")
-    logger.info(f"\nTo view graphs run:")
-    logger.info(f"  circuit-tracer start-server --graph_file_dir {args.output_dir}")
+    _log_view_command(args.output_dir)
+    if args.serve:
+        _serve_graphs(args.output_dir, port=args.port, features_dir=args.features_dir)
     return True
+
+
+def _log_view_command(output_dir: Path | str) -> None:
+    logger.info(f"\nTo view graphs run:")
+    logger.info(f'  circuit-tracer start-server --graph_file_dir="{output_dir}"')
+
+
+def _cleanup_cuda_for_server() -> None:
+    if torch.cuda.is_available():
+        import gc
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        logger.info(
+            f"GPU memory before serving: {torch.cuda.memory_allocated() / 1e9:.2f} GB allocated"
+        )
+
+
+def _serve_graphs(output_dir: Path | str, *, port: int, features_dir: str | None) -> None:
+    from circuit_tracer.frontend.local_server import serve
+
+    logger.info(f"\nStarting circuit-tracer server on port {port}")
+    logger.info(f"Serving graph directory: {Path(output_dir).resolve()}")
+    if features_dir is not None:
+        logger.info(f"Serving feature directory: {Path(features_dir).resolve()}")
+    server = serve(data_dir=str(output_dir), port=port, features_dir=features_dir)
+    try:
+        logger.info("Press Ctrl+C to stop the server.")
+        while True:
+            import time
+
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Stopping circuit-tracer server...")
+        server.stop()
 
 #%%
 def _parse_chat_prompt_text(text: str) -> tuple[str, str] | None:
@@ -417,7 +534,7 @@ def run_attribution_for_prompt(
     slug: str,
     model: RelPReplacementModel,
     scan: str,
-    output_dir: str,
+    output_dir: Path,
     max_n_logits: int,
     batch_size: int,
     max_feature_nodes: int,
@@ -430,14 +547,19 @@ def run_attribution_for_prompt(
     from circuit_tracer.utils.create_graph_files import create_graph_files
 
     logger.info(f"  Running attribution (batch_size={batch_size})...")
-    raw_graph = attribute(
-        prompt_tokens,
-        model,
-        max_n_logits=max_n_logits,
-        max_feature_nodes=max_feature_nodes,
-        batch_size=batch_size,
-        verbose=True,
-    )
+    previous_scan = model.scan
+    model.scan = scan
+    try:
+        raw_graph = attribute(
+            prompt_tokens,
+            model,
+            max_n_logits=max_n_logits,
+            max_feature_nodes=max_feature_nodes,
+            batch_size=batch_size,
+            verbose=True,
+        )
+    finally:
+        model.scan = previous_scan
 
     logger.info(f"  Graph: {raw_graph.active_features.shape[0]} active, "
                f"{raw_graph.selected_features.shape[0]} selected")
@@ -457,20 +579,24 @@ def run_attribution_for_prompt(
 
     # Save graph files - if pruning OOMs, save raw graph instead
     try:
-        create_graph_files(
-            graph_or_path=graph,
-            slug=slug,
-            scan=scan,
-            output_path=output_dir,
-            node_threshold=node_threshold,
-            edge_threshold=edge_threshold,
-        )
+        create_graph_files_kwargs = {
+            "graph_or_path": graph,
+            "slug": slug,
+            "output_path": output_dir,
+            "node_threshold": node_threshold,
+            "edge_threshold": edge_threshold,
+        }
+        if "scan" in inspect.signature(create_graph_files).parameters:
+            create_graph_files_kwargs["scan"] = scan
+        else:
+            create_graph_files_kwargs["scan_name"] = scan
+        create_graph_files(**create_graph_files_kwargs)
     except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
         if "out of memory" not in str(e).lower() and "CUDA" not in str(e):
             raise
         # Save raw graph so we don't lose the expensive backward passes
         raw_graph_path = Path(output_dir) / f"{slug}_raw.pt"
-        logger.info(f"  OOM during pruning, saving raw graph to {raw_graph_path}")
+        logger.error(f"  OOM during pruning, saving raw graph to {raw_graph_path}")
         graph.to_pt(str(raw_graph_path))
         logger.info(f"  Raw graph saved. Prune later with: create_graph_files('{raw_graph_path}', ...)")
 
@@ -478,16 +604,21 @@ def run_attribution_for_prompt(
 
 
 #%%
-def main():
-    parser = build_parser()
-    args = parser.parse_args()
-    setup_logging()
+def run_attribution(args: argparse.Namespace) -> dict[str, str]:
+    if not args.output_dir:
+        args.output_dir = get_output_dir(run_name=args.run_name, checkpoint_name=args.checkpoint)
+    else:
+        args.output_dir = Path(args.output_dir)
+
     try:
         _validate_shard_args(args.num_shards, args.shard_index)
+        existing_results = _preflight_existing_graphs(args)
+        if existing_results is not None:
+            return existing_results
         if _run_auto_sharded_attribution(args):
-            return
-    except Exception as e:
-        parser.error(str(e))
+            return {}
+    except Exception:
+        raise
 
     # Default scan to run_name
     if args.scan is None:
@@ -563,7 +694,7 @@ def main():
     results = {}
     for i, (prompt_name, data) in enumerate(prompt_items, 1):
         slug = f"{args.run_name}__{prompt_name}"
-        graph_path = Path(args.output_dir) / f"{slug}.json"
+        graph_path = args.output_dir / f"{slug}.json"
 
         # Skip if graph already exists
         if graph_path.exists():
@@ -613,8 +744,25 @@ def main():
     errors = len(prompt_items) - success - skipped
     logger.info(f"Success: {success}, Skipped: {skipped}, Errors: {errors} (total: {len(prompt_items)})")
 
-    logger.info(f"\nTo view graphs run:")
-    logger.info(f"  circuit-tracer start-server --graph_file_dir {args.output_dir}")
+    _log_view_command(args.output_dir)
+    if args.serve:
+        del model
+        if "graph" in locals():
+            del graph
+        _cleanup_cuda_for_server()
+        _serve_graphs(args.output_dir, port=args.port, features_dir=args.features_dir)
+    return results
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    setup_logging()
+
+    try:
+        run_attribution(args)
+    except Exception as e:
+        parser.error(str(e))
 
 
 #%%

@@ -67,7 +67,7 @@ def load_tokenizer(
             f"{model_type!r} has no known base tokenizer. Use --tokenizer for chat data."
         )
         return tokenizer
-    except (OSError, AttributeError, KeyError, TypeError) as exc:
+    except (OSError, AttributeError, KeyError, TypeError, ValueError, ImportError) as exc:
         logger.warning(f"Could not load tokenizer from checkpoint ({exc}); trying base tokenizer fallback")
 
     if config is None:

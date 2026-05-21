@@ -1,0 +1,3 @@
+<bos><start_of_turn>user
+Answer with one word. What city is the Eiffel Tower in?<end_of_turn><start_of_turn>model
+Paris

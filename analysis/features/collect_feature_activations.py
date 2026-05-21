@@ -72,6 +72,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import numpy as np
 import torch
 from tqdm import tqdm
+from ...helpers.paths.output_path import generate_output_path
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
 from analysis.features.activation_histograms import (
@@ -618,7 +619,7 @@ def cantor_pair(x: int, y: int) -> int:
 def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
     """Format an ActivatingExample for circuit tracer JSON."""
     tokens = [tokenizer.decode([tok_id]) for tok_id in ex.context_tokens]
-    formatted = {
+    formatted: dict[str, Any] = {
         "tokens": tokens,
         "tokens_acts_list": ex.context_activations,
         "train_token_ind": ex.position_in_context,
@@ -1495,14 +1496,10 @@ def main():
         shuffle_seed = None
 
     if args.output_dir is None:
-        from helpers.paths import PRODUCTS_DIR, SLURM_JOB_ID
-        from datetime import datetime
-        # Truncate model path: take last component
         model_slug = args.model_path.rstrip("/").split("/")[-1]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.output_dir = str(PRODUCTS_DIR / "feature_data" / f"{model_slug}_{timestamp}_{SLURM_JOB_ID}")
-
-    output_dir = Path(args.output_dir)
+        output_dir = generate_output_path("feature_data", model_slug)
+    else:
+        output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
     export_run_arguments(parser, args, output_dir)

@@ -2,6 +2,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+import argparse
+from unittest.mock import Mock, patch
 
 from analysis.attribution.run_attribution import (
     DEEPSEEK_ASSISTANT_TOKEN,
@@ -9,9 +11,11 @@ from analysis.attribution.run_attribution import (
     DEEPSEEK_USER_TOKEN,
     _build_auto_shard_worker_command,
     _parse_visible_cuda_devices,
+    _serve_graphs,
     build_parser,
     load_prompt_file,
     load_prompts,
+    run_attribution,
 )
 from analysis.evals.compute_token_metrics_onpolicy import tokenize_chat_prompt_response
 from training.dataset.gemma2.lmsys_chat import LMSYSChatDataset
@@ -279,6 +283,59 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
         self.assertEqual(command[command.index("--num_shards") + 1], "4")
         self.assertEqual(command[command.index("--shard_index") + 1], "2")
         self.assertEqual(command[command.index("--device") + 1], "cuda")
+
+    def test_serve_graphs_starts_circuit_tracer_server(self):
+        server = Mock()
+        with (
+            patch("circuit_tracer.frontend.local_server.serve", return_value=server) as serve,
+            patch("time.sleep", side_effect=KeyboardInterrupt),
+        ):
+            _serve_graphs(Path("graphs"), port=8123, features_dir="features")
+
+        serve.assert_called_once_with(data_dir="graphs", port=8123, features_dir="features")
+        server.stop.assert_called_once_with()
+
+    def test_run_attribution_skips_all_existing_graphs_before_model_load(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            prompts = root / "prompts"
+            output_dir = root / "graphs"
+            prompts.mkdir()
+            output_dir.mkdir()
+            (prompts / "one.txt").write_text("prompt target")
+            (prompts / "two.txt").write_text("prompt target")
+            (output_dir / "run__one.json").write_text("{}")
+            (output_dir / "run__two.json").write_text("{}")
+
+            args = argparse.Namespace(
+                checkpoint="checkpoint",
+                run_name="run",
+                prompts=prompts,
+                output_dir=output_dir,
+                scan=None,
+                prompt_format="raw",
+                max_n_logits=1,
+                batch_size=1,
+                max_feature_nodes=1,
+                node_threshold=0.8,
+                edge_threshold=0.98,
+                device="cuda",
+                device_map=None,
+                auto_shard_gpus=False,
+                num_shards=1,
+                shard_index=0,
+                serve=False,
+                port=8041,
+                features_dir=None,
+            )
+
+            with patch(
+                "analysis.attribution.run_attribution.RelPReplacementModel.from_pretrained"
+            ) as from_pretrained:
+                results = run_attribution(args)
+
+            self.assertEqual(results, {"one": "skipped", "two": "skipped"})
+            from_pretrained.assert_not_called()
 
     def test_lmsys_chat_accepts_batch_encoding_template_output(self):
         class BatchEncodingChatTokenizer(GemmaLikeChatTokenizer):

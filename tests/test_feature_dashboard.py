@@ -7,6 +7,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from analysis.features.visualize.feature_dashboard import (
+    _SourceDatasetCache,
     _build_top_logit_index,
     _load_source_transcript,
     _search_top_logits,
@@ -80,6 +81,30 @@ class FeatureDashboardPromptExportTests(unittest.TestCase):
             self.assertEqual(Path(second["path"]).name, "L1_F2_123_top_01_2.txt")
             self.assertEqual(Path(first["path"]).read_text(), "first")
             self.assertEqual(Path(second["path"]).read_text(), "second")
+
+    def test_save_prompt_example_strips_terminal_newline(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "prompts"
+            data_dir = Path(tmpdir) / "run"
+            data_dir.mkdir()
+
+            result = _save_prompt_example(
+                root,
+                data_dir,
+                {
+                    "transcript": "<bos><start_of_turn>model\nAnswer<end_of_turn>\n",
+                    "cantor_id": 123,
+                    "layer": 1,
+                    "feature": 2,
+                    "quantile_name": "Top",
+                    "example_index": 0,
+                },
+            )
+
+            self.assertEqual(
+                Path(result["path"]).read_text(),
+                "<bos><start_of_turn>model\nAnswer<end_of_turn>",
+            )
 
     def test_safe_path_component_rejects_empty_after_sanitizing(self):
         self.assertEqual(_safe_path_component("<<<>>>", fallback="prompt"), "prompt")
@@ -211,6 +236,36 @@ class FeatureDashboardPromptExportTests(unittest.TestCase):
             self.assertIn("<bos><start_of_turn>user\nHi<end_of_turn>", payload["transcript"])
             self.assertIn("<start_of_turn>assistant\nHello<end_of_turn>", payload["transcript"])
             self.assertEqual(payload["ids"]["conversation_id"], "conv-7")
+
+    def test_source_dataset_cache_reuses_loaded_dataset(self):
+        from analysis.features.load_val_data import FeatureDataSourceSettings
+        import analysis.features.visualize.feature_dashboard as feature_dashboard
+
+        settings = FeatureDataSourceSettings(
+            source_path="mock-dataset",
+            max_length=128,
+            model_type="gemma2",
+            domain="chat",
+        )
+        calls = []
+        original_loader = feature_dashboard.load_val_data_from_settings
+
+        def fake_loader(loader_settings, tokenizer):
+            calls.append((loader_settings, tokenizer))
+            return [{"input_ids": [1, 2, 3]}], None
+
+        try:
+            feature_dashboard.load_val_data_from_settings = fake_loader
+            cache = _SourceDatasetCache()
+
+            first = cache.tokenize_row(settings, tokenizer=object(), row_idx=0)
+            second = cache.tokenize_row(settings, tokenizer=object(), row_idx=0)
+        finally:
+            feature_dashboard.load_val_data_from_settings = original_loader
+
+        self.assertEqual(first, [1, 2, 3])
+        self.assertEqual(second, [1, 2, 3])
+        self.assertEqual(len(calls), 1)
 
     def test_source_transcript_endpoint_returns_original_row_text(self):
         with tempfile.TemporaryDirectory() as tmpdir:

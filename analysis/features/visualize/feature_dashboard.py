@@ -28,13 +28,46 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
-from analysis.features.load_val_data import FeatureDataSourceSettings, tokenize_source_row
+from analysis.features.load_val_data import FeatureDataSourceSettings, load_val_data_from_settings
 from helpers.log import logger, setup_logging
 from models.auto import load_tokenizer
 
 _STATIC_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _STATIC_DIR.parents[2]
 _DEFAULT_PROMPT_OUTPUT_DIR = _REPO_ROOT / "analysis" / "attribution" / "prompts"
+
+
+class _SourceDatasetCache:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._datasets: dict[FeatureDataSourceSettings, object] = {}
+        self._token_rows: dict[tuple[FeatureDataSourceSettings, int], list[int]] = {}
+
+    def tokenize_row(
+        self,
+        settings: FeatureDataSourceSettings,
+        tokenizer,
+        row_idx: int,
+    ) -> list[int]:
+        row_key = (settings, row_idx)
+        with self._lock:
+            cached_tokens = self._token_rows.get(row_key)
+            if cached_tokens is not None:
+                return list(cached_tokens)
+
+            dataset = self._datasets.get(settings)
+            if dataset is None:
+                logger.info("Loading source dataset for transcript reconstruction: %s", settings.source_path)
+                dataset, _ = load_val_data_from_settings(settings, tokenizer)
+                self._datasets[settings] = dataset
+
+            item = dataset[row_idx]  # type: ignore[index]
+            tokens = item["input_ids"]
+            if hasattr(tokens, "tolist"):
+                tokens = tokens.tolist()
+            token_ids = list(tokens)
+            self._token_rows[row_key] = token_ids
+            return list(token_ids)
 
 
 def _safe_path_component(
@@ -72,6 +105,9 @@ def _save_prompt_example(
     transcript = payload.get("transcript")
     if not isinstance(transcript, str) or not transcript:
         raise ValueError("transcript must be a non-empty string")
+    transcript = transcript.rstrip("\r\n")
+    if not transcript:
+        raise ValueError("transcript must contain non-newline text")
 
     layer = _safe_path_component(payload.get("layer"), fallback="L")
     feature = _safe_path_component(payload.get("feature"), fallback="F")
@@ -217,6 +253,7 @@ def _reconstruct_source_token_transcript(
     source_metadata: dict,
     tokenization_settings: dict | None,
     tokenizer,
+    source_dataset_cache: _SourceDatasetCache | None = None,
 ) -> dict | None:
     if tokenizer is None:
         return None
@@ -230,7 +267,9 @@ def _reconstruct_source_token_transcript(
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("source_metadata.dataset_row_idx is required") from exc
 
-    token_ids = tokenize_source_row(source_settings, tokenizer, row_idx)
+    if source_dataset_cache is None:
+        source_dataset_cache = _SourceDatasetCache()
+    token_ids = source_dataset_cache.tokenize_row(source_settings, tokenizer, row_idx)
     decoded_tokens = [tokenizer.decode([tok_id]) for tok_id in token_ids]
     ids = {
         key: source_metadata[key]
@@ -255,11 +294,13 @@ def _load_source_transcript(
     source_metadata: dict,
     tokenization_settings: dict | None = None,
     tokenizer=None,
+    source_dataset_cache: _SourceDatasetCache | None = None,
 ) -> dict:
     token_result = _reconstruct_source_token_transcript(
         source_metadata,
         tokenization_settings,
         tokenizer,
+        source_dataset_cache=source_dataset_cache,
     )
     if token_result is not None:
         return token_result
@@ -479,6 +520,7 @@ def make_handler_class(
     top_logit_index_lock = threading.Lock()
     reconstruction_tokenizer = None
     reconstruction_tokenizer_lock = threading.Lock()
+    source_dataset_cache = _SourceDatasetCache()
     metadata_path = data_dir / "feature_metadata.json"
     histograms_file = "activation_histograms.npz"
     metadata: dict = {}
@@ -691,6 +733,7 @@ def make_handler_class(
                         source_metadata,
                         tokenization_settings=tokenization_settings,
                         tokenizer=tokenizer,
+                        source_dataset_cache=source_dataset_cache,
                     )
                     _json_response(self, json.dumps(result).encode())
                 except Exception as exc:
