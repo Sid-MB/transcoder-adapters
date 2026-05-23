@@ -5,7 +5,7 @@ This converts the per-feature JSON files produced by
 expected by the circuit-tracer frontend when serving local feature examples.
 
 Required input:
-    --feature_data_dir:
+    --feature_data_path:
         A collected feature-data run directory, or its ``features/`` subdirectory.
         The run directory must contain ``features/<cantor_id>.json`` files.  A
         ``feature_metadata.json`` file is used, when present, to infer
@@ -35,10 +35,10 @@ Existing output behavior:
     that case earlier by skipping existing conversion directories.
 
 Example:
-    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_dir /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160
+    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_path /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160
 
 Example with explicit shape:
-    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_dir /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --n_layers 26 --n_features 8192
+    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_path /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --n_layers 26 --n_features 8192
 """
 
 from __future__ import annotations
@@ -181,7 +181,7 @@ def parse_args() -> argparse.Namespace:
         description="Export collected feature JSONs to circuit-tracer local feature format."
     )
     parser.add_argument(
-        "--feature_data_dir",
+        "--feature_data_path",
         required=True,
         help="Feature-data run directory, or its features/ subdirectory.",
     )
@@ -202,9 +202,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     setup_logging()
     args = parse_args()
-    output_dir = args.output_dir or default_output_dir(args.feature_data_dir)
+    output_dir = args.output_dir or default_output_dir(args.feature_data_path)
     export_circuit_tracer_feature_data(
-        args.feature_data_dir,
+        args.feature_data_path,
         output_dir,
         n_layers=args.n_layers,
         n_features=args.n_features,

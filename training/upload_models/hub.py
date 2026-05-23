@@ -22,6 +22,7 @@ def push_to_hub(
     config: "ExperimentConfig",
     repo_id: str,
     wandb_url: str | None = None,
+    evaluation_stats: dict[str, object] | None = None,
 ):
     """Push trained model and tokenizer to Hugging Face Hub with metadata.
 
@@ -31,6 +32,7 @@ def push_to_hub(
         config: ExperimentConfig used for training.
         repo_id: Full repo ID (e.g., "nathu0/2026.TA.gemma2_2b_...").
         wandb_url: Optional W&B run URL to include in the model card.
+        evaluation_stats: Optional evaluation metrics to include in the model card.
     """
     api = HfApi()
 
@@ -46,7 +48,13 @@ def push_to_hub(
 
     logger.info("Building model card...")
     full_name = f"{HUB_NAME_PREFIX}.{config.wandb_run_name}" if config.wandb_run_name else None
-    card = _build_model_card(config, repo_id, full_name=full_name, wandb_url=wandb_url)
+    card = _build_model_card(
+        config,
+        repo_id,
+        full_name=full_name,
+        wandb_url=wandb_url,
+        evaluation_stats=evaluation_stats,
+    )
 
     logger.info("Pushing model card...")
     card.push_to_hub(repo_id)
@@ -186,6 +194,7 @@ def _build_model_card(
     repo_id: str,
     full_name: str | None = None,
     wandb_url: str | None = None,
+    evaluation_stats: dict[str, object] | None = None,
 ) -> ModelCard:
     """Build a ModelCard with training metadata.
 
@@ -194,6 +203,7 @@ def _build_model_card(
         repo_id: The HF repo ID (may be truncated).
         full_name: The full untruncated model name, if it was truncated.
         wandb_url: Optional W&B run URL.
+        evaluation_stats: Optional evaluation metrics to include in the card.
     """
     github_repo = "https://github.com/Sid-MB/transcoder-adapters"
 
@@ -292,6 +302,15 @@ def _build_model_card(
             f"- **backbone**: {config.bridging.backbone}",
         ])
 
+    if evaluation_stats:
+        lines.extend([
+            "",
+            "## Evaluation",
+            "",
+        ])
+        for key, value in _flatten_evaluation_stats(evaluation_stats):
+            lines.append(f"- **{key}**: {_format_metric_value(value)}")
+
     # Datasets
     if datasets:
         lines.extend([
@@ -305,6 +324,28 @@ def _build_model_card(
     content = "\n".join(lines) + "\n"
 
     return ModelCard(content=f"---\n{card_data.to_yaml()}\n---\n{content}")
+
+
+def _flatten_evaluation_stats(
+    stats: dict[str, object],
+    prefix: str = "",
+) -> list[tuple[str, object]]:
+    """Flatten nested evaluation metrics into model-card rows."""
+    rows: list[tuple[str, object]] = []
+    for key in sorted(stats):
+        value = stats[key]
+        row_key = f"{prefix}/{key}" if prefix else key
+        if isinstance(value, dict):
+            rows.extend(_flatten_evaluation_stats(value, row_key))
+        elif value is not None:
+            rows.append((row_key, value))
+    return rows
+
+
+def _format_metric_value(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
 
 
 def _collect_dataset_ids(config) -> list[str]:

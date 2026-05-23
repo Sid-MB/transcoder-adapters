@@ -1278,11 +1278,36 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
     logger.info("Training complete!")
 
     # Final post-training token metrics eval
+    final_evaluation_stats: dict[str, Any] = {}
     if final_token_examples is not None and ref_model is not None:
         logger.info("Running final post-training token metrics eval...")
         final_results = _run_and_log_token_metrics(
             model, ref_model, tokenizer, final_token_examples, config, current_step,
         )
+        if final_results is not None:
+            final_evaluation_stats = {
+                "token_metrics_final": {
+                    "n_samples": final_results.n_samples,
+                    "n_tokens": final_results.n_tokens,
+                    "kl_mean": float(final_results.kl_mean),
+                    "top1_agreement": float(final_results.top1_agreement),
+                    "n_interesting": final_results.n_interesting,
+                    "kl_mean_interesting": float(final_results.kl_mean_interesting),
+                    "top1_agreement_interesting": float(final_results.top1_agreement_interesting),
+                    "per_benchmark": {
+                        bm: {
+                            "n_samples": bm_metrics.n_samples,
+                            "n_tokens": bm_metrics.n_tokens,
+                            "kl_mean": float(bm_metrics.kl_mean),
+                            "top1_agreement": float(bm_metrics.top1_agreement),
+                            "n_interesting": bm_metrics.n_interesting,
+                            "kl_mean_interesting": float(bm_metrics.kl_mean_interesting),
+                            "top1_agreement_interesting": float(bm_metrics.top1_agreement_interesting),
+                        }
+                        for bm, bm_metrics in final_results.per_benchmark.items()
+                    },
+                }
+            }
         if final_results is not None and config.use_wandb and wandb.run is not None:
             wandb.run.summary["token_metrics_final/kl_mean"] = final_results.kl_mean
             wandb.run.summary["token_metrics_final/top1_agreement"] = final_results.top1_agreement
@@ -1304,7 +1329,14 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         logger.info(f"Pushing model to Hub: {hub_repo_id}")
         wandb_url = wandb.run.url if (config.use_wandb and wandb.run is not None) else None
         try:
-            push_to_hub(model, tokenizer, config, hub_repo_id, wandb_url=wandb_url)
+            push_to_hub(
+                model,
+                tokenizer,
+                config,
+                hub_repo_id,
+                wandb_url=wandb_url,
+                evaluation_stats=final_evaluation_stats,
+            )
         except Exception as e:
             logger.exception(f"Failed to push model to Hub: {e}", exc_info=True, stack_info=True)
 

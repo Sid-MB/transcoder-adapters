@@ -1450,6 +1450,39 @@ def main():
             This avoids the later CPU-only conversion pass that rereads features/*.json and repacks them.
         """).strip(),
     )
+    parser.add_argument(
+        "--upload_circuit_tracer_features_to_hub",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=textwrap.dedent("""
+            Upload the packed circuit-tracer feature cache to Hugging Face Hub.
+            Defaults to true when --export_circuit_tracer_features is enabled, and false
+            when --no-export_circuit_tracer_features is used.
+
+            The uploaded repo contains:
+              features/index.json.gz
+              features/layer_N.bin
+              feature_collection_config.json
+              feature_collection_summary.json
+
+            Circuit-tracer can then use the Hugging Face repo ID as the feature scan name.
+            Before model loading and feature collection, the script verifies write access and
+            reserves the deterministic repo. If the same collection repo already exists, the
+            script exits early and logs the existing Hub URL to avoid duplicate work.
+        """).strip(),
+    )
+    parser.add_argument(
+        "--hf_feature_repo_id",
+        type=str,
+        default=None,
+        help="""Explicit Hugging Face model repo ID for uploaded circuit-tracer features. Default: deterministic repo name from model, data, and collection hyperparameters.""",
+    )
+    parser.add_argument(
+        "--hub_org",
+        type=str,
+        default=None,
+        help="""Hugging Face namespace/org for uploaded feature repos. Defaults to the authenticated user.""",
+    )
 
     # Optional args
     parser.add_argument("--max_samples", type=int, default=None,
@@ -1537,12 +1570,37 @@ def main():
                         help="""Max sequence length (longer sequences truncated)""")
 
     args = parser.parse_args()
+    if args.upload_circuit_tracer_features_to_hub is None:
+        args.upload_circuit_tracer_features_to_hub = bool(args.export_circuit_tracer_features)
+    if args.upload_circuit_tracer_features_to_hub and not args.export_circuit_tracer_features:
+        parser.error(
+            "--upload_circuit_tracer_features_to_hub requires --export_circuit_tracer_features "
+            "(remove --no-export_circuit_tracer_features or disable upload with "
+            "--no-upload_circuit_tracer_features_to_hub)."
+        )
+
     try:
         activation_example_ranges = parse_activation_example_ranges(
             args.activation_example_ranges
         )
     except ValueError as exc:
         parser.error(str(exc))
+
+    hf_feature_repo_id = None
+    hf_feature_config = None
+    if args.upload_circuit_tracer_features_to_hub:
+        from analysis.features.hub_upload import (
+            build_feature_collection_repo_id,
+            reserve_feature_collection_repo,
+        )
+
+        hf_feature_repo_id, hf_feature_config = build_feature_collection_repo_id(args)
+        if reserve_feature_collection_repo(hf_feature_repo_id, hf_feature_config):
+            logger.info(
+                "Skipping feature collection because the matching Hugging Face repo already exists: "
+                f"https://huggingface.co/{hf_feature_repo_id}"
+            )
+            return
 
     if args.shuffle_seed is not None:
         shuffle_seed: int | None = args.shuffle_seed
@@ -1827,6 +1885,15 @@ def main():
     )
     annotate_collected_features(output_dir)
 
+    if hf_feature_repo_id and hf_feature_config:
+        from analysis.features.hub_upload import upload_circuit_tracer_features_to_hub
+
+        upload_circuit_tracer_features_to_hub(
+            repo_id=hf_feature_repo_id,
+            output_dir=output_dir,
+            config=hf_feature_config,
+        )
+
     logger.info(f"Done! Output written to {output_dir}")
     logger.info("  features/: Circuit tracer JSON files")
     if args.export_circuit_tracer_features:
@@ -1836,6 +1903,8 @@ def main():
     logger.info("  feature_annotations.json: Automatic feature annotations")
     logger.info("  collect_feature_activations_args.json: Full parsed CLI settings")
     logger.info("  collect_feature_activations_command.sh: Pasteable replay command")
+    if hf_feature_repo_id:
+        logger.info(f"  Hugging Face feature repo: https://huggingface.co/{hf_feature_repo_id}")
 
 
 if __name__ == "__main__":
