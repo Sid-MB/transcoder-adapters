@@ -1591,16 +1591,22 @@ def main():
     if args.upload_circuit_tracer_features_to_hub:
         from analysis.features.hub_upload import (
             build_feature_collection_repo_id,
+            check_feature_collection_exists,
             reserve_feature_collection_repo,
         )
 
         hf_feature_repo_id, hf_feature_config = build_feature_collection_repo_id(args)
+        existing_repo_id = check_feature_collection_exists(hf_feature_repo_id, hf_feature_config)
+        if existing_repo_id is not None:
+            raise RuntimeError(
+                "Feature collection already exists for these settings: "
+                f"https://huggingface.co/{existing_repo_id}"
+            )
         if reserve_feature_collection_repo(hf_feature_repo_id, hf_feature_config):
-            logger.info(
-                "Skipping feature collection because the matching Hugging Face repo already exists: "
+            raise RuntimeError(
+                "Feature collection was reserved by another process before this run started: "
                 f"https://huggingface.co/{hf_feature_repo_id}"
             )
-            return
 
     if args.shuffle_seed is not None:
         shuffle_seed: int | None = args.shuffle_seed

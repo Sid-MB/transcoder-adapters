@@ -15,13 +15,18 @@ from huggingface_hub import HfApi, ModelCard, ModelCardData, hf_hub_download
 from huggingface_hub.errors import RepositoryNotFoundError
 
 from helpers.log import logger
-from training.upload_models.hub import truncate_repo_name, verify_hub_access
+from training.upload_models.hub import verify_hub_access
 
 
 FEATURE_REPO_PREFIX = "2026.TA.features"
 FEATURE_REPO_NAME_MAX_LEN = 96
 FEATURE_CONFIG_FILENAME = "feature_collection_config.json"
 FEATURE_SUMMARY_FILENAME = "feature_collection_summary.json"
+FEATURE_SIDECAR_FILENAMES = (
+    "feature_metadata.json",
+    "activation_histograms.npz",
+    "feature_annotations.json",
+)
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -73,7 +78,7 @@ def feature_collection_config_from_args(args: Any) -> dict[str, Any]:
             "upload_circuit_tracer_features_to_hub",
         }
     }
-    payload["val_data"] = list(payload.get("val_data") or [])
+    payload["val_data"] = sorted(payload.get("val_data") or [])
     payload["upload_format"] = "circuit_tracer_packed_features_v1"
     payload["features_path_in_repo"] = "features/"
     return payload
@@ -82,6 +87,16 @@ def feature_collection_config_from_args(args: Any) -> dict[str, Any]:
 def feature_collection_fingerprint(config: dict[str, Any]) -> str:
     canonical = json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def truncate_feature_repo_name(name_prefix: str, hash_suffix: str, *, max_len: int) -> str:
+    """Truncate the readable feature repo prefix while preserving the config hash."""
+    suffix = f"_h{hash_suffix}"
+    if len(suffix) >= max_len:
+        raise ValueError(f"Feature repo max length {max_len} is too short to preserve {suffix}")
+    prefix_max_len = max_len - len(suffix)
+    prefix = name_prefix[:prefix_max_len].rstrip("-._")
+    return f"{prefix}{suffix}"
 
 
 def build_feature_collection_repo_id(args: Any) -> tuple[str, dict[str, Any]]:
@@ -97,7 +112,7 @@ def build_feature_collection_repo_id(args: Any) -> tuple[str, dict[str, Any]]:
     val_data_hash = hashlib.sha256(
         json.dumps(config["val_data"], sort_keys=True).encode("utf-8")
     ).hexdigest()[:8]
-    name = "_".join(
+    name_prefix = "_".join(
         [
             FEATURE_REPO_PREFIX,
             _slugify(str(config["model_path"])),
@@ -108,10 +123,14 @@ def build_feature_collection_repo_id(args: Any) -> tuple[str, dict[str, Any]]:
             f"rk{config.get('n_random')}",
             f"ctx{config.get('context_before')}-{config.get('context_after')}",
             f"data{val_data_hash}",
-            f"h{fingerprint}",
         ]
     )
-    return f"{org}/{truncate_repo_name(name, max_len=FEATURE_REPO_NAME_MAX_LEN)}", config
+    name = truncate_feature_repo_name(
+        name_prefix,
+        fingerprint,
+        max_len=FEATURE_REPO_NAME_MAX_LEN,
+    )
+    return f"{org}/{name}", config
 
 
 def _repo_exists(api: HfApi, repo_id: str) -> bool:
@@ -122,6 +141,22 @@ def _repo_exists(api: HfApi, repo_id: str) -> bool:
         return False
 
 
+def check_feature_collection_exists(repo_id: str, config: dict[str, Any]) -> str | None:
+    """Return the repo ID when a matching feature collection repo already exists."""
+    api = HfApi()
+    if not _repo_exists(api, repo_id):
+        return None
+
+    existing_config = _download_existing_config(repo_id)
+    if existing_config is not None and existing_config != config:
+        raise RuntimeError(
+            f"Hugging Face feature repo already exists with different collection config: "
+            f"https://huggingface.co/{repo_id}. Choose a different --hf_feature_repo_id "
+            "or remove the stale repo."
+        )
+    return repo_id
+
+
 def reserve_feature_collection_repo(repo_id: str, config: dict[str, Any]) -> bool:
     """Verify access and reserve the repo.
 
@@ -129,21 +164,15 @@ def reserve_feature_collection_repo(repo_id: str, config: dict[str, Any]) -> boo
     already reserved or completed the same deterministic feature collection.
     """
     verify_hub_access(repo_id)
-    api = HfApi()
-    if _repo_exists(api, repo_id):
-        existing_config = _download_existing_config(repo_id)
-        if existing_config is not None and existing_config != config:
-            raise RuntimeError(
-                f"Hugging Face feature repo already exists with different collection config: "
-                f"https://huggingface.co/{repo_id}. Choose a different --hf_feature_repo_id "
-                "or remove the stale repo."
-            )
+    existing_repo_id = check_feature_collection_exists(repo_id, config)
+    if existing_repo_id is not None:
         logger.info(
             "Found existing Hugging Face feature repo for this collection: "
-            f"https://huggingface.co/{repo_id}"
+            f"https://huggingface.co/{existing_repo_id}"
         )
         return True
 
+    api = HfApi()
     logger.info(f"Reserving Hugging Face feature repo: {repo_id}")
     api.create_repo(repo_id, repo_type="model", exist_ok=False)
     _upload_json(api, repo_id, FEATURE_CONFIG_FILENAME, config, "Reserve feature collection repo")
@@ -189,6 +218,14 @@ def upload_circuit_tracer_features_to_hub(
         path_in_repo="features",
         commit_message="Upload circuit-tracer feature cache",
     )
+    for filename in FEATURE_SIDECAR_FILENAMES:
+        _upload_required_file(
+            api,
+            repo_id,
+            output_dir / filename,
+            filename,
+            f"Upload {filename}",
+        )
     _upload_json(api, repo_id, FEATURE_CONFIG_FILENAME, config, "Update feature collection config")
 
     summary = _build_feature_summary(output_dir, config)
@@ -200,6 +237,18 @@ def upload_circuit_tracer_features_to_hub(
         summary=summary,
     )
     logger.info(f"Uploaded circuit-tracer features: https://huggingface.co/{repo_id}")
+
+
+def _upload_required_file(api: HfApi, repo_id: str, local_path: Path, path_in_repo: str, message: str) -> None:
+    if not local_path.is_file():
+        raise FileNotFoundError(f"Cannot upload feature sidecar; missing {local_path}")
+    api.upload_file(
+        path_or_fileobj=str(local_path),
+        path_in_repo=path_in_repo,
+        repo_id=repo_id,
+        repo_type="model",
+        commit_message=message,
+    )
 
 
 def _upload_json(api: HfApi, repo_id: str, path_in_repo: str, payload: dict[str, Any], message: str) -> None:

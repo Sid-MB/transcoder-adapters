@@ -8,10 +8,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from analysis.features.hub_upload import (
+    FEATURE_REPO_NAME_MAX_LEN,
+    FEATURE_SIDECAR_FILENAMES,
     build_feature_collection_repo_id,
+    check_feature_collection_exists,
     dataset_ids_from_val_data,
+    feature_collection_fingerprint,
     feature_collection_config_from_args,
     load_circuit_tracer_feature_from_hub,
+    upload_circuit_tracer_features_to_hub,
 )
 
 
@@ -58,7 +63,29 @@ class FeatureHubUploadTest(unittest.TestCase):
         self.assertEqual(repo_a, repo_b)
         self.assertEqual(config_a, config_b)
         self.assertTrue(repo_a.startswith("me/2026.TA.features_model-name_"))
+        self.assertTrue(repo_a.endswith(f"_h{feature_collection_fingerprint(config_a)}"))
         self.assertNotIn("output_dir", config_a)
+
+    def test_repo_id_truncation_preserves_config_hash(self):
+        args = self._args(model_path=f"org/{'very-long-model-name-' * 8}")
+
+        repo_id, config = build_feature_collection_repo_id(args)
+        _, repo_name = repo_id.split("/", 1)
+
+        self.assertLessEqual(len(repo_name), FEATURE_REPO_NAME_MAX_LEN)
+        self.assertTrue(repo_name.endswith(f"_h{feature_collection_fingerprint(config)}"))
+
+    def test_repo_id_is_deterministic_for_val_data_order(self):
+        val_data = ["chat:hf://data-org/chat-dataset/data/val.jsonl", "science/fineweb"]
+        args_a = self._args(val_data=val_data)
+        args_b = self._args(val_data=list(reversed(val_data)))
+
+        repo_a, config_a = build_feature_collection_repo_id(args_a)
+        repo_b, config_b = build_feature_collection_repo_id(args_b)
+
+        self.assertEqual(repo_a, repo_b)
+        self.assertEqual(config_a, config_b)
+        self.assertEqual(config_a["val_data"], sorted(val_data))
 
     def test_dataset_ids_from_val_data_handles_domains_and_hf_uris(self):
         self.assertEqual(
@@ -106,6 +133,84 @@ class FeatureHubUploadTest(unittest.TestCase):
         config = feature_collection_config_from_args(self._args())
         self.assertEqual(config["upload_format"], "circuit_tracer_packed_features_v1")
         self.assertEqual(config["features_path_in_repo"], "features/")
+
+    def test_check_feature_collection_exists_returns_none_when_missing(self):
+        config = feature_collection_config_from_args(self._args())
+
+        with patch("analysis.features.hub_upload.HfApi"), \
+             patch("analysis.features.hub_upload._repo_exists", return_value=False):
+            self.assertIsNone(check_feature_collection_exists("me/features", config))
+
+    def test_check_feature_collection_exists_returns_repo_id_for_matching_config(self):
+        config = feature_collection_config_from_args(self._args())
+
+        with patch("analysis.features.hub_upload.HfApi"), \
+             patch("analysis.features.hub_upload._repo_exists", return_value=True), \
+             patch("analysis.features.hub_upload._download_existing_config", return_value=config):
+            self.assertEqual(
+                check_feature_collection_exists("me/features", config),
+                "me/features",
+            )
+
+    def test_check_feature_collection_exists_errors_for_config_mismatch(self):
+        config = feature_collection_config_from_args(self._args())
+        existing_config = dict(config)
+        existing_config["top_k"] = 99
+
+        with patch("analysis.features.hub_upload.HfApi"), \
+             patch("analysis.features.hub_upload._repo_exists", return_value=True), \
+             patch("analysis.features.hub_upload._download_existing_config", return_value=existing_config):
+            with self.assertRaisesRegex(RuntimeError, "different collection config"):
+                check_feature_collection_exists("me/features", config)
+
+    def test_upload_circuit_tracer_features_uploads_sidecars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            packed_dir = output_dir / "circuit_tracer_features"
+            packed_dir.mkdir()
+            (packed_dir / "index.json.gz").write_bytes(b"index")
+            (packed_dir / "layer_0.bin").write_bytes(b"layer")
+            (output_dir / "feature_metadata.json").write_text(json.dumps({
+                "total_tokens": 1,
+                "tokens_per_domain": {},
+                "feature_frequency_summary": {},
+            }))
+            (output_dir / "activation_histograms.npz").write_bytes(b"npz")
+            (output_dir / "feature_annotations.json").write_text("{}")
+            config = feature_collection_config_from_args(self._args())
+
+            with patch("analysis.features.hub_upload.HfApi") as api_cls, \
+                 patch("analysis.features.hub_upload._upload_json"), \
+                 patch("analysis.features.hub_upload._push_feature_model_card"):
+                api = api_cls.return_value
+                upload_circuit_tracer_features_to_hub(
+                    repo_id="me/features",
+                    output_dir=output_dir,
+                    config=config,
+                )
+
+            uploaded_paths = {
+                call.kwargs["path_in_repo"]
+                for call in api.upload_file.call_args_list
+            }
+            self.assertEqual(uploaded_paths, set(FEATURE_SIDECAR_FILENAMES))
+            api.upload_folder.assert_called_once()
+
+    def test_upload_circuit_tracer_features_requires_sidecars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            packed_dir = output_dir / "circuit_tracer_features"
+            packed_dir.mkdir()
+            (packed_dir / "index.json.gz").write_bytes(b"index")
+            config = feature_collection_config_from_args(self._args())
+
+            with patch("analysis.features.hub_upload.HfApi"):
+                with self.assertRaisesRegex(FileNotFoundError, "feature_metadata.json"):
+                    upload_circuit_tracer_features_to_hub(
+                        repo_id="me/features",
+                        output_dir=output_dir,
+                        config=config,
+                    )
 
 
 if __name__ == "__main__":
