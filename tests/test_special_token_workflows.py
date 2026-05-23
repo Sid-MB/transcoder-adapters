@@ -10,6 +10,8 @@ from analysis.attribution.run_attribution import (
     DEEPSEEK_BOS_TOKEN,
     DEEPSEEK_USER_TOKEN,
     _build_auto_shard_worker_command,
+    _cleanup_and_classify_prompt_graphs,
+    _graph_slug_for_prompt,
     _parse_visible_cuda_devices,
     _serve_graphs,
     build_parser,
@@ -304,8 +306,8 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
             output_dir.mkdir()
             (prompts / "one.txt").write_text("prompt target")
             (prompts / "two.txt").write_text("prompt target")
-            (output_dir / "run__one.json").write_text("{}")
-            (output_dir / "run__two.json").write_text("{}")
+            for prompt_path in sorted(prompts.glob("*.txt")):
+                (output_dir / f"{_graph_slug_for_prompt('run', prompt_path)}.json").write_text("{}")
 
             args = argparse.Namespace(
                 checkpoint="checkpoint",
@@ -336,6 +338,43 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
 
             self.assertEqual(results, {"one": "skipped", "two": "skipped"})
             from_pretrained.assert_not_called()
+
+    def test_prompt_hash_cleanup_removes_stale_same_named_graphs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_dir = root / "graphs"
+            prompt = root / "one.txt"
+            output_dir.mkdir()
+            prompt.write_text("new target")
+            current_slug = _graph_slug_for_prompt("run", prompt)
+            stale_json = output_dir / "run__one__h000000000000.json"
+            legacy_json = output_dir / "run__one.json"
+            stale_json.write_text("{}")
+            legacy_json.write_text("{}")
+            (output_dir / "graph-metadata.json").write_text(json.dumps({
+                "graphs": [
+                    {"slug": "run__one__h000000000000"},
+                    {"slug": "run__one"},
+                    {"slug": current_slug},
+                ]
+            }))
+
+            with self.assertLogs("training", level="INFO") as logs:
+                states = _cleanup_and_classify_prompt_graphs(
+                    output_dir=output_dir,
+                    run_name="run",
+                    prompt_paths=[prompt],
+                )
+
+            self.assertFalse(stale_json.exists())
+            self.assertFalse(legacy_json.exists())
+            self.assertEqual(states["one"]["status"], "redone_hash_changed")
+            self.assertEqual(states["one"]["slug"], current_slug)
+            metadata = json.loads((output_dir / "graph-metadata.json").read_text())
+            self.assertEqual(metadata["graphs"], [{"slug": current_slug}])
+            self.assertTrue(
+                any("prompt content changed" in message for message in logs.output)
+            )
 
     def test_lmsys_chat_accepts_batch_encoding_template_output(self):
         class BatchEncodingChatTokenizer(GemmaLikeChatTokenizer):

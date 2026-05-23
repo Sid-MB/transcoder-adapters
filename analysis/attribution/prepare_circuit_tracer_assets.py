@@ -17,8 +17,7 @@ Inputs:
         Optional collected feature-data run directory.  When provided, this
         script packs its ``features/*.json`` files into circuit-tracer local
         feature-example files unless the run already contains a complete
-        ``circuit_tracer_features/`` packed cache from
-        ``collect_feature_activations --export_circuit_tracer_features``.
+        ``circuit_tracer_features/`` packed cache from collect_feature_activations.
 
 Outputs:
     PRODUCTS_DIR/circuit_tracer_transcoders/<model>/

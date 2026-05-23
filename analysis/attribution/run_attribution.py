@@ -27,6 +27,7 @@ After running, start the frontend with:
 
 import os
 import argparse
+import hashlib
 import inspect
 import subprocess
 import sys
@@ -62,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Required args - explicit for accounting
     parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
-    parser.add_argument("--run_name", type=str, required=True, help="Name for this run (used in output: {run_name}__{prompt}.json)")
+    parser.add_argument("--run_name", type=str, required=True, help="Name for this run (used in output: {run_name}__{prompt}__h{prompt_hash}.json)")
     parser.add_argument("--prompts", type=Path, required=True, help="Directory with .txt prompt files, or path to a single .txt file")
     parser.add_argument("--output_dir", type=Path, default=None, help=f"""
                         Output directory for graphs. Default: in the form
@@ -185,20 +186,136 @@ def _prompt_names_for_shard(
     ]
 
 
+def _prompt_content_hash(prompt_path: Path) -> str:
+    return hashlib.sha256(prompt_path.read_bytes()).hexdigest()[:12]
+
+
+def _graph_slug_for_prompt(run_name: str, prompt_path: Path) -> str:
+    return f"{run_name}__{prompt_path.stem}__h{_prompt_content_hash(prompt_path)}"
+
+
+def _legacy_graph_slug_for_prompt(run_name: str, prompt_path: Path) -> str:
+    return f"{run_name}__{prompt_path.stem}"
+
+
+def _stale_graph_paths(output_dir: Path, run_name: str, prompt_path: Path) -> list[Path]:
+    current_slug = _graph_slug_for_prompt(run_name, prompt_path)
+    legacy_slug = _legacy_graph_slug_for_prompt(run_name, prompt_path)
+    candidates = {
+        output_dir / f"{legacy_slug}.json",
+        output_dir / f"{legacy_slug}_raw.pt",
+    }
+    candidates.update(output_dir.glob(f"{legacy_slug}__h*.json"))
+    candidates.update(output_dir.glob(f"{legacy_slug}__h*_raw.pt"))
+    return sorted(
+        path
+        for path in candidates
+        if path.exists()
+        if path.name not in {f"{current_slug}.json", f"{current_slug}_raw.pt"}
+    )
+
+
+def _remove_graph_metadata_entries(output_dir: Path, stale_slugs: set[str]) -> None:
+    metadata_path = output_dir / "graph-metadata.json"
+    if not metadata_path.exists() or not stale_slugs:
+        return
+    try:
+        import json
+
+        metadata = json.loads(metadata_path.read_text())
+    except Exception as exc:
+        logger.warning(f"Could not update graph metadata after stale graph cleanup: {exc}")
+        return
+    graphs = metadata.get("graphs")
+    if not isinstance(graphs, list):
+        return
+    kept_graphs = [
+        graph
+        for graph in graphs
+        if not (isinstance(graph, dict) and graph.get("slug") in stale_slugs)
+    ]
+    removed_count = len(graphs) - len(kept_graphs)
+    if removed_count == 0:
+        return
+    metadata["graphs"] = kept_graphs
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+    logger.info(f"  removed {removed_count} stale graph-metadata entr{'y' if removed_count == 1 else 'ies'}")
+
+
+def _graph_slug_from_artifact_name(path: Path) -> str:
+    if path.name.endswith("_raw.pt"):
+        return path.name.removesuffix("_raw.pt")
+    return path.stem
+
+
+def _cleanup_and_classify_prompt_graphs(
+    *,
+    output_dir: Path,
+    run_name: str,
+    prompt_paths: Sequence[Path],
+) -> dict[str, dict]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    states = {}
+    skipped = []
+    new = []
+    redone = []
+
+    for prompt_path in prompt_paths:
+        prompt_hash = _prompt_content_hash(prompt_path)
+        slug = f"{run_name}__{prompt_path.stem}__h{prompt_hash}"
+        graph_path = output_dir / f"{slug}.json"
+        stale_paths = _stale_graph_paths(output_dir, run_name, prompt_path)
+
+        if stale_paths:
+            stale_slugs = {_graph_slug_from_artifact_name(path) for path in stale_paths}
+            for stale_path in stale_paths:
+                stale_path.unlink()
+            _remove_graph_metadata_entries(output_dir, stale_slugs)
+            redone.append((prompt_path.name, prompt_hash, [path.name for path in stale_paths]))
+            status = "redone_hash_changed"
+        elif graph_path.exists():
+            skipped.append((prompt_path.name, prompt_hash, graph_path.name))
+            status = "skipped"
+        else:
+            new.append((prompt_path.name, prompt_hash, graph_path.name))
+            status = "new"
+
+        states[prompt_path.stem] = {
+            "path": prompt_path,
+            "hash": prompt_hash,
+            "slug": slug,
+            "graph_path": graph_path,
+            "status": status,
+        }
+
+    logger.info("Prompt graph cache status:")
+    for prompt_name, prompt_hash, graph_name in skipped:
+        logger.info(f"  skipped unchanged: {prompt_name} h{prompt_hash} -> {graph_name}")
+    for prompt_name, prompt_hash, graph_name in new:
+        logger.info(f"  new prompt graph: {prompt_name} h{prompt_hash} -> {graph_name}")
+    for prompt_name, prompt_hash, removed_names in redone:
+        logger.info(
+            f"  prompt content changed; removed stale graph(s) for {prompt_name}, "
+            f"new hash h{prompt_hash}: {', '.join(removed_names)}"
+        )
+    return states
+
+
 def _preflight_existing_graphs(args: argparse.Namespace) -> dict[str, str] | None:
-    prompt_names = _prompt_names_for_shard(
-        args.prompts,
+    prompt_paths = _select_shard_items(
+        _list_prompt_files(args.prompts),
         num_shards=args.num_shards,
         shard_index=args.shard_index,
     )
-    if not prompt_names:
+    if not prompt_paths:
         return {}
 
-    missing_graphs = [
-        prompt_name
-        for prompt_name in prompt_names
-        if not (args.output_dir / f"{args.run_name}__{prompt_name}.json").exists()
-    ]
+    states = _cleanup_and_classify_prompt_graphs(
+        output_dir=args.output_dir,
+        run_name=args.run_name,
+        prompt_paths=prompt_paths,
+    )
+    missing_graphs = [state for state in states.values() if not state["graph_path"].exists()]
     if missing_graphs:
         return None
 
@@ -213,15 +330,16 @@ def _preflight_existing_graphs(args: argparse.Namespace) -> dict[str, str] | Non
         logger.info(f"Shard:       {args.shard_index}/{args.num_shards}")
     logger.info("=" * 60)
     logger.info("All requested graph JSONs already exist; skipping model load and attribution.")
-    for index, prompt_name in enumerate(prompt_names, 1):
+    prompt_items = list(states.items())
+    for index, (prompt_name, state) in enumerate(prompt_items, 1):
         logger.info(
-            f"[{index}/{len(prompt_names)}] {args.run_name}__{prompt_name} - SKIPPED (already exists)"
+            f"[{index}/{len(prompt_items)}] {state['slug']} - SKIPPED (unchanged hash h{state['hash']})"
         )
-    logger.info(f"Success: 0, Skipped: {len(prompt_names)}, Errors: 0 (total: {len(prompt_names)})")
+    logger.info(f"Success: 0, Skipped: {len(prompt_items)}, Errors: 0 (total: {len(prompt_items)})")
     _log_view_command(args.output_dir, args.features_dir)
     if args.serve:
         _serve_graphs(args.output_dir, port=args.port, features_dir=args.features_dir)
-    return {prompt_name: "skipped" for prompt_name in prompt_names}
+    return {prompt_name: "skipped" for prompt_name in states}
 
 
 def _parse_visible_cuda_devices(
@@ -528,6 +646,8 @@ def load_prompts(
             "tokens": tokens,
             "target": target,
             "text": text,
+            "path": txt_file,
+            "hash": _prompt_content_hash(txt_file),
         }
         target_str = tokenizer.decode([target])
         logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
@@ -676,6 +796,8 @@ def run_attribution(args: argparse.Namespace) -> dict[str, str]:
                 model_type=model_type,
             )
             prompts = {slug: {"tokens": tokens, "target": target, "text": text}}
+            prompts[slug]["path"] = prompts_path
+            prompts[slug]["hash"] = _prompt_content_hash(prompts_path)
             target_str = model.tokenizer.decode([target])
             logger.info(f"  {slug}: {len(tokens)} tokens, target={target_str!r}")
         else:
@@ -699,12 +821,14 @@ def run_attribution(args: argparse.Namespace) -> dict[str, str]:
 
     results = {}
     for i, (prompt_name, data) in enumerate(prompt_items, 1):
-        slug = f"{args.run_name}__{prompt_name}"
+        prompt_path = Path(data["path"])  # type: ignore[arg-type]
+        prompt_hash = str(data["hash"])
+        slug = f"{args.run_name}__{prompt_name}__h{prompt_hash}"
         graph_path = args.output_dir / f"{slug}.json"
 
         # Skip if graph already exists
         if graph_path.exists():
-            logger.info(f"\n[{i}/{len(prompt_items)}] {slug} - SKIPPED (already exists)")
+            logger.info(f"\n[{i}/{len(prompt_items)}] {slug} - SKIPPED (unchanged hash h{prompt_hash})")
             results[prompt_name] = "skipped"
             continue
 

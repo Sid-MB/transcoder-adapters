@@ -49,7 +49,7 @@ Output:
     ├── feature_metadata.json  # Activation frequencies, domain/region breakdowns
     ├── collect_feature_activations_args.json  # Full parsed CLI settings
     ├── collect_feature_activations_command.sh  # Pasteable replay command
-    └── circuit_tracer_features/  # Optional packed cache from --export_circuit_tracer_features
+    └── circuit_tracer_features/  # Packed cache for circuit-tracer local features
         ├── index.json.gz
         ├── layer_0.bin
         └── ...
@@ -853,7 +853,7 @@ def export_circuit_tracer_json(
     tokenizer,
     output_dir: Path,
     n_workers: int = 16,
-    export_circuit_tracer_features: bool = False,
+    export_circuit_tracer_features: bool = True,
 ):
     """Export feature data to circuit tracer JSON format."""
     features_dir = output_dir / "features"
@@ -1435,10 +1435,13 @@ def main():
     parser.add_argument("--output_dir", type=str, default=None,
                         help="""Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)""")
     parser.add_argument(
-        "--export_circuit_tracer_features",
-        action="store_true",
+        "--no-export_circuit_tracer_features",
+        dest="export_circuit_tracer_features",
+        action="store_false",
+        default=True,
         help=textwrap.dedent("""
-            Also write a packed circuit-tracer local feature cache while exporting feature JSON.
+            Skip writing the packed circuit-tracer local feature cache while exporting feature JSON.
+            By default, the packed cache is written.
 
             Output path:
               {output_dir}/circuit_tracer_features/index.json.gz

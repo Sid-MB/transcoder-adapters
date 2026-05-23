@@ -9,12 +9,13 @@ Skip behavior:
       ``<feature_data_dir>/circuit_tracer_features/index.json.gz`` before
       falling back to the deterministic ``PRODUCTS_DIR/circuit_tracer_features``
       conversion path.
-    - Attribution skips any prompt whose graph JSON already exists.  When all
-      requested graph JSONs exist, ``run_attribution`` skips model loading and
-      attribution entirely.  Graph paths are keyed by
-      ``<graph_output_dir>/<run_name>__<prompt_file_stem>.json``; if a prompt
-      directory mixes old and new prompts, the existing graph JSONs are left
-      alone and only missing prompt graphs are computed.
+    - Attribution graph paths are keyed by prompt file stem and content hash:
+      ``<graph_output_dir>/<run_name>__<prompt_file_stem>__h<sha256_12>.json``.
+      If the file name is unchanged but contents change, old same-stem graph
+      JSONs with different hashes are removed and the prompt is rerun.  When all
+      requested graph JSONs match the current prompt hashes, ``run_attribution``
+      skips model loading and attribution entirely.  If a prompt directory mixes
+      old and new prompts, only missing or changed prompt graphs are computed.
     - For local feature-example directories, graph metadata uses the short scan
       label ``/features`` while the real path is passed separately to the local
       server as ``features_dir``.  This keeps the circuit-tracer prompt dropdown
@@ -52,9 +53,8 @@ Optional input:
         ``features/*.json`` and should contain ``feature_metadata.json`` so the
         exporter can infer the layer and feature counts.  If the directory also
         contains a complete ``circuit_tracer_features/`` packed cache produced
-        by ``collect_feature_activations --export_circuit_tracer_features``,
-        that cache is reused automatically unless ``--feature_output_dir`` is
-        set explicitly.
+        by collect_feature_activations, that cache is reused automatically
+        unless ``--feature_output_dir`` is set explicitly.
 
 Outputs:
     PRODUCTS_DIR/circuit_tracer_transcoders/<model>/
@@ -64,8 +64,8 @@ Outputs:
         ``--feature_data_dir`` is provided and no packed cache already exists
         inside the collected feature-data directory.
     PRODUCTS_DIR/attribution_graphs/<run-name>_<model>/
-        ``graph-metadata.json`` plus one ``{run_name}__{prompt}.json`` per
-        prompt.
+        ``graph-metadata.json`` plus one
+        ``{run_name}__{prompt}__h{prompt_sha256_12}.json`` per prompt.
 
 Example without feature examples:
     uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --port 8042
