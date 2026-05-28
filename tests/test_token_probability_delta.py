@@ -152,6 +152,29 @@ class TokenProbabilityDeltaTests(unittest.TestCase):
         self.assertNotEqual(first, changed)
         self.assertNotEqual(first, all_tokens)
 
+    def test_dashboard_cache_dir_ignores_terminal_newlines(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prompts_dir = Path(tmpdir) / "prompts"
+            prompts_dir.mkdir()
+            prompt_path = prompts_dir / "example.txt"
+            prompt_path.write_text("A")
+
+            without_newline = tpd.default_dashboard_cache_dir(
+                model_path="org/model",
+                prompts_dir=prompts_dir,
+                prompt_path=prompt_path,
+                prompt_format="chat",
+            )
+            prompt_path.write_text("A\n\n")
+            with_newline = tpd.default_dashboard_cache_dir(
+                model_path="org/model",
+                prompts_dir=prompts_dir,
+                prompt_path=prompt_path,
+                prompt_format="chat",
+            )
+
+        self.assertEqual(without_newline, with_newline)
+
     def test_dashboard_cache_cleanup_removes_stale_same_prompt_hash_dirs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

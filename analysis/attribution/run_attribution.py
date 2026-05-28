@@ -29,11 +29,13 @@ import os
 import argparse
 import hashlib
 import inspect
+import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 
@@ -78,7 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["auto", "raw", "chat"],
         default="auto",
         help=(
-            "How to tokenize prompt files. 'raw' preserves file text exactly; "
+            "How to tokenize prompt files. Prompt loaders ignore terminal newlines. "
+            "'raw' otherwise preserves file text; "
             "'chat' parses marked prompt files and applies the tokenizer chat template; "
             "'auto' uses chat formatting for Gemma2 checkpoints with marked prompt files."
         ),
@@ -134,6 +137,85 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _jsonable_arg_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_arg_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable_arg_value(item) for key, item in value.items()}
+    return value
+
+
+def _value_to_flag_string(action: argparse.Action, value: Any) -> str | None:
+    """Format one parsed argparse value as a pasteable CLI flag."""
+    if value is None:
+        return None
+    if isinstance(action, argparse._StoreTrueAction):
+        return action.option_strings[0] if value else None
+    if isinstance(action, argparse._StoreFalseAction):
+        return action.option_strings[0] if not value else None
+    if isinstance(action, argparse.BooleanOptionalAction):
+        for option in action.option_strings:
+            if value and not option.startswith("--no-"):
+                return option
+            if not value and option.startswith("--no-"):
+                return option
+        return None
+
+    option = action.option_strings[0] if action.option_strings else None
+    if option is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        quoted_values = " ".join(shlex.quote(str(item)) for item in value)
+        return f"{option} {quoted_values}"
+    return f"{option}={shlex.quote(str(value))}"
+
+
+def build_replay_command(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    """Build a pasteable attribution command from the fully resolved args namespace."""
+    parts = ["uv run python -m analysis.attribution.run_attribution"]
+    for action in parser._actions:
+        if action.dest in {"help", argparse.SUPPRESS}:
+            continue
+        if not action.option_strings:
+            continue
+        flag = _value_to_flag_string(action, getattr(args, action.dest, None))
+        if flag is not None:
+            parts.append(flag)
+    return " \\\n    ".join(parts)
+
+
+def export_run_arguments(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> None:
+    """Write parsed attribution settings and a pasteable replay command."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    args_json_path = output_dir / "run_attribution_args.json"
+    command_path = output_dir / "run_attribution_command.sh"
+    args_payload = {
+        key: _jsonable_arg_value(value)
+        for key, value in vars(args).items()
+    }
+    command = build_replay_command(parser, args)
+
+    with args_json_path.open("w") as f:
+        json.dump(args_payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    with command_path.open("w") as f:
+        f.write("#!/usr/bin/env bash\n")
+        f.write("set -euo pipefail\n\n")
+        f.write(command)
+        f.write("\n")
+
+    logger.info(f"Saved parsed attribution arguments to {args_json_path}")
+    logger.info(f"Saved pasteable attribution command to {command_path}")
+
+
 def _validate_shard_args(num_shards: int, shard_index: int):
     if num_shards < 1:
         raise ValueError(f"--num_shards must be >= 1, got {num_shards}")
@@ -186,8 +268,23 @@ def _prompt_names_for_shard(
     ]
 
 
+def _read_prompt_text(prompt_path: Path) -> str:
+    """Read prompt text, ignoring accidental terminal newlines."""
+    text = prompt_path.read_text()
+    stripped_text = text.rstrip("\r\n")
+    removed_count = len(text) - len(stripped_text)
+    if removed_count:
+        logger.warning(
+            "Filtered %s terminal newline character(s) from prompt file %s; "
+            "trailing newlines are ignored for attribution targets and prompt hashes",
+            removed_count,
+            prompt_path,
+        )
+    return stripped_text
+
+
 def _prompt_content_hash(prompt_path: Path) -> str:
-    return hashlib.sha256(prompt_path.read_bytes()).hexdigest()[:12]
+    return hashlib.sha256(_read_prompt_text(prompt_path).encode()).hexdigest()[:12]
 
 
 def _graph_slug_for_prompt(run_name: str, prompt_path: Path) -> str:
@@ -594,7 +691,7 @@ def load_prompt_file(
         target_token: The target token ID
         prompt_str: Decoded prompt string
     """
-    text = path.read_text()
+    text = _read_prompt_text(path)
     if _should_chat_format_prompt(text, prompt_format, model_type):
         return _load_chat_formatted_prompt(text, tokenizer)
     if prompt_format == "auto":
@@ -736,6 +833,12 @@ def run_attribution(args: argparse.Namespace) -> dict[str, str]:
     else:
         args.output_dir = Path(args.output_dir)
 
+    # Default scan to run_name
+    if args.scan is None:
+        args.scan = args.run_name
+
+    export_run_arguments(build_parser(), args, args.output_dir)
+
     try:
         _validate_shard_args(args.num_shards, args.shard_index)
         existing_results = _preflight_existing_graphs(args)
@@ -745,10 +848,6 @@ def run_attribution(args: argparse.Namespace) -> dict[str, str]:
             return {}
     except Exception:
         raise
-
-    # Default scan to run_name
-    if args.scan is None:
-        args.scan = args.run_name
 
     # Print config
     logger.info("=" * 60)

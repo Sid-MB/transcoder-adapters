@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 import torch
 
-from analysis.attribution.run_attribution import _parse_chat_prompt_text
+from analysis.attribution.run_attribution import _parse_chat_prompt_text, _read_prompt_text
 from helpers.log import logger, setup_logging
 from helpers.paths import PRODUCTS_DIR
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
@@ -48,7 +48,7 @@ def _slugify(value: str) -> str:
 
 
 def _prompt_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    return hashlib.sha256(_read_prompt_text(path).encode()).hexdigest()[:12]
 
 
 def default_dashboard_cache_dir(
@@ -145,7 +145,7 @@ def _transcoder_disabled(model: Any, disabled: bool):
 
 
 def _parse_prompt_file(path: Path, prompt_format: str, tokenizer: Any) -> tuple[list[int], list[bool], str]:
-    text = path.read_text()
+    text = _read_prompt_text(path)
     if prompt_format == "raw":
         token_ids = tokenizer.encode(text, add_special_tokens=False)
         return token_ids, [True] * len(token_ids), tokenizer.decode(token_ids)

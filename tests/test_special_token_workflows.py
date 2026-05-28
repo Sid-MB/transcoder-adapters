@@ -12,9 +12,12 @@ from analysis.attribution.run_attribution import (
     _build_auto_shard_worker_command,
     _cleanup_and_classify_prompt_graphs,
     _graph_slug_for_prompt,
+    _prompt_content_hash,
     _parse_visible_cuda_devices,
     _serve_graphs,
+    build_replay_command,
     build_parser,
+    export_run_arguments,
     load_prompt_file,
     load_prompts,
     run_attribution,
@@ -203,6 +206,40 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
         self.assertEqual(prompt_tokens, raw_tokens[:-1])
         self.assertEqual(target, raw_tokens[-1])
 
+    def test_attribution_raw_prompt_format_strips_terminal_newlines(self):
+        tokenizer = GemmaLikeChatTokenizer()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prompt_path = Path(tmpdir) / "prompt.txt"
+            prompt_path.write_text("Problem? Answer!\n\n")
+            with self.assertLogs("training", level="WARNING") as logs:
+                prompt_tokens, target, _ = load_prompt_file(
+                    prompt_path,
+                    tokenizer,
+                    prompt_format="raw",
+                    model_type="gemma2",
+                )
+
+        raw_tokens = tokenizer.encode("Problem? Answer!", add_special_tokens=False)
+        self.assertEqual(prompt_tokens, raw_tokens[:-1])
+        self.assertEqual(target, raw_tokens[-1])
+        self.assertTrue(
+            any("Filtered 2 terminal newline character(s)" in message for message in logs.output)
+        )
+
+    def test_attribution_prompt_hash_ignores_terminal_newlines(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            without_newline = root / "without.txt"
+            with_newline = root / "with.txt"
+            without_newline.write_text("Problem? Answer!")
+            with_newline.write_text("Problem? Answer!\n\n")
+
+            self.assertEqual(
+                _prompt_content_hash(without_newline),
+                _prompt_content_hash(with_newline),
+            )
+
     def test_attribution_auto_warns_when_falling_back_to_raw_prompt_format(self):
         tokenizer = GemmaLikeChatTokenizer()
 
@@ -338,6 +375,59 @@ class SpecialTokenWorkflowTests(unittest.TestCase):
 
             self.assertEqual(results, {"one": "skipped", "two": "skipped"})
             from_pretrained.assert_not_called()
+            args_payload = json.loads((output_dir / "run_attribution_args.json").read_text())
+            self.assertEqual(args_payload["checkpoint"], "checkpoint")
+            self.assertEqual(args_payload["run_name"], "run")
+            self.assertEqual(args_payload["prompts"], str(prompts))
+            self.assertEqual(args_payload["output_dir"], str(output_dir))
+            self.assertEqual(args_payload["scan"], "run")
+            command = (output_dir / "run_attribution_command.sh").read_text()
+            self.assertIn("uv run python -m analysis.attribution.run_attribution", command)
+            self.assertIn("--checkpoint=checkpoint", command)
+            self.assertIn(f"--prompts={prompts}", command)
+            self.assertIn(f"--output_dir={output_dir}", command)
+            self.assertIn("--scan=run", command)
+
+    def test_export_run_arguments_writes_replay_command_and_json(self):
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            prompts = root / "prompts"
+            output_dir = root / "graphs"
+            args = parser.parse_args([
+                "--checkpoint",
+                "org/model",
+                "--run_name",
+                "demo",
+                "--prompts",
+                str(prompts),
+                "--output_dir",
+                str(output_dir),
+                "--scan",
+                "org/features",
+                "--prompt_format",
+                "chat",
+                "--max_feature_nodes",
+                "64",
+                "--serve",
+                "--features_dir",
+                "/tmp/features",
+            ])
+
+            export_run_arguments(parser, args, output_dir)
+
+            payload = json.loads((output_dir / "run_attribution_args.json").read_text())
+            self.assertEqual(payload["checkpoint"], "org/model")
+            self.assertEqual(payload["prompts"], str(prompts))
+            self.assertEqual(payload["output_dir"], str(output_dir))
+            self.assertEqual(payload["scan"], "org/features")
+
+            command = (output_dir / "run_attribution_command.sh").read_text()
+            self.assertEqual(build_replay_command(parser, args), command.split("\n\n", 1)[1].strip())
+            self.assertIn("--prompt_format=chat", command)
+            self.assertIn("--max_feature_nodes=64", command)
+            self.assertIn("--serve", command)
+            self.assertIn("--features_dir=/tmp/features", command)
 
     def test_prompt_hash_cleanup_removes_stale_same_named_graphs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
