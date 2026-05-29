@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from analysis.attribution.comparison_frontend import (
+    FEATURE_DETAIL_SCAN_NEW,
     FEATURE_EXAMPLES_LOAD_NEW,
+    FEATURE_HISTOGRAM_GUARD_NEW,
     FEATURE_ID_PATCH_NEW,
     FEATURE_ROW_FONT_SIZE_NEW,
     FEATURE_TYPE_FUNCTION_OLD,
@@ -14,9 +16,11 @@ from analysis.attribution.comparison_frontend import (
     NODE_CONNECTIONS_HEADER_ICON_NEW,
     patch_frontend_assets,
 )
+from analysis.attribution.prepare_comparison_overlay_view import cap_from_arg, default_output_dir
 from analysis.attribution.run_base_adapter_comparison import (
     ADAPTER_NODE_SHAPE,
     BASE_NODE_SHAPE,
+    LOCAL_FEATURE_SCAN,
     SOURCE_ADAPTER,
     SOURCE_BASE,
     build_gemmascope_transcoder_config,
@@ -80,6 +84,30 @@ def _payload(slug: str, *, feature_node_id: str, logit_node_id: str):
 
 
 class BaseAdapterComparisonTests(unittest.TestCase):
+    def test_prepare_overlay_view_cap_from_arg(self):
+        self.assertIsNone(cap_from_arg(None))
+        self.assertIsNone(cap_from_arg(-1))
+        self.assertEqual(cap_from_arg(0), 0)
+        self.assertEqual(cap_from_arg(7), 7)
+
+    def test_prepare_overlay_view_default_output_dir(self):
+        output_dir = default_output_dir(
+            Path("/tmp/run/overlay"),
+            max_base_feature_nodes=64,
+            max_base_error_nodes=0,
+            max_adapter_feature_nodes=None,
+        )
+        self.assertEqual(output_dir, Path("/tmp/run/overlay_compact_base64_error0"))
+
+    def test_prepare_overlay_view_default_output_dir_includes_adapter_cap_and_all(self):
+        output_dir = default_output_dir(
+            Path("/tmp/run/overlay"),
+            max_base_feature_nodes=None,
+            max_base_error_nodes=32,
+            max_adapter_feature_nodes=10,
+        )
+        self.assertEqual(output_dir, Path("/tmp/run/overlay_compact_baseall_error32_adapter10"))
+
     def test_node_shape_metadata_uses_semantic_source_names(self):
         self.assertEqual(BASE_NODE_SHAPE, "base_model")
         self.assertEqual(ADAPTER_NODE_SHAPE, "adapter_model")
@@ -131,7 +159,11 @@ class BaseAdapterComparisonTests(unittest.TestCase):
         base_payload = _payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1")
         adapter_payload = _payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1")
 
-        overlay = build_overlay_payload(base_payload=base_payload, adapter_payload=adapter_payload)
+        overlay = build_overlay_payload(
+            base_payload=base_payload,
+            adapter_payload=adapter_payload,
+            base_feature_scan="siddharthmb/base-features",
+        )
         node_ids = {node["node_id"] for node in overlay["nodes"]}
         self.assertIn("E_1_0", node_ids)
         self.assertIn("base__0_1_1", node_ids)
@@ -153,6 +185,14 @@ class BaseAdapterComparisonTests(unittest.TestCase):
         self.assertIn(("base__0_1_1", "base__27_2_1", SOURCE_BASE), links)
         self.assertIn(("E_1_0", "adapter__0_1_1", SOURCE_ADAPTER), links)
         self.assertIn(("adapter__0_1_1", "adapter__27_2_1", SOURCE_ADAPTER), links)
+        self.assertEqual(
+            overlay["metadata"]["comparison"]["adapter_feature_scan"],
+            LOCAL_FEATURE_SCAN,
+        )
+        self.assertEqual(
+            overlay["metadata"]["comparison"]["base_feature_scan"],
+            "siddharthmb/base-features",
+        )
 
     def test_overlay_keeps_logits_as_logit_shape(self):
         base_payload = _payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1")
@@ -181,6 +221,20 @@ class BaseAdapterComparisonTests(unittest.TestCase):
         self.assertEqual(by_id["base__27_2_1"]["node_shape"], "logit")
         self.assertEqual(by_id["base__0_1_1"]["source_feature_label"], "base L0/F1")
         self.assertIn("Base GemmaScope feature L0/F1", by_id["base__0_1_1"]["clerp"])
+
+    def test_normalize_overlay_backfills_adapter_feature_scan(self):
+        overlay = build_overlay_payload(
+            base_payload=_payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1"),
+            adapter_payload=_payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1"),
+        )
+        overlay["metadata"]["comparison"].pop("adapter_feature_scan")
+
+        normalized = normalize_overlay_payload(overlay)
+
+        self.assertEqual(
+            normalized["metadata"]["comparison"]["adapter_feature_scan"],
+            LOCAL_FEATURE_SCAN,
+        )
 
     def test_compact_overlay_limits_base_feature_nodes(self):
         base_payload = _payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1")
@@ -364,6 +418,8 @@ class BaseAdapterComparisonTests(unittest.TestCase):
             feature_detail_path.write_text(
                 "\n".join(
                     [
+                        "      const scan = data.metadata.scan?.startsWith('custom-') ? data.metadata.transcoder_list[d.layer] : data.metadata.scan;",
+                        "      if (typeof currentActivation == 'number') {",
                         "      featureExamples.loadFeature(scan, d.featureIndex)",
                         "      renderFeatureExamples(scan, d.featureIndex)",
                         "      examplesSel.st({opacity: 1})",
@@ -382,6 +438,8 @@ class BaseAdapterComparisonTests(unittest.TestCase):
             self.assertIn(FEATURE_TYPE_FUNCTION_NEW, util_path.read_text())
             self.assertIn(LINK_GRAPH_NODE_TEXT_NEW, link_path.read_text())
             self.assertIn(LINK_GRAPH_FONT_SIZE_NEW, link_path.read_text())
+            self.assertIn(FEATURE_DETAIL_SCAN_NEW, feature_detail_path.read_text())
+            self.assertIn(FEATURE_HISTOGRAM_GUARD_NEW, feature_detail_path.read_text())
             self.assertIn(FEATURE_EXAMPLES_LOAD_NEW, feature_detail_path.read_text())
             self.assertIn(NODE_CONNECTIONS_HEADER_ICON_NEW, node_connections_path.read_text())
 

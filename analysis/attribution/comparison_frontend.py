@@ -37,6 +37,7 @@ FEATURE_ROW_FONT_SIZE_NEW = "fontSize: d => nodeShapeFontSize(d),\n        textA
 FEATURE_TYPE_RETURN_OLD = "    featureTypeToText,\n"
 FEATURE_TYPE_RETURN_NEW = (
     "    featureTypeToText,\n    nodeShapeToText,\n    nodeShapeFontSize,\n    nodeShapeOpacity,\n"
+    "    nodeFeatureScan,\n"
 )
 FEATURE_TYPE_FUNCTION_OLD = """  function featureTypeToText(type){
     if (type == 'logit') return '■'
@@ -72,6 +73,17 @@ FEATURE_TYPE_FUNCTION_NEW = """  function nodeShapeToText(node){
     return 1
   }
 
+  function nodeFeatureScan(data, node){
+    if (node?.source_model == 'base') {
+      return data?.metadata?.comparison?.base_feature_scan || null
+    }
+    if (node?.source_model == 'adapter') {
+      return data?.metadata?.comparison?.adapter_feature_scan || '/features'
+    }
+    if (data?.metadata?.scan?.startsWith('custom-')) return data.metadata.transcoder_list[node.layer]
+    return data?.metadata?.scan
+  }
+
   function featureTypeToText(type){
     if (type == 'logit') return '■'
     if (type == 'embedding') return '■'
@@ -80,11 +92,21 @@ FEATURE_TYPE_FUNCTION_NEW = """  function nodeShapeToText(node){
     
   }
 """
+FEATURE_DETAIL_SCAN_OLD = (
+    "      const scan = data.metadata.scan?.startsWith('custom-') ? "
+    "data.metadata.transcoder_list[d.layer] : data.metadata.scan;"
+)
+FEATURE_DETAIL_SCAN_NEW = (
+    "      const scan = utilCg.nodeFeatureScan ? utilCg.nodeFeatureScan(data, d) : "
+    "(data.metadata.scan?.startsWith('custom-') ? data.metadata.transcoder_list[d.layer] : data.metadata.scan);"
+)
+FEATURE_HISTOGRAM_GUARD_OLD = "      if (typeof currentActivation == 'number') {"
+FEATURE_HISTOGRAM_GUARD_NEW = "      if (typeof currentActivation == 'number' && scan) {"
 FEATURE_EXAMPLES_LOAD_OLD = """      featureExamples.loadFeature(scan, d.featureIndex)
       renderFeatureExamples(scan, d.featureIndex)
       examplesSel.st({opacity: 1})
 """
-FEATURE_EXAMPLES_LOAD_NEW = """      if (d.source_model == 'base') {
+FEATURE_EXAMPLES_LOAD_NEW = """      if (!scan) {
         examplesSel.st({opacity: 0})
       } else {
         featureExamples.loadFeature(scan, d.featureIndex)
@@ -144,6 +166,18 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
     link_graph_path.write_text(link_graph_text)
 
     feature_detail_text = feature_detail_path.read_text()
+    feature_detail_text = _replace_once(
+        feature_detail_text,
+        FEATURE_DETAIL_SCAN_OLD,
+        FEATURE_DETAIL_SCAN_NEW,
+        path=feature_detail_path,
+    )
+    feature_detail_text = _replace_once(
+        feature_detail_text,
+        FEATURE_HISTOGRAM_GUARD_OLD,
+        FEATURE_HISTOGRAM_GUARD_NEW,
+        path=feature_detail_path,
+    )
     feature_detail_text = _replace_once(
         feature_detail_text,
         FEATURE_EXAMPLES_LOAD_OLD,

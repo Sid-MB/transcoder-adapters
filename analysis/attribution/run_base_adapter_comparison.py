@@ -41,7 +41,7 @@ ADAPTER_NODE_SHAPE = "adapter_model"
 SHARED_NODE_SHAPE = "shared"
 OVERLAY_SCHEMA_VERSION = 2
 DEFAULT_COMPACT_BASE_FEATURE_NODES = 64
-DEFAULT_COMPACT_BASE_ERROR_NODES = 32
+DEFAULT_COMPACT_BASE_ERROR_NODES = 0
 LOCAL_FEATURE_SCAN = "/features"
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -607,6 +607,7 @@ def build_overlay_payload(
     adapter_payload: dict[str, Any],
     overlay_slug: str | None = None,
     hide_direct_embedding_logit_links: bool = True,
+    base_feature_scan: str | None = None,
 ) -> dict[str, Any]:
     """Merge matched base and adapter graph JSON payloads into one visual overlay."""
     base_metadata = base_payload["metadata"]
@@ -685,6 +686,8 @@ def build_overlay_payload(
                 "adapter_slug": adapter_slug,
                 "base_scan": base_metadata.get("scan"),
                 "adapter_scan": adapter_metadata.get("scan"),
+                "base_feature_scan": base_feature_scan,
+                "adapter_feature_scan": LOCAL_FEATURE_SCAN,
                 "node_shapes": {
                     SOURCE_BASE: BASE_NODE_SHAPE,
                     SOURCE_ADAPTER: ADAPTER_NODE_SHAPE,
@@ -727,6 +730,10 @@ def normalize_overlay_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "nodes": [dict(node) for node in payload["nodes"]],
         "links": [dict(link) for link in payload["links"]],
     }
+    comparison = dict(normalized["metadata"].get("comparison") or {})
+    if comparison and "adapter_feature_scan" not in comparison:
+        comparison["adapter_feature_scan"] = LOCAL_FEATURE_SCAN
+        normalized["metadata"]["comparison"] = comparison
     prompt_tokens = list(normalized["metadata"].get("prompt_tokens") or [])
     for node in normalized["nodes"]:
         feature_type = str(node.get("feature_type") or "")
@@ -925,6 +932,7 @@ def write_overlay_graphs(
     adapter_graph_dir: Path,
     overlay_graph_dir: Path,
     hide_direct_embedding_logit_links: bool = True,
+    base_feature_scan: str | None = None,
 ) -> list[Path]:
     """Write overlay graph JSONs for all matched base/adapter prompt-token sets."""
     base_graphs = _load_graph_payloads_by_prompt_tokens(base_graph_dir)
@@ -942,6 +950,7 @@ def write_overlay_graphs(
             base_payload=base_graphs[prompt_key],
             adapter_payload=adapter_graphs[prompt_key],
             hide_direct_embedding_logit_links=hide_direct_embedding_logit_links,
+            base_feature_scan=base_feature_scan,
         )
         overlay_path = overlay_graph_dir / f"{overlay_payload['metadata']['slug']}.json"
         overlay_path.write_text(json.dumps(overlay_payload, indent=2) + "\n")
@@ -970,6 +979,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run_name", default="base_adapter_overlay")
     parser.add_argument("--output_dir", type=Path, default=None)
     parser.add_argument("--feature_data_path", default=None, help="Optional adapter feature examples")
+    parser.add_argument(
+        "--base_feature_data_path",
+        default=None,
+        help=(
+            "Optional base/GemmaScope feature examples as a Hugging Face feature repo "
+            "or scan name. Local mixed feature directories are not served yet."
+        ),
+    )
     parser.add_argument("--adapter_feature_output_dir", type=Path, default=None)
     parser.add_argument("--adapter_transcoder_output_dir", type=Path, default=None)
     parser.add_argument("--gemmascope_repo", default="google/gemma-scope-2b-pt-transcoders")
@@ -1097,6 +1114,11 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
     adapter_feature_output_dir = feature_output if isinstance(feature_output, Path) else None
     adapter_scan = scan_name_for_feature_output(feature_output, args.run_name)
     adapter_features_dir = str(feature_output) if isinstance(feature_output, Path) else None
+    base_feature_scan = (
+        normalize_hf_feature_ref(args.base_feature_data_path)
+        if args.base_feature_data_path
+        else None
+    )
 
     adapter_args = argparse.Namespace(
         transcoder_model_path=args.adapter_checkpoint,
@@ -1151,6 +1173,7 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
         adapter_graph_dir=adapter_graph_dir,
         overlay_graph_dir=overlay_graph_dir,
         hide_direct_embedding_logit_links=not args.show_direct_embedding_logit_links,
+        base_feature_scan=base_feature_scan,
     )
     compact_overlay_paths: list[Path] = []
     compact_base_cap = (
@@ -1202,6 +1225,10 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
             "scan": adapter_scan,
             "features_dir": adapter_features_dir,
         },
+        "base_features": {
+            "feature_data_path": args.base_feature_data_path,
+            "scan": base_feature_scan,
+        },
         "overlay_options": {
             "hide_direct_embedding_logit_links": not args.show_direct_embedding_logit_links,
             "compact_max_base_feature_nodes": compact_base_cap if compact_overlay_paths else None,
@@ -1215,7 +1242,6 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
             "adapter": adapter_results,
         },
         "later_todo": [
-            "Add base/GemmaScope feature collection so base nodes can have clickable examples.",
             "Add mixed feature-example routing for local adapter examples plus base GemmaScope examples.",
         ],
     }
