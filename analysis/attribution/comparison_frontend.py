@@ -102,6 +102,34 @@ FEATURE_DETAIL_SCAN_NEW = (
 )
 FEATURE_HISTOGRAM_GUARD_OLD = "      if (typeof currentActivation == 'number') {"
 FEATURE_HISTOGRAM_GUARD_NEW = "      if (typeof currentActivation == 'number' && scan) {"
+FEATURE_URL_FUNCTION_OLD = """  function featureUrl(scan, path) {
+    // If the scan is a local path, fetch features from the local directory
+    if (scan.startsWith('/') || scan.startsWith('./')) {
+      return `/features/${path}`
+    }
+    // else create the HuggingFace url
+    const [repoId, rest] = scan.split('//')
+    const [filePath, revision] = rest ? rest.split('@') : [null, scan.split('@')[1]]
+    const prefix = filePath ? `${filePath}/` : ''
+    return `https://huggingface.co/${repoId.split('@')[0]}/resolve/${revision || 'main'}/${prefix}features/${path}`
+  }
+"""
+FEATURE_URL_FUNCTION_NEW = """  function featureUrl(scan, path) {
+    // Local comparison scans are served under their own aliases so an overlay
+    // can show base and adapter feature examples at the same time.
+    if (scan.startsWith('/')) {
+      return `${scan.replace(/\\/$/, '')}/${path}`
+    }
+    if (scan.startsWith('./')) {
+      return `/features/${path}`
+    }
+    // else create the HuggingFace url
+    const [repoId, rest] = scan.split('//')
+    const [filePath, revision] = rest ? rest.split('@') : [null, scan.split('@')[1]]
+    const prefix = filePath ? `${filePath}/` : ''
+    return `https://huggingface.co/${repoId.split('@')[0]}/resolve/${revision || 'main'}/${prefix}features/${path}`
+  }
+"""
 FEATURE_EXAMPLES_LOAD_OLD = """      featureExamples.loadFeature(scan, d.featureIndex)
       renderFeatureExamples(scan, d.featureIndex)
       examplesSel.st({opacity: 1})
@@ -134,6 +162,7 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
     util_path = frontend_dir / "attribution_graph" / "util-cg.js"
     link_graph_path = frontend_dir / "attribution_graph" / "init-cg-link-graph.js"
     feature_detail_path = frontend_dir / "attribution_graph" / "init-cg-feature-detail.js"
+    feature_examples_path = frontend_dir / "feature_examples" / "init-feature-examples.js"
     node_connections_path = frontend_dir / "attribution_graph" / "init-cg-node-connections.js"
 
     util_text = util_path.read_text()
@@ -185,6 +214,15 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         path=feature_detail_path,
     )
     feature_detail_path.write_text(feature_detail_text)
+
+    feature_examples_text = feature_examples_path.read_text()
+    feature_examples_text = _replace_once(
+        feature_examples_text,
+        FEATURE_URL_FUNCTION_OLD,
+        FEATURE_URL_FUNCTION_NEW,
+        path=feature_examples_path,
+    )
+    feature_examples_path.write_text(feature_examples_text)
 
     node_connections_text = node_connections_path.read_text()
     node_connections_text = _replace_once(

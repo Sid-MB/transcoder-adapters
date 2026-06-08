@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from urllib.request import Request, urlopen
 from pathlib import Path
 
 from analysis.attribution.comparison_frontend import (
@@ -11,6 +12,8 @@ from analysis.attribution.comparison_frontend import (
     FEATURE_ROW_FONT_SIZE_NEW,
     FEATURE_TYPE_FUNCTION_OLD,
     FEATURE_TYPE_FUNCTION_NEW,
+    FEATURE_URL_FUNCTION_OLD,
+    FEATURE_URL_FUNCTION_NEW,
     LINK_GRAPH_FONT_SIZE_NEW,
     LINK_GRAPH_NODE_TEXT_NEW,
     NODE_CONNECTIONS_HEADER_ICON_NEW,
@@ -20,6 +23,7 @@ from analysis.attribution.prepare_comparison_overlay_view import cap_from_arg, d
 from analysis.attribution.run_base_adapter_comparison import (
     ADAPTER_NODE_SHAPE,
     BASE_NODE_SHAPE,
+    LOCAL_BASE_FEATURE_SCAN,
     LOCAL_FEATURE_SCAN,
     SOURCE_ADAPTER,
     SOURCE_BASE,
@@ -32,6 +36,7 @@ from analysis.attribution.run_base_adapter_comparison import (
     write_compact_overlay_graphs,
     write_overlay_graphs,
 )
+from analysis.attribution.serve_comparison_graphs import start_comparison_server
 
 
 def _node(node_id: str, feature_type: str, *, layer="0", feature=1, ctx_idx=0):
@@ -373,6 +378,8 @@ class BaseAdapterComparisonTests(unittest.TestCase):
                 overlay_graph_dir=overlay_dir,
                 compact_overlay_graph_dir=compact_dir,
                 max_base_feature_nodes=0,
+                base_feature_scan="mntss/gemma-scope-transcoders",
+                adapter_feature_scan=LOCAL_FEATURE_SCAN,
             )
 
             self.assertEqual(len(paths), 1)
@@ -381,15 +388,26 @@ class BaseAdapterComparisonTests(unittest.TestCase):
                 metadata["graphs"][0]["comparison"]["compact_view"]["max_base_feature_nodes"],
                 0,
             )
+            self.assertEqual(
+                metadata["graphs"][0]["comparison"]["base_feature_scan"],
+                "mntss/gemma-scope-transcoders",
+            )
+            self.assertEqual(
+                metadata["graphs"][0]["comparison"]["adapter_feature_scan"],
+                LOCAL_FEATURE_SCAN,
+            )
 
     def test_frontend_patch_adds_source_feature_ids_and_node_shapes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             attribution_dir = root / "attribution_graph"
+            feature_examples_dir = root / "feature_examples"
             attribution_dir.mkdir()
+            feature_examples_dir.mkdir()
             util_path = attribution_dir / "util-cg.js"
             link_path = attribution_dir / "init-cg-link-graph.js"
             feature_detail_path = attribution_dir / "init-cg-feature-detail.js"
+            feature_examples_path = feature_examples_dir / "init-feature-examples.js"
             node_connections_path = attribution_dir / "init-cg-node-connections.js"
             util_path.write_text(
                 "\n".join(
@@ -427,6 +445,7 @@ class BaseAdapterComparisonTests(unittest.TestCase):
                 )
                 + "\n"
             )
+            feature_examples_path.write_text(FEATURE_URL_FUNCTION_OLD)
             node_connections_path.write_text(
                 "headerSel.append('span.feature-icon').text(utilCg.featureTypeToText(clickedNode.feature_type))\n"
             )
@@ -440,8 +459,40 @@ class BaseAdapterComparisonTests(unittest.TestCase):
             self.assertIn(LINK_GRAPH_FONT_SIZE_NEW, link_path.read_text())
             self.assertIn(FEATURE_DETAIL_SCAN_NEW, feature_detail_path.read_text())
             self.assertIn(FEATURE_HISTOGRAM_GUARD_NEW, feature_detail_path.read_text())
+            self.assertIn(FEATURE_URL_FUNCTION_NEW, feature_examples_path.read_text())
             self.assertIn(FEATURE_EXAMPLES_LOAD_NEW, feature_detail_path.read_text())
             self.assertIn(NODE_CONNECTIONS_HEADER_ICON_NEW, node_connections_path.read_text())
+
+    def test_comparison_server_serves_adapter_and_base_feature_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph_dir = root / "graphs"
+            adapter_dir = root / "adapter_features"
+            base_dir = root / "base_features"
+            graph_dir.mkdir()
+            adapter_dir.mkdir()
+            base_dir.mkdir()
+            (graph_dir / "graph-metadata.json").write_text(json.dumps({"graphs": []}))
+            (adapter_dir / "index.json.gz").write_bytes(b"adapter")
+            (base_dir / "index.json.gz").write_bytes(b"base")
+
+            server = start_comparison_server(
+                graph_file_dir=graph_dir,
+                adapter_features_dir=adapter_dir,
+                base_features_dir=base_dir,
+                port=0,
+            )
+            try:
+                port = server.httpd.server_address[1]
+                adapter_req = Request(f"http://localhost:{port}{LOCAL_FEATURE_SCAN}/index.json.gz")
+                base_req = Request(f"http://localhost:{port}{LOCAL_BASE_FEATURE_SCAN}/index.json.gz")
+                legacy_req = Request(f"http://localhost:{port}/features/index.json.gz")
+
+                self.assertEqual(urlopen(adapter_req, timeout=2).read(), b"adapter")
+                self.assertEqual(urlopen(base_req, timeout=2).read(), b"base")
+                self.assertEqual(urlopen(legacy_req, timeout=2).read(), b"adapter")
+            finally:
+                server.stop()
 
 
 if __name__ == "__main__":

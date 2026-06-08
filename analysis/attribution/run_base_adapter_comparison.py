@@ -42,7 +42,8 @@ SHARED_NODE_SHAPE = "shared"
 OVERLAY_SCHEMA_VERSION = 2
 DEFAULT_COMPACT_BASE_FEATURE_NODES = 64
 DEFAULT_COMPACT_BASE_ERROR_NODES = 0
-LOCAL_FEATURE_SCAN = "/features"
+LOCAL_FEATURE_SCAN = "/adapter_features"
+LOCAL_BASE_FEATURE_SCAN = "/base_features"
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -608,6 +609,7 @@ def build_overlay_payload(
     overlay_slug: str | None = None,
     hide_direct_embedding_logit_links: bool = True,
     base_feature_scan: str | None = None,
+    adapter_feature_scan: str = LOCAL_FEATURE_SCAN,
 ) -> dict[str, Any]:
     """Merge matched base and adapter graph JSON payloads into one visual overlay."""
     base_metadata = base_payload["metadata"]
@@ -687,7 +689,7 @@ def build_overlay_payload(
                 "base_scan": base_metadata.get("scan"),
                 "adapter_scan": adapter_metadata.get("scan"),
                 "base_feature_scan": base_feature_scan,
-                "adapter_feature_scan": LOCAL_FEATURE_SCAN,
+                "adapter_feature_scan": adapter_feature_scan,
                 "node_shapes": {
                     SOURCE_BASE: BASE_NODE_SHAPE,
                     SOURCE_ADAPTER: ADAPTER_NODE_SHAPE,
@@ -779,6 +781,8 @@ def compact_overlay_payload(
     max_base_feature_nodes: int | None = DEFAULT_COMPACT_BASE_FEATURE_NODES,
     max_base_error_nodes: int | None = DEFAULT_COMPACT_BASE_ERROR_NODES,
     max_adapter_feature_nodes: int | None = None,
+    base_feature_scan: str | None = None,
+    adapter_feature_scan: str | None = None,
     slug_suffix: str | None = None,
 ) -> dict[str, Any]:
     """Return a display-focused overlay payload with optional source-node caps."""
@@ -863,6 +867,10 @@ def compact_overlay_payload(
     compact_payload["metadata"]["comparison"] = dict(
         compact_payload["metadata"].get("comparison") or {}
     )
+    if base_feature_scan is not None:
+        compact_payload["metadata"]["comparison"]["base_feature_scan"] = base_feature_scan
+    if adapter_feature_scan is not None:
+        compact_payload["metadata"]["comparison"]["adapter_feature_scan"] = adapter_feature_scan
     compact_payload["metadata"]["comparison"]["compact_view"] = {
         "source_slug": original_slug,
         "rank": "sum_abs_incident_link_weight",
@@ -887,6 +895,8 @@ def write_compact_overlay_graphs(
     max_base_feature_nodes: int | None = DEFAULT_COMPACT_BASE_FEATURE_NODES,
     max_base_error_nodes: int | None = DEFAULT_COMPACT_BASE_ERROR_NODES,
     max_adapter_feature_nodes: int | None = None,
+    base_feature_scan: str | None = None,
+    adapter_feature_scan: str | None = None,
 ) -> list[Path]:
     """Write compact display variants for already-written overlay graph JSONs."""
     compact_overlay_graph_dir.mkdir(parents=True, exist_ok=True)
@@ -902,6 +912,8 @@ def write_compact_overlay_graphs(
             max_base_feature_nodes=max_base_feature_nodes,
             max_base_error_nodes=max_base_error_nodes,
             max_adapter_feature_nodes=max_adapter_feature_nodes,
+            base_feature_scan=base_feature_scan,
+            adapter_feature_scan=adapter_feature_scan,
         )
         compact_path = compact_overlay_graph_dir / f"{compact_payload['metadata']['slug']}.json"
         compact_path.write_text(json.dumps(compact_payload, indent=2) + "\n")
@@ -983,8 +995,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--base_feature_data_path",
         default=None,
         help=(
-            "Optional base/GemmaScope feature examples as a Hugging Face feature repo "
-            "or scan name. Local mixed feature directories are not served yet."
+            "Optional base/GemmaScope feature examples. Use a Hugging Face feature repo "
+            "for pre-collected features, or a local collected feature-data/packed "
+            "feature directory to serve it as /base_features."
         ),
     )
     parser.add_argument("--adapter_feature_output_dir", type=Path, default=None)
@@ -1114,11 +1127,19 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
     adapter_feature_output_dir = feature_output if isinstance(feature_output, Path) else None
     adapter_scan = scan_name_for_feature_output(feature_output, args.run_name)
     adapter_features_dir = str(feature_output) if isinstance(feature_output, Path) else None
-    base_feature_scan = (
-        normalize_hf_feature_ref(args.base_feature_data_path)
-        if args.base_feature_data_path
-        else None
-    )
+    if adapter_features_dir is not None:
+        adapter_scan = LOCAL_FEATURE_SCAN
+    base_features_dir = None
+    base_feature_scan = None
+    if args.base_feature_data_path:
+        if is_hf_feature_ref(args.base_feature_data_path):
+            base_feature_scan = normalize_hf_feature_ref(args.base_feature_data_path)
+        else:
+            base_feature_path = Path(args.base_feature_data_path).expanduser()
+            if (base_feature_path / "circuit_tracer_features" / "index.json.gz").exists():
+                base_feature_path = base_feature_path / "circuit_tracer_features"
+            base_features_dir = str(base_feature_path)
+            base_feature_scan = LOCAL_BASE_FEATURE_SCAN
 
     adapter_args = argparse.Namespace(
         transcoder_model_path=args.adapter_checkpoint,
@@ -1228,6 +1249,7 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
         "base_features": {
             "feature_data_path": args.base_feature_data_path,
             "scan": base_feature_scan,
+            "features_dir": base_features_dir,
         },
         "overlay_options": {
             "hide_direct_embedding_logit_links": not args.show_direct_embedding_logit_links,
@@ -1254,7 +1276,8 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
 
         serve_until_interrupted(
             graph_file_dir=compact_overlay_graph_dir if compact_overlay_paths else overlay_graph_dir,
-            features_dir=adapter_features_dir,
+            adapter_features_dir=adapter_features_dir,
+            base_features_dir=base_features_dir,
             port=args.port,
         )
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from analysis.attribution.run_base_adapter_comparison import (
     DEFAULT_COMPACT_BASE_ERROR_NODES,
     DEFAULT_COMPACT_BASE_FEATURE_NODES,
+    LOCAL_BASE_FEATURE_SCAN,
+    LOCAL_FEATURE_SCAN,
     write_compact_overlay_graphs,
 )
 from helpers.log import logger, setup_logging
@@ -72,6 +74,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional adapter cross-layer feature-node cap per graph.",
     )
+    parser.add_argument(
+        "--base_feature_scan",
+        default=None,
+        help=(
+            "Optional scan for base feature examples. Use a Hugging Face feature repo "
+            f"such as mntss/gemma-scope-transcoders, or {LOCAL_BASE_FEATURE_SCAN} "
+            "when serving a local base feature directory."
+        ),
+    )
+    parser.add_argument(
+        "--adapter_feature_scan",
+        default=None,
+        help=(
+            "Optional scan for adapter feature examples. Defaults to existing metadata; "
+            f"use {LOCAL_FEATURE_SCAN} for comparison local serving."
+        ),
+    )
     return parser
 
 
@@ -87,6 +106,8 @@ def main() -> None:
         max_base_feature_nodes=max_base_feature_nodes,
         max_base_error_nodes=max_base_error_nodes,
         max_adapter_feature_nodes=max_adapter_feature_nodes,
+        base_feature_scan=args.base_feature_scan,
+        adapter_feature_scan=args.adapter_feature_scan,
     )
     paths = write_compact_overlay_graphs(
         overlay_graph_dir=args.overlay_dir,
