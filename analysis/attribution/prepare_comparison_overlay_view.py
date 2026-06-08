@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from analysis.attribution.run_base_adapter_comparison import (
@@ -10,6 +11,7 @@ from analysis.attribution.run_base_adapter_comparison import (
     DEFAULT_COMPACT_BASE_FEATURE_NODES,
     LOCAL_BASE_FEATURE_SCAN,
     LOCAL_FEATURE_SCAN,
+    default_base_feature_scan_for_overlay_base_scan,
     write_compact_overlay_graphs,
 )
 from helpers.log import logger, setup_logging
@@ -37,6 +39,21 @@ def default_output_dir(
     if max_adapter_feature_nodes is not None:
         suffix_parts.append(cap_label("adapter", max_adapter_feature_nodes))
     return overlay_dir.parent / f"{overlay_dir.name}_{'_'.join(suffix_parts)}"
+
+
+def infer_base_feature_scan(overlay_dir: Path) -> str | None:
+    for graph_path in sorted(overlay_dir.glob("*.json")):
+        if graph_path.name in {"graph-metadata.json", "run_attribution_args.json"}:
+            continue
+        try:
+            payload = json.loads(graph_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        comparison = payload.get("metadata", {}).get("comparison", {})
+        inferred = default_base_feature_scan_for_overlay_base_scan(comparison.get("base_scan"))
+        if inferred is not None:
+            return inferred
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,11 +93,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--base_feature_scan",
-        default=None,
+        default="auto",
         help=(
-            "Optional scan for base feature examples. Use a Hugging Face feature repo "
-            f"such as mntss/gemma-scope-transcoders, or {LOCAL_BASE_FEATURE_SCAN} "
-            "when serving a local base feature directory."
+            "Scan for base feature examples. Default 'auto' uses the standard "
+            "Gemma-2 feature repo for google/gemma-scope-2b-pt-transcoders "
+            f"overlays. Use a Hugging Face repo, {LOCAL_BASE_FEATURE_SCAN} for a "
+            "local base feature directory, or an empty string to leave existing metadata unchanged."
         ),
     )
     parser.add_argument(
@@ -106,15 +124,20 @@ def main() -> None:
         max_base_feature_nodes=max_base_feature_nodes,
         max_base_error_nodes=max_base_error_nodes,
         max_adapter_feature_nodes=max_adapter_feature_nodes,
-        base_feature_scan=args.base_feature_scan,
-        adapter_feature_scan=args.adapter_feature_scan,
     )
+    base_feature_scan = args.base_feature_scan
+    if base_feature_scan == "auto":
+        base_feature_scan = infer_base_feature_scan(args.overlay_dir)
+    elif base_feature_scan == "":
+        base_feature_scan = None
     paths = write_compact_overlay_graphs(
         overlay_graph_dir=args.overlay_dir,
         compact_overlay_graph_dir=output_dir,
         max_base_feature_nodes=max_base_feature_nodes,
         max_base_error_nodes=max_base_error_nodes,
         max_adapter_feature_nodes=max_adapter_feature_nodes,
+        base_feature_scan=base_feature_scan,
+        adapter_feature_scan=args.adapter_feature_scan,
     )
     logger.info(f"Wrote {len(paths)} compact overlay graph(s) to {output_dir}")
 

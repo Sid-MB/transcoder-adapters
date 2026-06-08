@@ -19,7 +19,11 @@ from analysis.attribution.comparison_frontend import (
     NODE_CONNECTIONS_HEADER_ICON_NEW,
     patch_frontend_assets,
 )
-from analysis.attribution.prepare_comparison_overlay_view import cap_from_arg, default_output_dir
+from analysis.attribution.prepare_comparison_overlay_view import (
+    cap_from_arg,
+    default_output_dir,
+    infer_base_feature_scan,
+)
 from analysis.attribution.run_base_adapter_comparison import (
     ADAPTER_NODE_SHAPE,
     BASE_NODE_SHAPE,
@@ -27,8 +31,10 @@ from analysis.attribution.run_base_adapter_comparison import (
     LOCAL_FEATURE_SCAN,
     SOURCE_ADAPTER,
     SOURCE_BASE,
+    STANDARD_GEMMA2_BASE_FEATURE_SCAN,
     build_gemmascope_transcoder_config,
     compact_overlay_payload,
+    default_base_feature_scan_for_gemmascope,
     build_overlay_payload,
     gemmascope_layer_refs,
     normalize_overlay_payload,
@@ -116,6 +122,24 @@ class BaseAdapterComparisonTests(unittest.TestCase):
     def test_node_shape_metadata_uses_semantic_source_names(self):
         self.assertEqual(BASE_NODE_SHAPE, "base_model")
         self.assertEqual(ADAPTER_NODE_SHAPE, "adapter_model")
+
+    def test_default_base_feature_scan_for_standard_gemma2(self):
+        scan = default_base_feature_scan_for_gemmascope(
+            base_model="google/gemma-2-2b",
+            gemmascope_repo="google/gemma-scope-2b-pt-transcoders",
+            gemmascope_width="width_16k",
+        )
+
+        self.assertEqual(scan, STANDARD_GEMMA2_BASE_FEATURE_SCAN)
+
+    def test_default_base_feature_scan_rejects_nonstandard_model(self):
+        scan = default_base_feature_scan_for_gemmascope(
+            base_model="google/gemma-2-9b",
+            gemmascope_repo="google/gemma-scope-2b-pt-transcoders",
+            gemmascope_width="width_16k",
+        )
+
+        self.assertIsNone(scan)
 
     def test_gemmascope_layer_refs_are_explicit(self):
         refs = gemmascope_layer_refs(
@@ -372,13 +396,18 @@ class BaseAdapterComparisonTests(unittest.TestCase):
                 base_payload=_payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1"),
                 adapter_payload=_payload("run__capital__habc", feature_node_id="0_1_1", logit_node_id="27_2_1"),
             )
+            overlay["metadata"]["comparison"][
+                "base_scan"
+            ] = "google/gemma-scope-2b-pt-transcoders/width_16k/average_l0_76_nearest"
             (overlay_dir / f"{overlay['metadata']['slug']}.json").write_text(json.dumps(overlay))
+
+            self.assertEqual(infer_base_feature_scan(overlay_dir), STANDARD_GEMMA2_BASE_FEATURE_SCAN)
 
             paths = write_compact_overlay_graphs(
                 overlay_graph_dir=overlay_dir,
                 compact_overlay_graph_dir=compact_dir,
                 max_base_feature_nodes=0,
-                base_feature_scan="mntss/gemma-scope-transcoders",
+                base_feature_scan=STANDARD_GEMMA2_BASE_FEATURE_SCAN,
                 adapter_feature_scan=LOCAL_FEATURE_SCAN,
             )
 
@@ -390,7 +419,7 @@ class BaseAdapterComparisonTests(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["graphs"][0]["comparison"]["base_feature_scan"],
-                "mntss/gemma-scope-transcoders",
+                STANDARD_GEMMA2_BASE_FEATURE_SCAN,
             )
             self.assertEqual(
                 metadata["graphs"][0]["comparison"]["adapter_feature_scan"],

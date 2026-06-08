@@ -44,6 +44,7 @@ DEFAULT_COMPACT_BASE_FEATURE_NODES = 64
 DEFAULT_COMPACT_BASE_ERROR_NODES = 0
 LOCAL_FEATURE_SCAN = "/adapter_features"
 LOCAL_BASE_FEATURE_SCAN = "/base_features"
+STANDARD_GEMMA2_BASE_FEATURE_SCAN = "mntss/gemma-scope-transcoders"
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -58,6 +59,31 @@ def default_comparison_output_dir(*, adapter_checkpoint: str, run_name: str) -> 
         f"{_slugify(run_name)}_{_slugify(adapter_checkpoint)}",
         consistent=True,
     )
+
+
+def default_base_feature_scan_for_gemmascope(
+    *,
+    base_model: str,
+    gemmascope_repo: str,
+    gemmascope_width: str,
+) -> str | None:
+    """Return the bundled HF feature scan for the standard Gemma-2 base setup."""
+    if base_model.rstrip("/") != "google/gemma-2-2b":
+        return None
+    if gemmascope_repo.strip("/") != "google/gemma-scope-2b-pt-transcoders":
+        return None
+    if gemmascope_width.strip("/") != "width_16k":
+        return None
+    return STANDARD_GEMMA2_BASE_FEATURE_SCAN
+
+
+def default_base_feature_scan_for_overlay_base_scan(base_scan: str | None) -> str | None:
+    if not base_scan:
+        return None
+    normalized = base_scan.strip("/")
+    if normalized.startswith("google/gemma-scope-2b-pt-transcoders/width_16k/"):
+        return STANDARD_GEMMA2_BASE_FEATURE_SCAN
+    return None
 
 
 def gemmascope_scan_name(*, repo: str, width: str, l0: str, l0_match: str = "exact") -> str:
@@ -997,7 +1023,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional base/GemmaScope feature examples. Use a Hugging Face feature repo "
             "for pre-collected features, or a local collected feature-data/packed "
-            "feature directory to serve it as /base_features."
+            "feature directory to serve it as /base_features. Defaults to "
+            f"{STANDARD_GEMMA2_BASE_FEATURE_SCAN} for the standard google/gemma-2-2b "
+            "GemmaScope width_16k base setup."
         ),
     )
     parser.add_argument("--adapter_feature_output_dir", type=Path, default=None)
@@ -1140,6 +1168,14 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
                 base_feature_path = base_feature_path / "circuit_tracer_features"
             base_features_dir = str(base_feature_path)
             base_feature_scan = LOCAL_BASE_FEATURE_SCAN
+    else:
+        base_feature_scan = default_base_feature_scan_for_gemmascope(
+            base_model=args.base_model,
+            gemmascope_repo=args.gemmascope_repo,
+            gemmascope_width=args.gemmascope_width,
+        )
+        if base_feature_scan is not None:
+            logger.info(f"Using standard Gemma-2 base feature scan: {base_feature_scan}")
 
     adapter_args = argparse.Namespace(
         transcoder_model_path=args.adapter_checkpoint,
