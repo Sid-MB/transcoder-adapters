@@ -4,7 +4,7 @@
 #   2. GPU Slurm job depends on the CPU job and runs attribution from that manifest.
 #
 # Example:
-#   ./sh/attribution/slurm_circuit_tracer_pipeline.sh --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5
+#   ./sh/attribution/slurm_circuit_tracer_pipeline.sh --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5
 # 
 # Duplicate work is skipped at each stage, so the transcoder model will only be converted once and the feature data will only be converted if the packed circuit-tracer cache is missing. Attribution graph filenames include a short hash of each prompt file's contents, so if a prompt .txt file changes without changing names, the stale same-stem graph is removed and that prompt is rerun. The logs state which prompts are skipped, new, or rerun because their hash changed.
 #
@@ -104,10 +104,7 @@ if [[ -z "$MANIFEST_PATH" ]]; then
   MANIFEST_PATH="logs/attribution/${RUN_NAME}_${timestamp}_manifest.json"
 fi
 
-if [[ -f ~/.shell/secrets/hf_token_write ]]; then
-  export HF_TOKEN
-  HF_TOKEN="$(cat ~/.shell/secrets/hf_token_write)"
-fi
+# Hugging Face auth: run `huggingface-cli login` once (token is cached) or pre-set HF_TOKEN. See check-env.py.
 
 quote_command() {
   printf "%q " "$@"

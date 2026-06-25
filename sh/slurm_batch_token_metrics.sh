@@ -7,7 +7,7 @@
 # Hybrid Example (adapters disabled):
 # ./sh/slurm_batch_token_metrics.sh --model siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --hybrid --reference_model google/gemma-2-2b-it --data_source lmsys_chat
 
-export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
+# Hugging Face auth: run `huggingface-cli login` once (token is cached) or pre-set HF_TOKEN. See check-env.py.
 
 JOB_NAME=token_metrics
 OTHER_ARGS=()

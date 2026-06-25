@@ -25,22 +25,22 @@ PROMPTS=analysis/attribution/prompts/interesting_small
 
 # ===========================================================================
 # READY NOW: a graph with ALL elements is already generated and saved to durable
-# scratch at /nlp/scr/siddharth/sparse-adaptation/comparison_demo -- error
+# scratch at $LARGE_ARTIFACTS_DIR/transcoder-adapters/comparison_demo -- error
 # triangles + per-feature proportions + activation examples for BOTH base
 # GemmaScope (/base_features) AND adapter (/adapter_features) feature nodes, all
 # collected on our chat+web data. Just serve it and open http://localhost:8044
 # (forward the port if remote):
 #
-#   cd /juice2/u/siddharth/transcoder-adapters && \
+#   cd <repo-root> && \
 #   uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
-#     --graph_file_dir /nlp/scr/siddharth/sparse-adaptation/comparison_demo/graph \
-#     --base_features_dir /nlp/scr/siddharth/sparse-adaptation/comparison_demo/base_features \
-#     --adapter_features_dir /nlp/scr/siddharth/sparse-adaptation/comparison_demo/adapter_features \
+#     --graph_file_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/comparison_demo/graph \
+#     --base_features_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/comparison_demo/base_features \
+#     --adapter_features_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/comparison_demo/adapter_features \
 #     --port 8044
 #
 # (Regenerate equivalents from scratch with demo_local below.)
 # ===========================================================================
-DEMO=/nlp/scr/siddharth/sparse-adaptation/comparison_demo
+DEMO=$LARGE_ARTIFACTS_DIR/transcoder-adapters/comparison_demo
 serve_demo() {
   uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
     --graph_file_dir "$DEMO/graph" \

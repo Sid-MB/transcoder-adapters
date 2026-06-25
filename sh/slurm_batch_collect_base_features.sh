@@ -20,7 +20,7 @@
 #  - The output directory is printed in the logs; pass it to
 #    run_base_adapter_comparison --base_feature_data_path to serve it as /base_features.
 
-export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
+# Hugging Face auth: run `huggingface-cli login` once (token is cached) or pre-set HF_TOKEN. See check-env.py.
 
 ./sh/sbatch \
   --gres=gpu:1 \

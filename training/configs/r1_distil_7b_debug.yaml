@@ -19,8 +19,8 @@ bridging:
 
 datasets:
   - type: "open_thoughts"
-    datapath: "/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl"
-    val_datapath: "/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl"
+    datapath: "${LARGE_ARTIFACTS_DIR}/transcoder-adapters/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl"
+    val_datapath: "${LARGE_ARTIFACTS_DIR}/transcoder-adapters/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl"
     data_format: "deepseek"
     max_seq_length: 10000
     length_excession_behavior: "truncate"

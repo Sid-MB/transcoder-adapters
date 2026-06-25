@@ -36,7 +36,7 @@ Outputs:
         normalized repo ID and ``features_dir`` is null.
 
 Example with local feature examples:
-    uv run --extra viz python -m analysis.attribution.prepare_circuit_tracer_assets --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --manifest_path logs/attribution/interesting_small_manifest.json
+    uv run --extra viz python -m analysis.attribution.prepare_circuit_tracer_assets --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --manifest_path logs/attribution/interesting_small_manifest.json
 
 Example with Hugging Face feature examples:
     uv run --extra viz python -m analysis.attribution.prepare_circuit_tracer_assets --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path siddharthmb/2026.TA.features.gemma2_2b_h123456789abc --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --manifest_path logs/attribution/interesting_small_manifest.json

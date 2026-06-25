@@ -126,11 +126,11 @@ class ExperimentConfig:
     datasets: list[DatasetEntryConfig] = field(default_factory=lambda: [
         DatasetEntryConfig(
             type="open_thoughts",
-            datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
+            datapath="${LARGE_ARTIFACTS_DIR}/transcoder-adapters/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
             num_rows=10000,
             data_format="deepseek",
             max_seq_length=10000,
-            val_datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl",
+            val_datapath="${LARGE_ARTIFACTS_DIR}/transcoder-adapters/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl",
         )
     ])
     total_rows: int | None = None
@@ -302,7 +302,6 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
 
 def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
     """Finalize config by computing run names and output directories."""
-    import os
     from helpers.paths import SLURM_JOB_ID
     slurm_job_id = SLURM_JOB_ID
 
@@ -368,11 +367,9 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
     # Build output directory
     if config.output_dir is None:
         from datetime import datetime
-        user = os.environ.get("USER")
-        if not user:
-            raise RuntimeError("$USER environment variable is not set. Provide an output_dir in your config or set the USER environment variable so we know where to save checkpoints.")
+        from helpers.paths import PRODUCTS_DIR
         date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
-        config.output_dir = f"/nlp/scr/{user}/sparse-adaptation/checkpoints/{config.wandb_run_name}_{date_str}_{slurm_job_id}"
+        config.output_dir = str(PRODUCTS_DIR / "checkpoints" / f"{config.wandb_run_name}_{date_str}_{slurm_job_id}")
         logger.info(f"Checkpoints save directory: {config.output_dir}")
 
     return config

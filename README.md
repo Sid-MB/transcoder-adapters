@@ -28,8 +28,25 @@ transcoder_adapters/
 
 ## Setup
 
+This project uses [`uv`](https://docs.astral.sh/uv/) for dependency management:
+
 ```bash
-pip install -r requirements.txt
+uv sync
+```
+
+### Environment
+
+Copy `set-env.sh.example` to `set-env.sh` (gitignored) and fill in your values, then `source set-env.sh` or copy the exports into your `~/.bashrc`. The variables (also described in the template):
+
+- `LARGE_ARTIFACTS_DIR` — a large, persistent volume for training results (checkpoints, feature data, logs, large `.json`/`.pt` files). Outputs are written under `$LARGE_ARTIFACTS_DIR/transcoder-adapters/<category>/<run>`.
+- `TMPDIR` — fast scratch for run intermediates that can be safely lost.
+
+Then log in to Hugging Face and Weights & Biases, and verify everything is ready:
+
+```bash
+huggingface-cli login
+wandb login
+uv run python check-env.py
 ```
 
 ## Training

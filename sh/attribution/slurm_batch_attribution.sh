@@ -22,7 +22,7 @@ if ! [[ "$ATTRIBUTION_GPUS" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-export HF_TOKEN=$(cat ~/.shell/secrets/hf_token_write)
+# Hugging Face auth: run `huggingface-cli login` once (token is cached) or pre-set HF_TOKEN. See check-env.py.
 
 ./sh/sbatch \
   --gres="gpu:${ATTRIBUTION_GPUS}" \
