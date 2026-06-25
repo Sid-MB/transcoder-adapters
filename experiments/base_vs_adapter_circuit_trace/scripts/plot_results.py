@@ -1,10 +1,12 @@
 """Plot the AGREE-vs-DIVERGE circuit-trace results from aggregate_results.json.
 
-Reads the aggregate_results.json produced by analyze_graphs.py and renders a 2x2 figure:
+Reads the aggregate_results.json produced by analyze_graphs.py and renders a 2x3 figure:
   A) adapter-feature count (mean +/- std) per bucket
   B) error-node count (mean +/- std) per bucket
-  C) adapter_fraction = adapter/(base+adapter) (mean +/- std) per bucket
-  D) per-prompt scatter of KL(instruct||base) vs adapter-feature count, colored by bucket
+  C) adapter features split into template (format floor) vs content work (stacked)
+  D) adapter_fraction = adapter/(base+adapter) (mean +/- std) per bucket
+  E) adapter_content_fraction = content / adapter features (mean +/- std) per bucket
+  F) per-prompt scatter of KL(instruct||base) vs adapter-feature count, colored by bucket
 
 This runs automatically at the end of analyze_graphs.py (the script that writes
 aggregate_results.json); run it standalone only to re-render from an existing JSON. The
@@ -44,6 +46,23 @@ def _bar(ax, agg, metric, title, ylabel):
     ax.margins(y=0.18)
 
 
+def _stacked_template_content(ax, agg):
+    """Stacked bars: adapter features split into template (format floor) vs content work."""
+    tmpl = [agg[b]["adapter_template"]["mean"] for b in BUCKETS]
+    cont = [agg[b]["adapter_content"]["mean"] for b in BUCKETS]
+    ax.bar(BUCKETS, tmpl, color="#9ecae1", label="template (format floor)")
+    ax.bar(BUCKETS, cont, bottom=tmpl, color="#fd8d3c", label="content (instruct work)")
+    for i, (t, c) in enumerate(zip(tmpl, cont)):
+        if t > 0:
+            ax.text(i, t / 2, f"{t:.1f}", ha="center", va="center", fontsize=9)
+        if c > 0.05:
+            ax.text(i, t + c / 2, f"{c:.1f}", ha="center", va="center", fontsize=9, color="white")
+    ax.set_title("Adapter features: format floor vs content")
+    ax.set_ylabel("# adapter feature nodes")
+    ax.legend(fontsize=8, loc="upper left")
+    ax.margins(y=0.15)
+
+
 def plot(results: Path, out: Path) -> Path:
     """Render the 2x2 figure from an aggregate_results.json and save it to `out`.
 
@@ -56,7 +75,7 @@ def plot(results: Path, out: Path) -> Path:
     agg = d["aggregates"]
     per = d["per_prompt"]
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8.5))
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8.5))
     n = {b: agg[b]["n_graphs"] for b in BUCKETS}
     fig.suptitle(
         f"Base+adapter circuit tracing: AGREE (n={n['agree']}) vs DIVERGE (n={n['diverge']}) prompts",
@@ -65,9 +84,12 @@ def plot(results: Path, out: Path) -> Path:
 
     _bar(axes[0, 0], agg, "adapter_features", "Adapter features recruited", "# adapter feature nodes")
     _bar(axes[0, 1], agg, "error_nodes", "Error nodes (unexplained residual)", "# error nodes")
-    _bar(axes[1, 0], agg, "adapter_fraction", "Adapter fraction = adapter/(base+adapter)", "fraction")
+    _stacked_template_content(axes[0, 2], agg)
 
-    ax = axes[1, 1]
+    _bar(axes[1, 0], agg, "adapter_fraction", "Adapter fraction = adapter/(base+adapter)", "fraction")
+    _bar(axes[1, 1], agg, "adapter_content_fraction", "Adapter content fraction", "content / adapter features")
+
+    ax = axes[1, 2]
     for b in BUCKETS:
         xs = [r["kl_instruct_base"] for r in per[b]]
         ys = [r["adapter_features"] for r in per[b]]

@@ -31,6 +31,18 @@ from helpers.log import logger, setup_logging
 
 N_BASE = 16384  # GemmaScope width_16k features per layer = base/adapter combined-index split.
 
+# Gemma chat-template / structural tokens. Adapter features that fire on these are
+# "format-handling" overhead (the instruct model processing the turn scaffolding) and are
+# present even on converge prompts; adapter features on other (content) tokens reflect
+# instruct-specific behavioral work. We split adapter participation along this line so the
+# converge-prompt adapter floor (≈all template) is distinguishable from divergent content work.
+TEMPLATE_TOKENS = {"<bos>", "<eos>", "<start_of_turn>", "<end_of_turn>", "<pad>", "user", "model"}
+
+
+def _is_template_token(tok: str) -> bool:
+    """True for chat-scaffolding tokens: special turn markers, role words, or pure whitespace."""
+    return tok in TEMPLATE_TOKENS or tok.strip() == ""
+
 
 def _is_feature_node(node: dict) -> bool:
     return str(node.get("feature_type") or "") == "cross layer transcoder"
@@ -40,18 +52,44 @@ def _is_error_node(node: dict) -> bool:
     return "error" in str(node.get("feature_type") or "")
 
 
-def raw_counts_from_nodes(payload: dict) -> dict[str, int]:
-    """Recompute base/adapter/error node counts directly from graph nodes."""
-    base = adapter = error = 0
+CORE_COUNT_KEYS = ("base_features", "adapter_features", "error_nodes")
+
+
+def raw_counts_from_nodes(payload: dict) -> dict:
+    """Recompute base/adapter/error node counts directly from graph nodes.
+
+    Adapter feature nodes are additionally split by the token they fire on:
+    ``adapter_template`` (chat-scaffolding tokens) vs ``adapter_content`` (everything else),
+    with the content tokens themselves collected for inspection. The three CORE_COUNT_KEYS
+    are what metadata.comparison.node_counts records; the adapter_template/adapter_content
+    split is the extra measure (it does not change base/adapter/error totals).
+    """
+    prompt_tokens = (payload.get("metadata") or {}).get("prompt_tokens") or []
+    base = adapter = error = adapter_template = adapter_content = 0
+    content_tokens: list[str] = []
     for node in payload["nodes"]:
         if _is_error_node(node):
             error += 1
         elif _is_feature_node(node):
             if node.get("source_model") == "adapter":
                 adapter += 1
+                ctx_idx = node.get("ctx_idx")
+                tok = prompt_tokens[ctx_idx] if isinstance(ctx_idx, int) and 0 <= ctx_idx < len(prompt_tokens) else ""
+                if _is_template_token(tok):
+                    adapter_template += 1
+                else:
+                    adapter_content += 1
+                    content_tokens.append(tok)
             else:
                 base += 1
-    return {"base_features": base, "adapter_features": adapter, "error_nodes": error}
+    return {
+        "base_features": base,
+        "adapter_features": adapter,
+        "error_nodes": error,
+        "adapter_template": adapter_template,
+        "adapter_content": adapter_content,
+        "adapter_content_tokens": content_tokens,
+    }
 
 
 def summarize(values: list[float]) -> dict[str, float]:
@@ -86,6 +124,12 @@ def analyze_bucket(graph_dir: Path, agreement_by_id: dict[str, dict]) -> list[di
         error = raw_counts["error_nodes"]
         denom = base + adapter
         adapter_fraction = adapter / denom if denom else float("nan")
+        adapter_template = raw_counts["adapter_template"]
+        adapter_content = raw_counts["adapter_content"]
+        # Of this prompt's adapter features, what fraction fire on non-template (content) tokens.
+        adapter_content_fraction = adapter_content / adapter if adapter else float("nan")
+        # meta node_counts only carries the 3 core totals, so compare on those keys.
+        core_raw = {k: raw_counts[k] for k in CORE_COUNT_KEYS}
 
         rows.append(
             {
@@ -94,11 +138,15 @@ def analyze_bucket(graph_dir: Path, agreement_by_id: dict[str, dict]) -> list[di
                 "graph_path": str(graph_path),
                 "meta_counts": meta_counts,
                 "raw_counts": raw_counts,
-                "counts_match": meta_counts == raw_counts,
+                "counts_match": meta_counts == core_raw,
                 "base_features": base,
                 "adapter_features": adapter,
                 "error_nodes": error,
                 "adapter_fraction": adapter_fraction,
+                "adapter_template": adapter_template,
+                "adapter_content": adapter_content,
+                "adapter_content_fraction": adapter_content_fraction,
+                "adapter_content_tokens": raw_counts["adapter_content_tokens"],
                 "kl_instruct_base": agreement.get("kl_instruct_base"),
                 "top1_match": agreement.get("top1_match"),
                 "topk_overlap": agreement.get("topk_overlap"),
@@ -113,8 +161,12 @@ def aggregate(rows: list[dict]) -> dict:
         "n_graphs": len(rows),
         "base_features": summarize([r["base_features"] for r in rows]),
         "adapter_features": summarize([r["adapter_features"] for r in rows]),
+        "adapter_template": summarize([r["adapter_template"] for r in rows]),
+        "adapter_content": summarize([r["adapter_content"] for r in rows]),
         "error_nodes": summarize([r["error_nodes"] for r in rows]),
         "adapter_fraction": summarize([r["adapter_fraction"] for r in rows]),
+        # nan when a graph had 0 adapter features; drop those (v == v is False for nan).
+        "adapter_content_fraction": summarize([r["adapter_content_fraction"] for r in rows if r["adapter_content_fraction"] == r["adapter_content_fraction"]]),
         "kl_instruct_base": summarize([r["kl_instruct_base"] for r in rows if r["kl_instruct_base"] is not None]),
     }
 
@@ -165,10 +217,19 @@ def main() -> None:
     metric_header = f"{'metric':18s} {'AGREE':>20s} {'DIVERGE':>20s}"
     logger.info(metric_header)
     logger.info("-" * len(metric_header))
-    for metric in ["base_features", "adapter_features", "error_nodes", "adapter_fraction", "kl_instruct_base"]:
+    for metric in [
+        "base_features",
+        "adapter_features",
+        "adapter_template",
+        "adapter_content",
+        "error_nodes",
+        "adapter_fraction",
+        "adapter_content_fraction",
+        "kl_instruct_base",
+    ]:
         a = aggregates["agree"][metric]
         d = aggregates["diverge"][metric]
-        if metric == "adapter_fraction":
+        if metric in ("adapter_fraction", "adapter_content_fraction"):
             fmt = lambda s: f"{s['mean']:.4f} +/- {s['std']:.4f}"
         elif metric == "kl_instruct_base":
             fmt = lambda s: f"{s['mean']:.2f} +/- {s['std']:.2f}"
