@@ -5,7 +5,7 @@
 #   SBATCH_WAIT=1 ATTRIBUTION_GPUS=1 ./sh/attribution/slurm_base_adapter_comparison.sh \
 #     --adapter_checkpoint siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 \
 #     --base_model google/gemma-2-2b \
-#     --feature_data_path $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260521_011754_15515871 \
+#     --feature_data_path "$LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260521_011754_15515871" \
 #     --prompts analysis/attribution/prompts/interesting_small/capital_paris.txt \
 #     --run_name capital_paris_base_adapter_overlay \
 #     --prompt_format chat \

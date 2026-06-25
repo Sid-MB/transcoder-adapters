@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Ex:
-# ./sh/slurm_batch_pack_features.sh --feature_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl147_20260416_152706_15175469/features --n_layers 26 --n_features 8192
+# ./sh/slurm_batch_pack_features.sh --feature_dir "$LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl147_20260416_152706_15175469/features" --n_layers 26 --n_features 8192
 
 # Hugging Face auth: run `huggingface-cli login` once (token is cached) or pre-set HF_TOKEN. See check-env.py.
 
