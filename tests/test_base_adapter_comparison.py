@@ -6,16 +6,18 @@ from pathlib import Path
 
 from analysis.attribution.comparison_frontend import (
     FEATURE_DETAIL_SCAN_NEW,
-    FEATURE_EXAMPLES_LOAD_NEW,
     FEATURE_HISTOGRAM_GUARD_NEW,
     FEATURE_ID_PATCH_NEW,
     FEATURE_ROW_FONT_SIZE_NEW,
+    FEATURE_STATS_HELPER_NEW,
+    FEATURE_STATS_RENDER_NEW,
     FEATURE_TYPE_FUNCTION_OLD,
     FEATURE_TYPE_FUNCTION_NEW,
     FEATURE_URL_FUNCTION_OLD,
     FEATURE_URL_FUNCTION_NEW,
     LINK_GRAPH_FONT_SIZE_NEW,
     LINK_GRAPH_NODE_TEXT_NEW,
+    LINK_GRAPH_STATS_BANNER_NEW,
     NODE_CONNECTIONS_HEADER_ICON_NEW,
     patch_frontend_assets,
 )
@@ -454,6 +456,11 @@ class BaseAdapterComparisonTests(unittest.TestCase):
             link_path.write_text(
                 "\n".join(
                     [
+                        "  var c = d3.conventions({",
+                        "    sel: cgSel.select('.link-graph').html(''),",
+                        "    margin: {left: visState.isHideLayer ? 0 : 30, bottom: 85},",
+                        "    layers: 'sccccs',",
+                        "  })",
                         ".text(d => utilCg.featureTypeToText(d.feature_type))",
                         "fontSize: 9,",
                         "      fill:",
@@ -465,6 +472,7 @@ class BaseAdapterComparisonTests(unittest.TestCase):
             feature_detail_path.write_text(
                 "\n".join(
                     [
+                        "  var renderFeatureExamples = util.throttleDebounce(featureExamples.renderFeature, 200)",
                         "      const scan = data.metadata.scan?.startsWith('custom-') ? data.metadata.transcoder_list[d.layer] : data.metadata.scan;",
                         "      if (typeof currentActivation == 'number') {",
                         "      featureExamples.loadFeature(scan, d.featureIndex)",
@@ -486,11 +494,28 @@ class BaseAdapterComparisonTests(unittest.TestCase):
             self.assertIn(FEATURE_TYPE_FUNCTION_NEW, util_path.read_text())
             self.assertIn(LINK_GRAPH_NODE_TEXT_NEW, link_path.read_text())
             self.assertIn(LINK_GRAPH_FONT_SIZE_NEW, link_path.read_text())
+            # Graph-level comparison stats banner reads metadata.comparison.node_counts.
+            link_text = link_path.read_text()
+            self.assertIn(LINK_GRAPH_STATS_BANNER_NEW, link_text)
+            self.assertIn("comparison-stats-banner", link_text)
+            self.assertIn("data.metadata.comparison.node_counts", link_text)
             self.assertIn(FEATURE_DETAIL_SCAN_NEW, feature_detail_path.read_text())
             self.assertIn(FEATURE_HISTOGRAM_GUARD_NEW, feature_detail_path.read_text())
             self.assertIn(FEATURE_URL_FUNCTION_NEW, feature_examples_path.read_text())
-            self.assertIn(FEATURE_EXAMPLES_LOAD_NEW, feature_detail_path.read_text())
             self.assertIn(NODE_CONNECTIONS_HEADER_ICON_NEW, node_connections_path.read_text())
+            # Per-feature proportion stats injected into the feature-detail panel.
+            # FEATURE_STATS_RENDER chains off FEATURE_EXAMPLES_LOAD_NEW, so the
+            # examples-load block is present in its further-patched stats form.
+            self.assertIn(FEATURE_STATS_HELPER_NEW, feature_detail_path.read_text())
+            self.assertIn(FEATURE_STATS_RENDER_NEW, feature_detail_path.read_text())
+            self.assertIn("renderFeatureStats", feature_detail_path.read_text())
+            self.assertIn("activation_frequency", feature_detail_path.read_text())
+            self.assertIn("token_specificity", feature_detail_path.read_text())
+            # Error/reconstruction nodes render as triangles, not diamonds.
+            util_text = util_path.read_text()
+            self.assertIn("=== 'mlp reconstruction error') return '▲'", util_text)
+            self.assertIn("node?.node_shape == 'error') return '▲'", util_text)
+            self.assertIn("node?.node_shape == 'triangle') return '▲'", util_text)
 
     def test_comparison_server_serves_adapter_and_base_feature_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:

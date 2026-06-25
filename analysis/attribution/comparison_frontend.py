@@ -14,6 +14,42 @@ FEATURE_ID_PATCH_NEW = (
     "var sourceFeaturePrefix = d.source_model ? `${d.source_model}_` : ''\n"
     "      d.featureId = `${sourceFeaturePrefix}${d.layer}_${d.feature}_${d.ctx_idx}`"
 )
+LINK_GRAPH_STATS_BANNER_OLD = (
+    "  var c = d3.conventions({\n"
+    "    sel: cgSel.select('.link-graph').html(''),\n"
+    "    margin: {left: visState.isHideLayer ? 0 : 30, bottom: 85},\n"
+    "    layers: 'sccccs',\n"
+    "  })\n"
+)
+LINK_GRAPH_STATS_BANNER_NEW = (
+    "  var c = d3.conventions({\n"
+    "    sel: cgSel.select('.link-graph').html(''),\n"
+    "    margin: {left: visState.isHideLayer ? 0 : 30, bottom: 85},\n"
+    "    layers: 'sccccs',\n"
+    "  })\n"
+    "\n"
+    "  // Comparison-graph addition: a small, graph-level stats banner summarizing the\n"
+    "  // overall feature composition (base / adapter / error node counts). Reads from\n"
+    "  // data.metadata.comparison.node_counts (written by tag_combined_graph). Renders\n"
+    "  // once per graph and is skipped entirely for plain circuit-tracer graphs.\n"
+    "  if (data.metadata.comparison && data.metadata.comparison.node_counts) {\n"
+    "    var comparisonNodeCounts = data.metadata.comparison.node_counts\n"
+    "    cgSel.select('.link-graph').select('.comparison-stats-banner').remove()\n"
+    "    cgSel.select('.link-graph')\n"
+    "      .insert('div.comparison-stats-banner', ':first-child')\n"
+    "      .st({\n"
+    "        fontSize: 11,\n"
+    "        color: '#555',\n"
+    "        padding: '2px 4px',\n"
+    "        pointerEvents: 'none',\n"
+    "      })\n"
+    "      .html([\n"
+    "        `<span>Base \\u2b22 ${comparisonNodeCounts.base_features || 0}</span>`,\n"
+    "        `<span>Adapter \\u25cf ${comparisonNodeCounts.adapter_features || 0}</span>`,\n"
+    "        `<span>Error \\u25b2 ${comparisonNodeCounts.error_nodes || 0}</span>`,\n"
+    "      ].join('  \\u00b7  '))\n"
+    "  }\n"
+)
 LINK_GRAPH_NODE_TEXT_OLD = ".text(d => utilCg.featureTypeToText(d.feature_type))"
 LINK_GRAPH_NODE_TEXT_NEW = (
     ".text(d => utilCg.nodeShapeToText ? utilCg.nodeShapeToText(d) : "
@@ -48,13 +84,14 @@ FEATURE_TYPE_FUNCTION_OLD = """  function featureTypeToText(type){
   }
 """
 FEATURE_TYPE_FUNCTION_NEW = """  function nodeShapeToText(node){
+    if (node?.feature_type === 'mlp reconstruction error') return '▲'
+    if (node?.node_shape == 'error') return '▲'
+    if (node?.node_shape == 'triangle') return '▲'
     if (node?.feature_type == 'logit') return '■'
     if (node?.feature_type == 'embedding') return '■'
-    if (node?.feature_type === 'mlp reconstruction error') return '◆'
     if (node?.node_shape == 'base_model') return '⬢'
     if (node?.node_shape == 'adapter_model') return '●'
     if (node?.node_shape == 'shared') return '■'
-    if (node?.node_shape == 'triangle') return '▲'
     if (node?.node_shape == 'hexagon') return '⬢'
     if (node?.node_shape == 'circle') return '●'
     if (node?.node_shape == 'diamond') return '◆'
@@ -63,6 +100,9 @@ FEATURE_TYPE_FUNCTION_NEW = """  function nodeShapeToText(node){
   }
 
   function nodeShapeFontSize(node){
+    if (node?.feature_type === 'mlp reconstruction error') return 11
+    if (node?.node_shape == 'error') return 11
+    if (node?.node_shape == 'triangle') return 11
     if (node?.node_shape == 'base_model') return 11
     if (node?.node_shape == 'hexagon') return 11
     return 9
@@ -142,6 +182,64 @@ FEATURE_EXAMPLES_LOAD_NEW = """      if (!scan) {
         examplesSel.st({opacity: 1})
       }
 """
+FEATURE_STATS_HELPER_OLD = (
+    "  var renderFeatureExamples = util.throttleDebounce(featureExamples.renderFeature, 200)\n"
+)
+FEATURE_STATS_HELPER_NEW = """  var renderFeatureExamples = util.throttleDebounce(featureExamples.renderFeature, 200)
+
+  // Comparison-graph addition: per-feature proportion stats injected above the
+  // examples. activation_frequency = % of tokens this feature fires on. token_specificity
+  // = of this feature's activations, what fraction land on each token.
+  var featureStatsSel = examplesSel.insert('div.feature-proportion-stats', ':first-child')
+
+  function ppFeatureStatsToken(token){
+    if (token == null) return ''
+    return String(token)
+      .replace(/\\\\/g, '\\\\\\\\')
+      .replace(/\\n/g, '\\\\n')
+      .replace(/\\t/g, '\\\\t')
+      .replace(/\\r/g, '\\\\r')
+      .replace(/ /g, '·')
+  }
+
+  function renderFeatureStats(featureData){
+    featureStatsSel.html('')
+    if (!featureData) return
+    var hasFreq = typeof featureData.activation_frequency == 'number'
+    var specificity = Array.isArray(featureData.token_specificity) ? featureData.token_specificity : []
+    if (!hasFreq && !specificity.length) return
+    if (hasFreq){
+      featureStatsSel.append('div.feature-stat-row')
+        .html(`<span class="feature-stat-label">Fires on</span> <span class="feature-stat-value">${(featureData.activation_frequency * 100).toFixed(2)}%</span> <span class="feature-stat-note">of tokens</span>`)
+    }
+    if (specificity.length){
+      var topTokens = specificity.slice(0, 5).map(t =>
+        `<span class="feature-stat-token">${ppFeatureStatsToken(t.token)}</span> ${(t.fraction * 100).toFixed(0)}%`
+      ).join('  ')
+      featureStatsSel.append('div.feature-stat-row')
+        .html(`<span class="feature-stat-label">Top tokens</span> <span class="feature-stat-value">${topTokens}</span>`)
+    }
+  }
+"""
+FEATURE_STATS_RENDER_OLD = """      if (!scan) {
+        examplesSel.st({opacity: 0})
+      } else {
+        featureExamples.loadFeature(scan, d.featureIndex)
+        renderFeatureExamples(scan, d.featureIndex)
+        examplesSel.st({opacity: 1})
+      }
+"""
+FEATURE_STATS_RENDER_NEW = """      if (!scan) {
+        examplesSel.st({opacity: 0})
+        renderFeatureStats(null)
+      } else {
+        Promise.resolve(featureExamples.loadFeature(scan, d.featureIndex))
+          .then(renderFeatureStats)
+          .catch(() => renderFeatureStats(null))
+        renderFeatureExamples(scan, d.featureIndex)
+        examplesSel.st({opacity: 1})
+      }
+"""
 NODE_CONNECTIONS_HEADER_ICON_OLD = (
     "headerSel.append('span.feature-icon').text(utilCg.featureTypeToText(clickedNode.feature_type))"
 )
@@ -174,6 +272,12 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
     util_path.write_text(util_text)
 
     link_graph_text = link_graph_path.read_text()
+    link_graph_text = _replace_once(
+        link_graph_text,
+        LINK_GRAPH_STATS_BANNER_OLD,
+        LINK_GRAPH_STATS_BANNER_NEW,
+        path=link_graph_path,
+    )
     link_graph_text = _replace_once(
         link_graph_text,
         LINK_GRAPH_NODE_TEXT_OLD,
@@ -211,6 +315,19 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         feature_detail_text,
         FEATURE_EXAMPLES_LOAD_OLD,
         FEATURE_EXAMPLES_LOAD_NEW,
+        path=feature_detail_path,
+    )
+    feature_detail_text = _replace_once(
+        feature_detail_text,
+        FEATURE_STATS_HELPER_OLD,
+        FEATURE_STATS_HELPER_NEW,
+        path=feature_detail_path,
+    )
+    # Must run after FEATURE_EXAMPLES_LOAD: this anchor is the snippet that patch emits.
+    feature_detail_text = _replace_once(
+        feature_detail_text,
+        FEATURE_STATS_RENDER_OLD,
+        FEATURE_STATS_RENDER_NEW,
         path=feature_detail_path,
     )
     feature_detail_path.write_text(feature_detail_text)

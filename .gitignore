@@ -13,3 +13,6 @@ requirements.txt
 
 # AI tools
 .claude/.nfs*
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/*.lock

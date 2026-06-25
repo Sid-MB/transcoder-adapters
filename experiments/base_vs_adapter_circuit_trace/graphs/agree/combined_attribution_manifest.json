@@ -1,0 +1,22 @@
+{
+  "run_name": "agree",
+  "adapter_checkpoint": "siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860",
+  "base_model": "google/gemma-2-2b",
+  "n_base_features": 16384,
+  "output_dir": "experiments/base_vs_adapter_circuit_trace/graphs/agree",
+  "base_feature_scan": "mntss/gemma-scope-transcoders",
+  "adapter_feature_scan": null,
+  "max_error_nodes": null,
+  "results": {
+    "cap_egypt": "success",
+    "cap_italy": "success",
+    "cap_japan": "success",
+    "first_president": "success",
+    "largest_ocean": "success",
+    "math_sqrt": "success",
+    "opposite_hot": "success",
+    "opposite_up": "success",
+    "planet_red": "success",
+    "speed_light": "success"
+  }
+}

@@ -16,6 +16,7 @@ dependencies = [
     "wandb>=0.26.1",
     "accelerate>=1.13.0",
     "datasets>=4.8.5",
+    "sentencepiece>=0.2.1",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,9 @@ viz = [
 ]
 vllm = [
     "vllm>=0.20.0",
+]
+dev = [
+    "pytest>=8",
 ]
 
 all = [

@@ -1,0 +1,206 @@
+[11:26:22] Layer 1: requested average_l0_76, using nearest available GemmaScope L0 average_l0_65
+[11:26:23] Layer 2: requested average_l0_76, using nearest available GemmaScope L0 average_l0_87
+[11:26:23] Layer 3: requested average_l0_76, using nearest available GemmaScope L0 average_l0_96
+[11:26:23] Layer 4: requested average_l0_76, using nearest available GemmaScope L0 average_l0_88
+[11:26:23] Layer 5: requested average_l0_76, using nearest available GemmaScope L0 average_l0_87
+[11:26:23] Layer 6: requested average_l0_76, using nearest available GemmaScope L0 average_l0_95
+[11:26:23] Layer 7: requested average_l0_76, using nearest available GemmaScope L0 average_l0_70
+[11:26:23] Layer 8: requested average_l0_76, using nearest available GemmaScope L0 average_l0_92
+[11:26:24] Layer 9: requested average_l0_76, using nearest available GemmaScope L0 average_l0_72
+[11:26:24] Layer 10: requested average_l0_76, using nearest available GemmaScope L0 average_l0_88
+[11:26:24] Layer 11: requested average_l0_76, using nearest available GemmaScope L0 average_l0_58
+[11:26:24] Layer 12: requested average_l0_76, using nearest available GemmaScope L0 average_l0_60
+[11:26:24] Layer 13: requested average_l0_76, using nearest available GemmaScope L0 average_l0_89
+[11:26:24] Layer 14: requested average_l0_76, using nearest available GemmaScope L0 average_l0_81
+[11:26:24] Layer 15: requested average_l0_76, using nearest available GemmaScope L0 average_l0_78
+[11:26:24] Layer 16: requested average_l0_76, using nearest available GemmaScope L0 average_l0_87
+[11:26:24] Layer 17: requested average_l0_76, using nearest available GemmaScope L0 average_l0_60
+[11:26:24] Layer 18: requested average_l0_76, using nearest available GemmaScope L0 average_l0_57
+[11:26:24] Layer 19: requested average_l0_76, using nearest available GemmaScope L0 average_l0_89
+[11:26:25] Layer 20: requested average_l0_76, using nearest available GemmaScope L0 average_l0_88
+[11:26:25] Layer 21: requested average_l0_76, using nearest available GemmaScope L0 average_l0_60
+[11:26:25] Layer 22: requested average_l0_76, using nearest available GemmaScope L0 average_l0_68
+[11:26:25] Layer 23: requested average_l0_76, using nearest available GemmaScope L0 average_l0_69
+[11:26:25] Layer 24: requested average_l0_76, using nearest available GemmaScope L0 average_l0_59
+[11:26:25] Layer 25: requested average_l0_76, using nearest available GemmaScope L0 average_l0_68
+[11:26:25] Loading GemmaScope base transcoders: google/gemma-scope-2b-pt-transcoders/width_16k/average_l0_76_nearest
+Fetching 26 files:   0%|          | 0/26 [00:00<?, ?it/s]Fetching 26 files:   4%|▍         | 1/26 [00:00<00:04,  6.09it/s]Fetching 26 files:  38%|███▊      | 10/26 [00:00<00:00, 43.78it/s]Fetching 26 files:  73%|███████▎  | 19/26 [00:00<00:00, 61.01it/s]Fetching 26 files: 100%|██████████| 26/26 [00:00<00:00, 60.09it/s]Fetching 26 files: 100%|██████████| 26/26 [00:00<00:00, 52.63it/s]
+[11:26:34] Loading adapter checkpoint for transcoder extraction: siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.36it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  2.01it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.88it/s]
+[11:26:36] Building combined transcoder set: 16384 base + 8192 adapter features/layer
+[11:26:36] Loading combined ReplacementModel (transformerlens)
+Loading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s]Loading checkpoint shards:  33%|███▎      | 1/3 [00:00<00:01,  1.06it/s]Loading checkpoint shards:  67%|██████▋   | 2/3 [00:02<00:01,  1.06s/it]Loading checkpoint shards: 100%|██████████| 3/3 [00:02<00:00,  1.60it/s]Loading checkpoint shards: 100%|██████████| 3/3 [00:02<00:00,  1.37it/s]
+Loaded pretrained model google/gemma-2-2b into HookedTransformer
+[11:27:02] Base tokenizer has no chat_template; loading prompt tokenizer from google/gemma-2-2b-it
+[11:27:03] [1/10] diverge__explain_photosynthesis__h5d649e8063e6: 17 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.25s
+Found 46209 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.3320
+Will include 512 of 46209 feature nodes
+Input vectors built in 0.02s
+Phase 3: Computing logit attributions
+sys:1: UserWarning: Full backward hook is firing when gradients are computed with respect to module outputs since no inputs require gradients. See https://docs.pytorch.org/docs/main/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook for more details.
+Logit attributions completed in 0.11s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   4%|▍         | 20/512 [00:00<00:02, 195.29it/s]Feature influence computation:   9%|▉         | 48/512 [00:00<00:02, 227.94it/s]Feature influence computation:  14%|█▍        | 72/512 [00:00<00:02, 202.29it/s]Feature influence computation:  19%|█▉        | 96/512 [00:00<00:01, 212.10it/s]Feature influence computation:  24%|██▍       | 124/512 [00:00<00:01, 221.28it/s]Feature influence computation:  29%|██▉       | 148/512 [00:00<00:01, 220.37it/s]Feature influence computation:  35%|███▌      | 180/512 [00:00<00:01, 237.13it/s]Feature influence computation:  40%|███▉      | 204/512 [00:00<00:01, 237.29it/s]Feature influence computation:  45%|████▍     | 228/512 [00:01<00:01, 234.15it/s]Feature influence computation:  49%|████▉     | 252/512 [00:01<00:01, 234.53it/s]Feature influence computation:  54%|█████▍    | 276/512 [00:01<00:01, 224.52it/s]Feature influence computation:  59%|█████▊    | 300/512 [00:01<00:00, 221.39it/s]Feature influence computation:  63%|██████▎   | 324/512 [00:01<00:00, 220.27it/s]Feature influence computation:  68%|██████▊   | 348/512 [00:01<00:00, 214.16it/s]Feature influence computation:  73%|███████▎  | 376/512 [00:01<00:00, 230.71it/s]Feature influence computation:  78%|███████▊  | 400/512 [00:01<00:00, 209.12it/s]Feature influence computation:  83%|████████▎ | 424/512 [00:01<00:00, 190.11it/s]Feature influence computation:  87%|████████▋ | 444/512 [00:02<00:00, 174.14it/s]Feature influence computation:  94%|█████████▍| 480/512 [00:02<00:00, 214.08it/s]Feature influence computation:  99%|█████████▉| 508/512 [00:02<00:00, 228.14it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 218.92it/s]
+Feature attributions completed in 2.34s
+Attribution completed in 2.81s
+[11:27:07]   Tagged graph: 249 base + 9 adapter features + 94 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__explain_photosynthesis__h5d649e8063e6.json
+[11:27:07] [2/10] diverge__format_uppercase__hfc025d4067ca: 21 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.13s
+Found 62973 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.6523
+Will include 512 of 62973 feature nodes
+Input vectors built in 0.01s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.03s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   4%|▍         | 20/512 [00:00<00:02, 183.35it/s]Feature influence computation:   9%|▉         | 48/512 [00:00<00:01, 237.88it/s]Feature influence computation:  16%|█▌        | 80/512 [00:00<00:01, 273.82it/s]Feature influence computation:  21%|██        | 108/512 [00:00<00:01, 232.24it/s]Feature influence computation:  27%|██▋       | 136/512 [00:00<00:01, 230.43it/s]Feature influence computation:  32%|███▏      | 164/512 [00:00<00:01, 238.84it/s]Feature influence computation:  38%|███▊      | 192/512 [00:00<00:01, 246.80it/s]Feature influence computation:  44%|████▍     | 224/512 [00:00<00:01, 267.43it/s]Feature influence computation:  49%|████▉     | 252/512 [00:01<00:00, 268.96it/s]Feature influence computation:  55%|█████▌    | 284/512 [00:01<00:00, 272.19it/s]Feature influence computation:  62%|██████▎   | 320/512 [00:01<00:00, 295.76it/s]Feature influence computation:  69%|██████▉   | 352/512 [00:01<00:00, 285.49it/s]Feature influence computation:  75%|███████▌  | 384/512 [00:01<00:00, 275.74it/s]Feature influence computation:  80%|████████  | 412/512 [00:01<00:00, 240.22it/s]Feature influence computation:  86%|████████▌ | 440/512 [00:01<00:00, 227.64it/s]Feature influence computation:  91%|█████████▏| 468/512 [00:01<00:00, 227.70it/s]Feature influence computation:  96%|█████████▌| 492/512 [00:01<00:00, 221.11it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 240.25it/s]
+Feature attributions completed in 2.13s
+Attribution completed in 2.39s
+[11:27:11]   Tagged graph: 242 base + 11 adapter features + 89 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__format_uppercase__hfc025d4067ca.json
+[11:27:11] [3/10] diverge__haiku_autumn__hb6bb1da812ab: 15 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.11s
+Found 35285 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.4434
+Will include 512 of 35285 feature nodes
+Input vectors built in 0.00s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.04s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   5%|▍         | 24/512 [00:00<00:02, 206.77it/s]Feature influence computation:   9%|▉         | 48/512 [00:00<00:02, 211.97it/s]Feature influence computation:  14%|█▍        | 72/512 [00:00<00:02, 215.07it/s]Feature influence computation:  20%|█▉        | 100/512 [00:00<00:01, 221.17it/s]Feature influence computation:  24%|██▍       | 124/512 [00:00<00:01, 222.76it/s]Feature influence computation:  30%|███       | 156/512 [00:00<00:01, 249.11it/s]Feature influence computation:  36%|███▌      | 184/512 [00:00<00:01, 220.78it/s]Feature influence computation:  41%|████      | 208/512 [00:00<00:01, 222.88it/s]Feature influence computation:  45%|████▌     | 232/512 [00:01<00:01, 201.70it/s]Feature influence computation:  50%|█████     | 256/512 [00:01<00:01, 197.11it/s]Feature influence computation:  55%|█████▍    | 280/512 [00:01<00:01, 161.97it/s]Feature influence computation:  59%|█████▉    | 304/512 [00:01<00:01, 176.34it/s]Feature influence computation:  63%|██████▎   | 324/512 [00:01<00:01, 177.39it/s]Feature influence computation:  68%|██████▊   | 348/512 [00:01<00:00, 192.69it/s]Feature influence computation:  73%|███████▎  | 376/512 [00:01<00:00, 215.10it/s]Feature influence computation:  78%|███████▊  | 400/512 [00:02<00:00, 176.17it/s]Feature influence computation:  83%|████████▎ | 424/512 [00:02<00:00, 187.36it/s]Feature influence computation:  88%|████████▊ | 452/512 [00:02<00:00, 209.47it/s]Feature influence computation:  93%|█████████▎| 476/512 [00:02<00:00, 213.01it/s]Feature influence computation:  98%|█████████▊| 500/512 [00:02<00:00, 215.48it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 203.88it/s]
+Feature attributions completed in 2.51s
+Attribution completed in 2.75s
+[11:27:15]   Tagged graph: 234 base + 8 adapter features + 97 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__haiku_autumn__hb6bb1da812ab.json
+[11:27:15] [4/10] diverge__json_only__h58cd7d223a9b: 20 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.12s
+Found 49245 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.4492
+Will include 512 of 49245 feature nodes
+Input vectors built in 0.01s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.04s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   4%|▍         | 20/512 [00:00<00:02, 190.76it/s]Feature influence computation:   9%|▊         | 44/512 [00:00<00:02, 205.07it/s]Feature influence computation:  14%|█▍        | 72/512 [00:00<00:01, 228.56it/s]Feature influence computation:  19%|█▉        | 96/512 [00:00<00:01, 218.21it/s]Feature influence computation:  23%|██▎       | 120/512 [00:00<00:01, 201.89it/s]Feature influence computation:  28%|██▊       | 144/512 [00:00<00:01, 192.01it/s]Feature influence computation:  32%|███▏      | 164/512 [00:00<00:01, 183.69it/s]Feature influence computation:  38%|███▊      | 192/512 [00:00<00:01, 205.02it/s]Feature influence computation:  45%|████▍     | 228/512 [00:01<00:01, 247.43it/s]Feature influence computation:  50%|█████     | 256/512 [00:01<00:01, 216.41it/s]Feature influence computation:  55%|█████▍    | 280/512 [00:01<00:01, 212.09it/s]Feature influence computation:  62%|██████▏   | 316/512 [00:01<00:00, 245.68it/s]Feature influence computation:  67%|██████▋   | 344/512 [00:01<00:00, 247.54it/s]Feature influence computation:  73%|███████▎  | 372/512 [00:01<00:00, 223.23it/s]Feature influence computation:  79%|███████▉  | 404/512 [00:01<00:00, 232.96it/s]Feature influence computation:  85%|████████▌ | 436/512 [00:01<00:00, 249.73it/s]Feature influence computation:  91%|█████████ | 464/512 [00:02<00:00, 245.56it/s]Feature influence computation:  96%|█████████▌| 492/512 [00:02<00:00, 246.76it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 228.07it/s]
+Feature attributions completed in 2.25s
+Attribution completed in 2.50s
+[11:27:18]   Tagged graph: 236 base + 11 adapter features + 106 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__json_only__h58cd7d223a9b.json
+[11:27:18] [5/10] diverge__list_colors__hc008d3bc7c69: 21 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.12s
+Found 60304 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.2969
+Will include 512 of 60304 feature nodes
+Input vectors built in 0.00s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.03s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   5%|▍         | 24/512 [00:00<00:02, 209.46it/s]Feature influence computation:   9%|▉         | 48/512 [00:00<00:02, 201.28it/s]Feature influence computation:  14%|█▍        | 72/512 [00:00<00:02, 211.07it/s]Feature influence computation:  20%|█▉        | 100/512 [00:00<00:01, 213.52it/s]Feature influence computation:  25%|██▌       | 128/512 [00:00<00:01, 233.47it/s]Feature influence computation:  30%|██▉       | 152/512 [00:00<00:01, 228.31it/s]Feature influence computation:  34%|███▍      | 176/512 [00:00<00:01, 224.04it/s]Feature influence computation:  41%|████▏     | 212/512 [00:00<00:01, 248.91it/s]Feature influence computation:  49%|████▉     | 252/512 [00:01<00:00, 286.22it/s]Feature influence computation:  55%|█████▌    | 284/512 [00:01<00:00, 289.27it/s]Feature influence computation:  62%|██████▏   | 316/512 [00:01<00:00, 256.95it/s]Feature influence computation:  67%|██████▋   | 344/512 [00:01<00:00, 245.33it/s]Feature influence computation:  73%|███████▎  | 372/512 [00:01<00:00, 241.20it/s]Feature influence computation:  79%|███████▉  | 404/512 [00:01<00:00, 257.37it/s]Feature influence computation:  85%|████████▌ | 436/512 [00:01<00:00, 269.21it/s]Feature influence computation:  91%|█████████ | 464/512 [00:01<00:00, 229.01it/s]Feature influence computation:  96%|█████████▌| 492/512 [00:02<00:00, 228.04it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 240.19it/s]
+Feature attributions completed in 2.13s
+Attribution completed in 2.38s
+[11:27:22]   Tagged graph: 250 base + 7 adapter features + 103 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__list_colors__hc008d3bc7c69.json
+[11:27:22] [6/10] diverge__persona_shakespeare__h76a938abf194: 20 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.11s
+Found 48985 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.4609
+Will include 512 of 48985 feature nodes
+Input vectors built in 0.00s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.04s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   5%|▍         | 24/512 [00:00<00:02, 204.95it/s]Feature influence computation:  10%|█         | 52/512 [00:00<00:02, 227.00it/s]Feature influence computation:  16%|█▌        | 80/512 [00:00<00:01, 228.48it/s]Feature influence computation:  20%|██        | 104/512 [00:00<00:01, 228.81it/s]Feature influence computation:  26%|██▌       | 132/512 [00:00<00:01, 240.26it/s]Feature influence computation:  31%|███▏      | 160/512 [00:00<00:01, 234.86it/s]Feature influence computation:  38%|███▊      | 196/512 [00:00<00:01, 266.24it/s]Feature influence computation:  44%|████▍     | 224/512 [00:00<00:01, 249.49it/s]Feature influence computation:  49%|████▉     | 252/512 [00:01<00:01, 245.03it/s]Feature influence computation:  56%|█████▋    | 288/512 [00:01<00:00, 266.91it/s]Feature influence computation:  62%|██████▏   | 316/512 [00:01<00:00, 266.21it/s]Feature influence computation:  68%|██████▊   | 348/512 [00:01<00:00, 272.70it/s]Feature influence computation:  76%|███████▌  | 388/512 [00:01<00:00, 283.58it/s]Feature influence computation:  82%|████████▏ | 420/512 [00:01<00:00, 263.56it/s]Feature influence computation:  88%|████████▊ | 448/512 [00:01<00:00, 242.08it/s]Feature influence computation:  93%|█████████▎| 476/512 [00:01<00:00, 229.40it/s]Feature influence computation:  98%|█████████▊| 504/512 [00:02<00:00, 240.12it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 249.49it/s]
+Feature attributions completed in 2.05s
+Attribution completed in 2.29s
+[11:27:25]   Tagged graph: 249 base + 9 adapter features + 112 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__persona_shakespeare__h76a938abf194.json
+[11:27:25] [7/10] diverge__polite_email__h04392601a6e3: 21 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.11s
+Found 55991 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.09s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.4277
+Will include 512 of 55991 feature nodes
+Input vectors built in 0.01s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.04s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   4%|▍         | 20/512 [00:00<00:02, 194.69it/s]Feature influence computation:   8%|▊         | 40/512 [00:00<00:02, 186.79it/s]Feature influence computation:  12%|█▏        | 60/512 [00:00<00:02, 184.12it/s]Feature influence computation:  16%|█▌        | 80/512 [00:00<00:02, 188.43it/s]Feature influence computation:  20%|██        | 104/512 [00:00<00:01, 205.51it/s]Feature influence computation:  25%|██▌       | 128/512 [00:00<00:02, 189.15it/s]Feature influence computation:  30%|██▉       | 152/512 [00:00<00:01, 196.07it/s]Feature influence computation:  34%|███▍      | 176/512 [00:00<00:01, 201.85it/s]Feature influence computation:  39%|███▉      | 200/512 [00:01<00:01, 204.72it/s]Feature influence computation:  45%|████▍     | 228/512 [00:01<00:01, 216.28it/s]Feature influence computation:  49%|████▉     | 252/512 [00:01<00:01, 207.36it/s]Feature influence computation:  54%|█████▍    | 276/512 [00:01<00:01, 212.28it/s]Feature influence computation:  59%|█████▉    | 304/512 [00:01<00:00, 228.40it/s]Feature influence computation:  64%|██████▍   | 328/512 [00:01<00:00, 187.66it/s]Feature influence computation:  69%|██████▉   | 352/512 [00:01<00:00, 179.34it/s]Feature influence computation:  73%|███████▎  | 372/512 [00:01<00:00, 156.14it/s]Feature influence computation:  79%|███████▉  | 404/512 [00:02<00:00, 189.09it/s]Feature influence computation:  85%|████████▌ | 436/512 [00:02<00:00, 216.85it/s]Feature influence computation:  91%|█████████ | 464/512 [00:02<00:00, 219.09it/s]Feature influence computation:  95%|█████████▌| 488/512 [00:02<00:00, 208.69it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 202.37it/s]
+Feature attributions completed in 2.53s
+Attribution completed in 2.79s
+[11:27:29]   Tagged graph: 252 base + 9 adapter features + 114 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__polite_email__h04392601a6e3.json
+[11:27:29] [8/10] diverge__recipe_req__hd625e281d13d: 17 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.13s
+Found 40008 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.3633
+Will include 512 of 40008 feature nodes
+Input vectors built in 0.01s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.05s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   5%|▍         | 24/512 [00:00<00:02, 204.07it/s]Feature influence computation:   9%|▉         | 48/512 [00:00<00:02, 211.70it/s]Feature influence computation:  14%|█▍        | 72/512 [00:00<00:02, 195.84it/s]Feature influence computation:  20%|█▉        | 100/512 [00:00<00:02, 200.33it/s]Feature influence computation:  24%|██▍       | 124/512 [00:00<00:02, 188.53it/s]Feature influence computation:  30%|██▉       | 152/512 [00:00<00:01, 207.22it/s]Feature influence computation:  34%|███▍      | 176/512 [00:00<00:01, 213.94it/s]Feature influence computation:  40%|███▉      | 204/512 [00:00<00:01, 231.40it/s]Feature influence computation:  45%|████▌     | 232/512 [00:01<00:01, 236.40it/s]Feature influence computation:  50%|█████     | 256/512 [00:01<00:01, 227.16it/s]Feature influence computation:  56%|█████▋    | 288/512 [00:01<00:00, 247.17it/s]Feature influence computation:  62%|██████▏   | 316/512 [00:01<00:00, 240.91it/s]Feature influence computation:  68%|██████▊   | 348/512 [00:01<00:00, 256.30it/s]Feature influence computation:  73%|███████▎  | 376/512 [00:01<00:00, 253.47it/s]Feature influence computation:  79%|███████▉  | 404/512 [00:01<00:00, 235.31it/s]Feature influence computation:  85%|████████▌ | 436/512 [00:01<00:00, 249.93it/s]Feature influence computation:  91%|█████████ | 464/512 [00:01<00:00, 254.26it/s]Feature influence computation:  96%|█████████▌| 492/512 [00:02<00:00, 238.21it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 232.54it/s]
+Feature attributions completed in 2.20s
+Attribution completed in 2.46s
+[11:27:33]   Tagged graph: 263 base + 8 adapter features + 99 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__recipe_req__hd625e281d13d.json
+[11:27:33] [9/10] diverge__steps_change_tire__hc77dd8116671: 20 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.12s
+Found 53338 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.09s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.3086
+Will include 512 of 53338 feature nodes
+Input vectors built in 0.01s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.04s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   4%|▍         | 20/512 [00:00<00:02, 171.52it/s]Feature influence computation:   9%|▊         | 44/512 [00:00<00:02, 197.03it/s]Feature influence computation:  13%|█▎        | 68/512 [00:00<00:02, 200.76it/s]Feature influence computation:  19%|█▉        | 96/512 [00:00<00:01, 220.28it/s]Feature influence computation:  24%|██▍       | 124/512 [00:00<00:01, 233.59it/s]Feature influence computation:  29%|██▉       | 148/512 [00:00<00:01, 231.26it/s]Feature influence computation:  34%|███▎      | 172/512 [00:00<00:01, 226.14it/s]Feature influence computation:  39%|███▉      | 200/512 [00:00<00:01, 236.18it/s]Feature influence computation:  45%|████▍     | 228/512 [00:01<00:01, 240.63it/s]Feature influence computation:  50%|█████     | 256/512 [00:01<00:01, 233.73it/s]Feature influence computation:  55%|█████▍    | 280/512 [00:01<00:01, 231.11it/s]Feature influence computation:  59%|█████▉    | 304/512 [00:01<00:00, 219.23it/s]Feature influence computation:  66%|██████▌   | 336/512 [00:01<00:00, 239.51it/s]Feature influence computation:  71%|███████   | 364/512 [00:01<00:00, 225.63it/s]Feature influence computation:  76%|███████▌  | 388/512 [00:01<00:00, 223.76it/s]Feature influence computation:  82%|████████▏ | 420/512 [00:01<00:00, 239.03it/s]Feature influence computation:  88%|████████▊ | 448/512 [00:01<00:00, 235.87it/s]Feature influence computation:  94%|█████████▍| 480/512 [00:02<00:00, 257.97it/s]Feature influence computation:  99%|█████████▉| 508/512 [00:02<00:00, 250.25it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 233.91it/s]
+Feature attributions completed in 2.19s
+Attribution completed in 2.45s
+[11:27:36]   Tagged graph: 253 base + 8 adapter features + 98 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__steps_change_tire__hc77dd8116671.json
+[11:27:36] [10/10] diverge__summarize_req__hc84c836b5d66: 21 prompt tokens
+Phase 0: Precomputing activations and vectors
+Precomputation completed in 0.15s
+Found 63243 active features
+Phase 1: Running forward pass
+Forward pass completed in 0.08s
+Phase 2: Building input vectors
+Using 5 salient logits with cumulative probability 0.2383
+Will include 512 of 63243 feature nodes
+Input vectors built in 0.01s
+Phase 3: Computing logit attributions
+Logit attributions completed in 0.04s
+Phase 4: Computing feature attributions
+Feature influence computation:   0%|          | 0/512 [00:00<?, ?it/s]Feature influence computation:   3%|▎         | 16/512 [00:00<00:03, 142.63it/s]Feature influence computation:   7%|▋         | 36/512 [00:00<00:02, 169.23it/s]Feature influence computation:  12%|█▏        | 60/512 [00:00<00:02, 198.87it/s]Feature influence computation:  18%|█▊        | 92/512 [00:00<00:01, 230.79it/s]Feature influence computation:  24%|██▍       | 124/512 [00:00<00:01, 256.52it/s]Feature influence computation:  30%|██▉       | 152/512 [00:00<00:01, 250.96it/s]Feature influence computation:  35%|███▌      | 180/512 [00:00<00:01, 251.71it/s]Feature influence computation:  41%|████▏     | 212/512 [00:00<00:01, 259.58it/s]Feature influence computation:  48%|████▊     | 244/512 [00:01<00:01, 262.52it/s]Feature influence computation:  53%|█████▎    | 272/512 [00:01<00:00, 240.84it/s]Feature influence computation:  59%|█████▉    | 304/512 [00:01<00:00, 250.79it/s]Feature influence computation:  65%|██████▍   | 332/512 [00:01<00:00, 245.87it/s]Feature influence computation:  70%|███████   | 360/512 [00:01<00:00, 247.27it/s]Feature influence computation:  76%|███████▌  | 388/512 [00:01<00:00, 235.78it/s]Feature influence computation:  81%|████████▏ | 416/512 [00:01<00:00, 246.09it/s]Feature influence computation:  87%|████████▋ | 444/512 [00:01<00:00, 220.85it/s]Feature influence computation:  91%|█████████▏| 468/512 [00:01<00:00, 216.70it/s]Feature influence computation:  96%|█████████▌| 492/512 [00:02<00:00, 202.16it/s]Feature influence computation: 100%|██████████| 512/512 [00:02<00:00, 233.05it/s]
+Feature attributions completed in 2.20s
+Attribution completed in 2.47s
+[11:27:40]   Tagged graph: 285 base + 9 adapter features + 108 error nodes -> experiments/base_vs_adapter_circuit_trace/graphs/diverge/diverge__summarize_req__hc84c836b5d66.json
+[11:27:40] Wrote manifest: experiments/base_vs_adapter_circuit_trace/graphs/diverge/combined_attribution_manifest.json

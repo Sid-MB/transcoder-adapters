@@ -10,4 +10,6 @@
 SLURM_LOG_DIR="logs/collect_features"
 source run_on_gpu/common.sh
 
-run uv run python -m analysis.features.collect_feature_activations "$@"
+# --no-sync: use the venv as set up by common.sh (uv sync --inexact) without re-syncing,
+# so concurrent jobs sharing the venv don't prune each other's packages mid-run.
+run uv run --no-sync python -m analysis.features.collect_feature_activations "$@"

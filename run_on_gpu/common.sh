@@ -31,7 +31,12 @@ source sh/common_logging.sh
 
 # ── Setup ─────────────────────────────────────────────────────────────
 echo "[Slurm] Setting up (uv sync)..."
-uv sync
+# --inexact: do NOT remove extraneous packages. Jobs share one .venv on the network
+# filesystem; a plain `uv sync` prunes packages outside the default set (e.g. the `viz`
+# extra / circuit_tracer), which rips modules out from under other jobs running on the
+# same venv concurrently. --inexact installs what's missing without pruning, so concurrent
+# jobs don't break each other. Run scripts additionally pass `uv run --no-sync`.
+uv sync --inexact
 
 # ── Run helper ────────────────────────────────────────────────────────
 run() {

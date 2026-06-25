@@ -1,0 +1,22 @@
+{
+  "run_name": "diverge",
+  "adapter_checkpoint": "siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860",
+  "base_model": "google/gemma-2-2b",
+  "n_base_features": 16384,
+  "output_dir": "experiments/base_vs_adapter_circuit_trace/graphs/diverge",
+  "base_feature_scan": "mntss/gemma-scope-transcoders",
+  "adapter_feature_scan": null,
+  "max_error_nodes": null,
+  "results": {
+    "explain_photosynthesis": "success",
+    "format_uppercase": "success",
+    "haiku_autumn": "success",
+    "json_only": "success",
+    "list_colors": "success",
+    "persona_shakespeare": "success",
+    "polite_email": "success",
+    "recipe_req": "success",
+    "steps_change_tire": "success",
+    "summarize_req": "success"
+  }
+}

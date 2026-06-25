@@ -377,10 +377,27 @@ def setup_training(config: ExperimentConfig, model, dataset_loader: PredefinedDa
     return optimizer, scheduler, total_steps, warmup_steps, train_size
 
 
+def scheduled_l1_weight(config: ExperimentConfig, global_step: int, total_steps: int) -> float:
+    """Current L1 sparsity weight, optionally linearly warmed up from 0 -> target.
+
+    When ``transcoder.schedule_l1_weight`` is set, the L1 coefficient ramps linearly from 0 to
+    ``transcoder.l1_weight`` over the first ``warmup_ratio`` fraction of training, then holds at
+    the target. Letting features learn to reconstruct before the sparsity penalty bites reduces
+    dead features (standard SAE/transcoder practice). Otherwise returns the constant target.
+    """
+    target = config.transcoder.l1_weight or 0.0
+    if target == 0.0 or not getattr(config.transcoder, "schedule_l1_weight", False):
+        return target
+    warmup_steps = max(1, int(total_steps * config.warmup_ratio))
+    return target * min(1.0, global_step / warmup_steps)
+
+
 def train_step_direct(
     model,
     batch: dict,
     config: ExperimentConfig,
+    global_step: int,
+    total_steps: int,
     gradient_accumulation_steps: int,
 ) -> dict[str, float]:
     """Single training step for direct fine-tuning (LM loss + sparsity only)."""
@@ -388,7 +405,7 @@ def train_step_direct(
     input_ids = batch["input_ids"]
     attention_mask = batch["attention_mask"]
     labels = batch["labels"]
-    l1_weight = config.transcoder.l1_weight or 0.0
+    l1_weight = scheduled_l1_weight(config, global_step, total_steps)
 
     # Forward pass with feature caching (for L1 loss + stats)
     model.set_cache_features(True)
@@ -407,6 +424,7 @@ def train_step_direct(
     metrics = {
         "train/lm_loss": lm_loss.item(),
         "train/sparsity": raw_sparsity.item(),
+        "train/l1_weight": l1_weight,
         "train/total_loss": lm_loss.item() + weighted_sparsity.item(),
     }
     return metrics
@@ -436,7 +454,7 @@ def train_step_bridging(
     assert bridging_config is not None
     assert config.transcoder is not None
     n_layers = len(model.model.layers)
-    l1_weight = config.transcoder.l1_weight or 0.0
+    l1_weight = scheduled_l1_weight(config, global_step, total_steps)
 
     # 1. Main forward pass with feature caching (for L1 loss + stats)
     model.set_cache_features(True)
@@ -484,6 +502,7 @@ def train_step_bridging(
         scaled_first.backward()
 
     metrics["train/sparsity"] = raw_sparsity.item()
+    metrics["train/l1_weight"] = l1_weight
 
     # Free logits_adapt to save memory
     del logits_adapt
@@ -601,7 +620,9 @@ def train_epoch(
         # Forward + backward (handled inside train_step for memory efficiency)
         if config.direct:
             step_metrics = train_step_direct(
-                model, batch, config, gradient_accumulation_steps
+                model, batch, config,
+                global_step, total_steps,
+                gradient_accumulation_steps
             )
         else:
             step_metrics = train_step_bridging(

@@ -156,6 +156,11 @@ class FeatureStats:
     activation_range_examples: dict = field(default_factory=lambda: defaultdict(list))
     activation_range_seen_counts: dict = field(default_factory=lambda: defaultdict(int))
 
+    # Bounded top-token counts: token_id -> count of activations on that token, kept to a
+    # fixed cap via Space-Saving. Powers the graph-viz "% of this feature's activations that
+    # land on this token" (token-conditional specificity) stat.
+    token_counts: dict = field(default_factory=dict)
+
 
 # =============================================================================
 # Feature Collector
@@ -200,6 +205,8 @@ class FeatureCollector:
         hist_bin_lower_bounds: np.ndarray | None = None,
         activation_example_ranges: list[tuple[float, float]] | None = None,
         activation_range_examples_per_domain: int = 1,
+        track_token_counts: bool = True,
+        token_count_cap: int = 32,
     ):
         self.n_layers = n_layers
         self.n_features = n_features
@@ -208,6 +215,10 @@ class FeatureCollector:
         self.domain_top_k = domain_top_k
         self.context_before = context_before
         self.context_after = context_after
+        # Token-conditional specificity tracking (graph-viz "% of this feature's activations
+        # on this token"). Bounded per feature to token_count_cap entries via Space-Saving.
+        self.track_token_counts = track_token_counts
+        self.token_count_cap = max(0, token_count_cap)
 
         # Per-feature stats
         self.stats = [
@@ -317,17 +328,19 @@ class FeatureCollector:
             and activation <= domain_heap[0].activation
         )
 
-        # Reservoir sampling decision for random
-        stats.random_seen_count += 1
+        # Reservoir sampling decision for random (skip entirely when disabled: random.randint
+        # per nonzero dominates dense collections, and n_random=0 wants no random samples).
         add_to_random = False
         random_replace_idx = None
-        if len(stats.random_examples) < self.n_random:
-            add_to_random = True
-        else:
-            j = random.randint(0, stats.random_seen_count - 1)
-            if j < self.n_random:
+        if self.n_random > 0:
+            stats.random_seen_count += 1
+            if len(stats.random_examples) < self.n_random:
                 add_to_random = True
-                random_replace_idx = j
+            else:
+                j = random.randint(0, stats.random_seen_count - 1)
+                if j < self.n_random:
+                    add_to_random = True
+                    random_replace_idx = j
 
         # Skip if not going into any buffer
         if dominated_by_heap and dominated_by_domain_heap and not add_to_random:
@@ -495,8 +508,41 @@ class FeatureCollector:
         with torch.inference_mode():
             _run_backbone_for_hooks(model, padded, attention_mask)
 
+        self.accumulate_batch(
+            batch_tokens=batch_tokens,
+            batch_domains=batch_domains,
+            batch_markers=batch_markers,
+            batch_seq_idxs=batch_seq_idxs,
+            batch_source_metadata=batch_source_metadata,
+            layer_activations=self._layer_activations,
+        )
+
+        self._layer_activations = {}
+
+    def accumulate_batch(
+        self,
+        *,
+        batch_tokens: list[list[int]],
+        batch_domains: list[str],
+        batch_markers: list[dict],
+        batch_seq_idxs: list[int],
+        batch_source_metadata: list[dict[str, Any]],
+        layer_activations: dict[int, torch.Tensor],
+    ) -> None:
+        """Accumulate feature stats from precomputed per-layer activations.
+
+        ``layer_activations`` maps ``layer_idx -> tensor[B, >=seq_len, n_features]``
+        of post-activation feature values (ReLU/JumpReLU already applied). This is
+        the model-agnostic half of ``process_batch``: any front-end that can produce
+        per-token feature activations can feed them here and reuse all top-k,
+        histogram, and reservoir-sampling logic. ``process_batch`` supplies them via
+        transcoder-adapter forward hooks; the base/GemmaScope collector supplies them
+        from circuit-tracer ``ReplacementModel.get_activations``.
+        """
+        seq_lens = [len(t) for t in batch_tokens]
+
         # Process each item in the batch
-        for b in range(B):
+        for b in range(len(batch_tokens)):
             tokens = batch_tokens[b]
             seq_len = seq_lens[b]
             domain = batch_domains[b]
@@ -517,7 +563,7 @@ class FeatureCollector:
 
             for layer_idx in range(self.n_layers):
                 # Slice out this item's real tokens (right-padded, so [:seq_len] is correct)
-                features_gpu = self._layer_activations[layer_idx][b, :seq_len]  # [seq_len, n_features]
+                features_gpu = layer_activations[layer_idx][b, :seq_len]  # [seq_len, n_features]
 
                 nonzero = torch.nonzero(features_gpu > 0)  # [N, 2]
                 if len(nonzero) == 0:
@@ -534,41 +580,76 @@ class FeatureCollector:
                     active_values=active_values,
                 )
 
+                layer_stats = self.stats[layer_idx]
+
+                # Pre-filter top-k example candidates. When n_random == 0 a nonzero can only be
+                # kept if it beats its feature's current top-k / domain-top-k heap minimum (which
+                # only rises within a layer), so we vectorize that check once and skip
+                # _maybe_add_example for the dominated majority — the dominant cost in dense
+                # (GemmaScope-style) collections. With n_random > 0 (e.g. the adapter collector)
+                # every nonzero is a reservoir candidate, so candidate_mask stays None and behavior
+                # is byte-for-byte unchanged.
+                candidate_mask = None
+                if self.n_random <= 0:
+                    thresholds = np.full(self.n_features, -np.inf, dtype=np.float64)
+                    for uf in np.unique(active_features).tolist():
+                        s = layer_stats[uf]
+                        global_thr = (
+                            s.top_k_examples[0].activation
+                            if len(s.top_k_examples) >= self.top_k
+                            else -np.inf
+                        )
+                        domain_heap = s.domain_top_k_examples.get(domain)
+                        domain_thr = (
+                            domain_heap[0].activation
+                            if domain_heap is not None and len(domain_heap) >= self.domain_top_k
+                            else -np.inf
+                        )
+                        thresholds[uf] = min(global_thr, domain_thr)
+                    candidate_mask = active_values > thresholds[active_features]
+
+                track_ranges = (
+                    self.activation_range_examples_per_domain > 0
+                    and bool(self.activation_example_ranges)
+                )
+
                 for i in range(len(active_positions)):
                     pos = int(active_positions[i])
                     feature_idx = int(active_features[i])
                     act = float(active_values[i])
 
-                    stats = self.stats[layer_idx][feature_idx]
+                    stats = layer_stats[feature_idx]
                     region = regions[pos]
                     think_pos = thinking_positions[pos]
 
                     stats.activation_count += 1
                     stats.domain_counts[domain] += 1
                     stats.region_counts[region] += 1
+                    if self.track_token_counts and self.token_count_cap > 0:
+                        token_id = tokens[pos]
+                        token_counts = stats.token_counts
+                        if token_id in token_counts:
+                            token_counts[token_id] += 1
+                        elif len(token_counts) < self.token_count_cap:
+                            token_counts[token_id] = 1
+                        else:
+                            # Space-Saving: evict the lowest-count token, inherit its count + 1.
+                            min_token = min(token_counts, key=token_counts.get)
+                            token_counts[token_id] = token_counts.pop(min_token) + 1
                     if think_pos is not None:
                         bin_idx = min(9, int(think_pos * 10))
                         stats.thinking_position_counts[bin_idx] += 1
 
-                    self._maybe_add_activation_range_example(
-                        stats,
-                        act,
-                        tokens,
-                        pos,
-                        features_gpu,
-                        feature_idx,
-                        domain,
-                        region,
-                        think_pos,
-                        sequence_idx,
-                        source_metadata,
-                    )
-                    self._maybe_add_example(
-                        stats, act, tokens, pos, features_gpu, feature_idx,
-                        domain, region, think_pos, sequence_idx, source_metadata
-                    )
-
-        self._layer_activations = {}
+                    if track_ranges:
+                        self._maybe_add_activation_range_example(
+                            stats, act, tokens, pos, features_gpu, feature_idx,
+                            domain, region, think_pos, sequence_idx, source_metadata,
+                        )
+                    if candidate_mask is None or candidate_mask[i]:
+                        self._maybe_add_example(
+                            stats, act, tokens, pos, features_gpu, feature_idx,
+                            domain, region, think_pos, sequence_idx, source_metadata,
+                        )
 
 
 # =============================================================================
@@ -622,9 +703,29 @@ def cantor_pair(x: int, y: int) -> int:
     return (x + y) * (x + y + 1) // 2 + y
 
 
+# Per-token-id decode cache. Export decodes the same handful of token ids (\n, common words,
+# punctuation) tens of millions of times across hundreds of thousands of dense base features;
+# tokenizer.decode is ~10-50us/call, so caching cuts packing time by ~10-50x. Output is identical
+# (decode is deterministic). Keyed by token id; reset_decode_cache() is called at export start so
+# a process that runs multiple collections never mixes tokenizers.
+_DECODE_CACHE: dict[int, str] = {}
+
+
+def reset_decode_cache() -> None:
+    _DECODE_CACHE.clear()
+
+
+def decode_token(tokenizer, token_id: int) -> str:
+    cached = _DECODE_CACHE.get(token_id)
+    if cached is None:
+        cached = tokenizer.decode([token_id])
+        _DECODE_CACHE[token_id] = cached
+    return cached
+
+
 def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
     """Format an ActivatingExample for circuit tracer JSON."""
-    tokens = [tokenizer.decode([tok_id]) for tok_id in ex.context_tokens]
+    tokens = [decode_token(tokenizer, tok_id) for tok_id in ex.context_tokens]
     formatted: dict[str, Any] = {
         "tokens": tokens,
         "tokens_acts_list": ex.context_activations,
@@ -635,6 +736,29 @@ def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
     if ex.source_metadata:
         formatted["source_metadata"] = dict(ex.source_metadata)
     return formatted
+
+
+def format_top_tokens(stats: FeatureStats, tokenizer, *, k: int = 10) -> list[dict]:
+    """Top tokens this feature activates on, with token-conditional fractions.
+
+    Powers the graph-viz "of this feature's activations, what % land on this token"
+    (token-conditional specificity) stat. Counts are bounded (Space-Saving, capped per
+    feature), so fractions for the most frequent tokens are accurate while rare tokens may
+    be undercounted or absent.
+    """
+    if not stats.token_counts:
+        return []
+    total = max(1, stats.activation_count)
+    ranked = sorted(stats.token_counts.items(), key=lambda kv: -kv[1])[:k]
+    return [
+        {
+            "token": decode_token(tokenizer, token_id),
+            "token_id": int(token_id),
+            "count": int(count),
+            "fraction": count / total,
+        }
+        for token_id, count in ranked
+    ]
 
 
 def _build_examples_quantiles(
@@ -735,6 +859,7 @@ def _release_feature_examples(stats: FeatureStats) -> None:
     stats.domain_top_k_examples.clear()
     stats.activation_range_examples.clear()
     stats.activation_range_seen_counts.clear()
+    stats.token_counts.clear()
 
 
 def _count_nonempty_features(collector: FeatureCollector) -> int:
@@ -854,12 +979,24 @@ def export_circuit_tracer_json(
     output_dir: Path,
     n_workers: int = 16,
     export_circuit_tracer_features: bool = True,
+    write_per_feature_json: bool = True,
 ):
-    """Export feature data to circuit tracer JSON format."""
-    features_dir = output_dir / "features"
-    features_dir.mkdir(parents=True, exist_ok=True)
+    """Export feature data to circuit tracer JSON format.
 
-    logger.info(f"Exporting features to {features_dir}...")
+    ``write_per_feature_json`` controls the per-feature ``features/{cantor_id}.json``
+    files used by the dashboard. Set it False to write only the packed
+    ``circuit_tracer_features/`` cache (which the attribution overlay/circuit-tracer
+    frontend use). This matters for dense base/GemmaScope collections where nearly all
+    of the hundreds of thousands of features fire, so writing one JSON per feature
+    dominates wall-clock and inode count.
+    """
+    reset_decode_cache()
+    features_dir = output_dir / "features"
+    if write_per_feature_json:
+        features_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Exporting features to {features_dir}...")
+    else:
+        logger.info("Skipping per-feature JSON files (packed circuit-tracer cache only).")
     packed_features_dir = output_dir / "circuit_tracer_features"
     packed_index: dict[str, Any] | None = None
     if export_circuit_tracer_features:
@@ -910,11 +1047,11 @@ def export_circuit_tracer_json(
 
                         # Get logit lens tokens
                         top_logits = [
-                            tokenizer.decode([tok_id])
+                            decode_token(tokenizer, tok_id)
                             for tok_id in layer_logit_lens['top_ids'][feature_idx]
                         ]
                         bottom_logits = [
-                            tokenizer.decode([tok_id])
+                            decode_token(tokenizer, tok_id)
                             for tok_id in layer_logit_lens['bot_ids'][feature_idx]
                         ]
 
@@ -925,7 +1062,10 @@ def export_circuit_tracer_json(
                             "act_min": act_min,
                             "act_max": act_max,
                             "examples_quantiles": examples_quantiles,
+                            # activation_frequency = "% of tokens this feature fires on" (metric 1).
                             "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
+                            # token_specificity = "% of this feature's activations on each token" (metric 2).
+                            "token_specificity": format_top_tokens(stats, tokenizer),
                             "layer": layer_idx,
                             "feature": feature_idx,
                         }
@@ -935,10 +1075,11 @@ def export_circuit_tracer_json(
                             packed_offsets.append(packed_bin_f.tell())
                             packed_count += 1
 
-                        cantor_id = cantor_pair(layer_idx, feature_idx)
-                        filepath = features_dir / f"{cantor_id}.json"
-                        pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
-                        write_count += 1
+                        if write_per_feature_json:
+                            cantor_id = cantor_pair(layer_idx, feature_idx)
+                            filepath = features_dir / f"{cantor_id}.json"
+                            pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
+                            write_count += 1
                         _release_feature_examples(stats)
 
                         if len(pending_writes) >= max_pending_writes:
@@ -1568,6 +1709,16 @@ def main():
                         help="""Explicit tokenizer path (default: resolved from model_type)""")
     parser.add_argument("--max_length", type=int, default=4096,
                         help="""Max sequence length (longer sequences truncated)""")
+    parser.add_argument(
+        "--no_per_feature_json",
+        action="store_true",
+        help=(
+            "Skip writing per-feature features/{cantor_id}.json files (and the dashboard "
+            "annotation pass); write only the packed circuit_tracer_features/ cache used by "
+            "the attribution overlay. Use this for large runs where per-feature JSON writing "
+            "dominates wall-clock and fills scratch disk (hundreds of thousands of tiny files)."
+        ),
+    )
 
     args = parser.parse_args()
     if args.upload_circuit_tracer_features_to_hub is None:
@@ -1878,6 +2029,7 @@ def main():
         tokenizer,
         output_dir,
         export_circuit_tracer_features=args.export_circuit_tracer_features,
+        write_per_feature_json=not args.no_per_feature_json,
     )
     export_activation_histograms(collector, output_dir)
     export_metadata(
@@ -1889,6 +2041,9 @@ def main():
         tokenizer_path=args.tokenizer,
         data_sources=data_source_settings,
     )
+    # Annotations are derived from feature_metadata.json (always written), not the
+    # per-feature features/{id}.json files, so they run even with --no_per_feature_json.
+    # They are also a required sidecar for the Hub upload below.
     annotate_collected_features(output_dir)
 
     if hf_feature_repo_id and hf_feature_config:
