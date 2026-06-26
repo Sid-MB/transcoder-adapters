@@ -307,7 +307,10 @@ def run_combined_attribution(args: argparse.Namespace) -> dict[str, Any]:
         f"{args.run_name}",
         consistent=True,
     )
-    output_dir = Path(output_dir)
+    # Resolve to an absolute path: circuit_tracer's add_graph_metadata asserts on
+    # os.path.dirname(output_dir), which is empty for a single-component relative dir
+    # like ./graph_x (Path strips the "./"), so a bare --output_dir would crash on write.
+    output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     prompt_paths = _list_prompt_files(args.prompts)

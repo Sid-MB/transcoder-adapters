@@ -29,24 +29,44 @@ LINK_GRAPH_STATS_BANNER_NEW = (
     "  })\n"
     "\n"
     "  // Comparison-graph addition: a small, graph-level stats banner summarizing the\n"
-    "  // overall feature composition (base / adapter / error node counts). Reads from\n"
-    "  // data.metadata.comparison.node_counts (written by tag_combined_graph). Renders\n"
-    "  // once per graph and is skipped entirely for plain circuit-tracer graphs.\n"
+    "  // overall feature composition. The bold figure is the as-built composition\n"
+    "  // (data.metadata.comparison.node_counts, written by tag_combined_graph at the build\n"
+    "  // node_threshold). The dim '(N shown)' is recomputed live from the rendered node set\n"
+    "  // so it tracks the pruning slider. Skipped entirely for plain circuit-tracer graphs.\n"
     "  if (data.metadata.comparison && data.metadata.comparison.node_counts) {\n"
     "    var comparisonNodeCounts = data.metadata.comparison.node_counts\n"
-    "    cgSel.select('.link-graph').select('.comparison-stats-banner').remove()\n"
-    "    cgSel.select('.link-graph')\n"
+    "    var shownNodeCounts = {base: 0, adapter: 0, error: 0}\n"
+    "    nodes.forEach(function(node){\n"
+    "      if (node.isError || node.node_shape == 'error' || (node.feature_type && node.feature_type.indexOf('error') != -1)) shownNodeCounts.error++\n"
+    "      else if (node.node_shape == 'base_model' || node.source_model == 'base') shownNodeCounts.base++\n"
+    "      else if (node.node_shape == 'adapter_model' || node.source_model == 'adapter') shownNodeCounts.adapter++\n"
+    "    })\n"
+    "    var fmtComparisonStat = function(label, glyph, built, shown){\n"
+    "      return `<span>${label} ${glyph} ${built || 0} <span style='opacity:.55'>(${shown} shown)</span></span>`\n"
+    "    }\n"
+    "    var linkGraphSel = cgSel.select('.link-graph')\n"
+    "    // Anchor the absolute banner to .link-graph without clobbering any positioning\n"
+    "    // gridsnap may already have applied (only promote a static container to relative).\n"
+    "    if (linkGraphSel.node() && getComputedStyle(linkGraphSel.node()).position == 'static') linkGraphSel.st({position: 'relative'})\n"
+    "    linkGraphSel.select('.comparison-stats-banner').remove()\n"
+    "    linkGraphSel\n"
     "      .insert('div.comparison-stats-banner', ':first-child')\n"
     "      .st({\n"
+    "        position: 'absolute',\n"
+    "        top: 2,\n"
+    "        left: 40,\n"
+    "        zIndex: 10,\n"
     "        fontSize: 11,\n"
     "        color: '#555',\n"
-    "        padding: '2px 4px',\n"
+    "        padding: '2px 6px',\n"
+    "        background: 'rgba(245,244,238,0.85)',\n"
+    "        borderRadius: '3px',\n"
     "        pointerEvents: 'none',\n"
     "      })\n"
     "      .html([\n"
-    "        `<span>Base \\u2b22 ${comparisonNodeCounts.base_features || 0}</span>`,\n"
-    "        `<span>Adapter \\u25cf ${comparisonNodeCounts.adapter_features || 0}</span>`,\n"
-    "        `<span>Error \\u25b2 ${comparisonNodeCounts.error_nodes || 0}</span>`,\n"
+    "        fmtComparisonStat('Base', '\\u2b22', comparisonNodeCounts.base_features, shownNodeCounts.base),\n"
+    "        fmtComparisonStat('Adapter', '\\u25cf', comparisonNodeCounts.adapter_features, shownNodeCounts.adapter),\n"
+    "        fmtComparisonStat('Error', '\\u25b2', comparisonNodeCounts.error_nodes, shownNodeCounts.error),\n"
     "      ].join('  \\u00b7  '))\n"
     "  }\n"
 )
@@ -248,11 +268,62 @@ NODE_CONNECTIONS_HEADER_ICON_NEW = (
     "utilCg.nodeShapeToText(clickedNode) : utilCg.featureTypeToText(clickedNode.feature_type))"
 )
 
+# Comparison-graph addition: append each graph's as-built composition (base/adapter/error
+# node counts, baked into graph-metadata.json as d.node_counts) to its dropdown option text,
+# with the same glyphs as the in-graph banner. Patched into BOTH option-builder sites in
+# index.html (initial render + the refetch-on-click), hence _replace_all.
+DROPDOWN_OPTION_COUNTS_OLD = "return prefix + scanName + ' — ' + d.prompt"
+DROPDOWN_OPTION_COUNTS_NEW = (
+    "return prefix + scanName + ' — ' + d.prompt + "
+    "(d.node_counts ? `  [Base \\u2b22 ${d.node_counts.base_features || 0}  "
+    "Adapter \\u25cf ${d.node_counts.adapter_features || 0}  "
+    "Error \\u25b2 ${d.node_counts.error_nodes || 0}]` : '')"
+)
+
+
+# Fix the mouse hit-testing offset: upstream computes the pointer relative to the OUTER
+# container (c.sel) and hand-subtracts the margin, then matches against node positions that
+# live in the inner c.svg coordinate space. Any margin/scale/position mismatch between those
+# two spaces offsets hover/click selection by a large constant (nodes appear far to the side
+# of the cursor). Compute the pointer in c.svg's own space (d3.pointer(ev, c.svg.node())) so
+# pointer and node coordinates pass through the identical SVG transform, then drop the manual
+# margin subtraction. Applied to both the mousemove (hover) and click handlers.
+LINK_GRAPH_HOVER_HITTEST_OLD = (
+    "if (ev.shiftKey) return\n"
+    "      var [mouseX, mouseY] = d3.pointer(ev)\n"
+    "      var [closestNode, closestDistance] = findClosestPoint(mouseX - c.margin.left, mouseY - c.margin.top, nodes)"
+)
+LINK_GRAPH_HOVER_HITTEST_NEW = (
+    "if (ev.shiftKey) return\n"
+    "      var [mouseX, mouseY] = d3.pointer(ev, c.svg.node())\n"
+    "      var [closestNode, closestDistance] = findClosestPoint(mouseX, mouseY, nodes)"
+)
+LINK_GRAPH_CLICK_HITTEST_OLD = (
+    ".on('click', (ev) => {\n"
+    "      var [mouseX, mouseY] = d3.pointer(ev)\n"
+    "      var [closestNode, closestDistance] = findClosestPoint(mouseX - c.margin.left, mouseY - c.margin.top, nodes)"
+)
+LINK_GRAPH_CLICK_HITTEST_NEW = (
+    ".on('click', (ev) => {\n"
+    "      var [mouseX, mouseY] = d3.pointer(ev, c.svg.node())\n"
+    "      var [closestNode, closestDistance] = findClosestPoint(mouseX, mouseY, nodes)"
+)
+
 
 def _replace_once(text: str, old: str, new: str, *, path: Path) -> str:
     if old not in text:
         raise RuntimeError(f"Could not patch {path}; expected snippet was not found.")
     return text.replace(old, new, 1)
+
+
+def _replace_all(text: str, old: str, new: str, *, path: Path, min_count: int = 1) -> str:
+    count = text.count(old)
+    if count < min_count:
+        raise RuntimeError(
+            f"Could not patch {path}; expected snippet was not found "
+            f"(needed >= {min_count}, found {count})."
+        )
+    return text.replace(old, new)
 
 
 def patch_frontend_assets(frontend_dir: Path) -> None:
@@ -262,6 +333,7 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
     feature_detail_path = frontend_dir / "attribution_graph" / "init-cg-feature-detail.js"
     feature_examples_path = frontend_dir / "feature_examples" / "init-feature-examples.js"
     node_connections_path = frontend_dir / "attribution_graph" / "init-cg-node-connections.js"
+    index_path = frontend_dir / "index.html"
 
     util_text = util_path.read_text()
     util_text = _replace_once(util_text, FEATURE_ID_PATCH_OLD, FEATURE_ID_PATCH_NEW, path=util_path)
@@ -294,6 +366,18 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         link_graph_text,
         LINK_GRAPH_NODE_OPACITY_OLD,
         LINK_GRAPH_NODE_OPACITY_NEW,
+        path=link_graph_path,
+    )
+    link_graph_text = _replace_once(
+        link_graph_text,
+        LINK_GRAPH_HOVER_HITTEST_OLD,
+        LINK_GRAPH_HOVER_HITTEST_NEW,
+        path=link_graph_path,
+    )
+    link_graph_text = _replace_once(
+        link_graph_text,
+        LINK_GRAPH_CLICK_HITTEST_OLD,
+        LINK_GRAPH_CLICK_HITTEST_NEW,
         path=link_graph_path,
     )
     link_graph_path.write_text(link_graph_text)
@@ -349,6 +433,18 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         path=node_connections_path,
     )
     node_connections_path.write_text(node_connections_text)
+
+    # index.html has two identical option-builder sites (initial render + refetch-on-click);
+    # patch both so the dropdown shows each graph's as-built base/adapter/error counts.
+    index_text = index_path.read_text()
+    index_text = _replace_all(
+        index_text,
+        DROPDOWN_OPTION_COUNTS_OLD,
+        DROPDOWN_OPTION_COUNTS_NEW,
+        path=index_path,
+        min_count=2,
+    )
+    index_path.write_text(index_text)
 
 
 def prepare_comparison_frontend(output_dir: Path) -> Path:
