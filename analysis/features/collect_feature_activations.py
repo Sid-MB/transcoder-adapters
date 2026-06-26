@@ -296,6 +296,71 @@ class FeatureCollector:
             hook.remove()
         self._hooks = []
 
+    def merge_from(self, other: "FeatureCollector") -> None:
+        """Merge another collector's state into this one (for sharded collection).
+
+        Each shard runs an independent collection over a disjoint subset of sequences; this
+        recombines them into the exact same result a single run would produce, EXCEPT for the
+        reservoir-sampled fields (``random_examples`` and ``activation_range_examples``), which
+        cannot be merged without bias. Sharding therefore requires those disabled
+        (``--n_random 0`` and no activation ranges) -- the base/GemmaScope collector's config --
+        and we assert it here. Top-k / domain-top-k example heaps merge by union-then-keep-k;
+        histograms and all counts add.
+        """
+        assert (self.n_layers, self.n_features, self.top_k, self.domain_top_k) == (
+            other.n_layers, other.n_features, other.top_k, other.domain_top_k
+        ), "merge_from: shard collectors have mismatched shape/top-k settings"
+        assert self.n_random == 0 and other.n_random == 0, "sharded merge requires --n_random 0"
+        assert not self.activation_example_ranges and not other.activation_example_ranges, (
+            "sharded merge requires activation ranges disabled"
+        )
+
+        self.total_tokens += other.total_tokens
+        for d, c in other.tokens_per_domain.items():
+            self.tokens_per_domain[d] += c
+        for r, c in other.tokens_per_region.items():
+            self.tokens_per_region[r] += c
+
+        self.run_hist_total += other.run_hist_total
+        self.run_hist_by_domain += other.run_hist_by_domain
+        for layer in range(self.n_layers):
+            self.feature_hist_total_by_layer[layer] += other.feature_hist_total_by_layer[layer]
+            self.feature_hist_by_domain_by_layer[layer] += other.feature_hist_by_domain_by_layer[layer]
+
+        def _merge_heap(a: list, b: list, k: int) -> list:
+            merged = a + b
+            if len(merged) > k:
+                merged = heapq.nlargest(k, merged)  # ActivatingExample.__lt__ ranks by activation
+            heapq.heapify(merged)  # restore min-heap invariant
+            return merged
+
+        for layer in range(self.n_layers):
+            s_layer, o_layer = self.stats[layer], other.stats[layer]
+            for f in range(self.n_features):
+                o = o_layer[f]
+                if o.activation_count == 0:
+                    continue
+                s = s_layer[f]
+                s.activation_count += o.activation_count
+                s.top_k_examples = _merge_heap(s.top_k_examples, o.top_k_examples, self.top_k)
+                for dom, oheap in o.domain_top_k_examples.items():
+                    s.domain_top_k_examples[dom] = _merge_heap(
+                        s.domain_top_k_examples[dom], oheap, self.domain_top_k
+                    )
+                for dom, c in o.domain_counts.items():
+                    s.domain_counts[dom] += c
+                for reg, c in o.region_counts.items():
+                    s.region_counts[reg] += c
+                for i in range(len(s.thinking_position_counts)):
+                    s.thinking_position_counts[i] += o.thinking_position_counts[i]
+                if o.token_counts:
+                    for tid, c in o.token_counts.items():
+                        s.token_counts[tid] = s.token_counts.get(tid, 0) + c
+                    if self.token_count_cap and len(s.token_counts) > self.token_count_cap:
+                        s.token_counts = dict(
+                            heapq.nlargest(self.token_count_cap, s.token_counts.items(), key=lambda kv: kv[1])
+                        )
+
     def _get_context(self, tokens: list[int], position: int) -> tuple[list[int], int]:
         """Extract context window around a position."""
         start = max(0, position - self.context_before)

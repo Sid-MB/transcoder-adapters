@@ -251,6 +251,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=16, help="Max sequences per batched forward pass. A GPU token budget is auto-computed from free memory and also caps each batch; this is the per-batch sequence ceiling. Lower if CPU-side accumulation stalls the GPU on short sequences; raise on big GPUs (e.g. B200) for throughput. 1 reproduces the old per-prompt behavior.")
     parser.add_argument("--shuffle_batches", action=argparse.BooleanOptionalAction, default=True, help="After length-aware packing, randomly reorder which batch runs first (seeded) so cheap short batches and expensive long ones interleave and tqdm ETAs are less skewed. Total compute is identical. Use --no-shuffle_batches for strict shortest-first order.")
     parser.add_argument("--shuffle_batches_seed", type=int, default=DEFAULT_BATCH_SHUFFLE_SEED, help=f"Seed for --shuffle_batches (ignored with --no-shuffle_batches). Default: {DEFAULT_BATCH_SHUFFLE_SEED}.")
+    parser.add_argument("--num_shards", type=int, default=1, help="Split the work across N independent shard processes to parallelize the CPU-bound dense accumulation across cores (the bottleneck for GemmaScope). Each shard processes items where prepared_item_idx %% num_shards == shard_index, then pickles its collector state to <output_dir>/shard_<i>.pkl and skips export. Merge afterwards with --merge_shards. Requires --n_random 0 and no activation ranges (so partial states merge exactly).")
+    parser.add_argument("--shard_index", type=int, default=0, help="This shard's index in [0, num_shards). Ignored when --num_shards 1.")
+    parser.add_argument("--merge_shards", type=str, default=None, help="Glob of shard pickles (e.g. '<dir>/shard_*.pkl') to merge into one collection and export/upload. In this mode no data is re-read; the model is loaded only for the logit lens and the existing export path runs on the merged collector.")
     parser.add_argument("--top_k", type=int, default=20, help="Number of global top-activating examples per feature.")
     parser.add_argument("--domain_top_k", type=int, default=10, help="Number of top-activating examples per feature per domain.")
     parser.add_argument("--n_random", type=int, default=10, help="Number of random reservoir samples per feature.")
@@ -450,6 +453,62 @@ def collect_base_layer_activations_batched(model: Any, padded_tokens: torch.Tens
     return layer_activations
 
 
+def _finalize_base_collection(
+    collector,
+    *,
+    model,
+    tokenizer,
+    output_dir: Path,
+    args: argparse.Namespace,
+    n_layers: int,
+    data_source_settings,
+    hf_feature_repo_id,
+    hf_feature_config,
+) -> None:
+    """Export + (optionally) upload a finished collector. Shared by the single-run/merge paths."""
+    logit_lens_data = compute_gemmascope_logit_lens(model, n_layers)
+
+    export_circuit_tracer_json(
+        collector,
+        logit_lens_data,
+        tokenizer,
+        output_dir,
+        export_circuit_tracer_features=args.export_circuit_tracer_features,
+        write_per_feature_json=not args.no_per_feature_json,
+    )
+    export_activation_histograms(collector, output_dir)
+    export_metadata(
+        collector,
+        output_dir,
+        target_domain=args.relative_target_domain,
+        baseline_domain=args.relative_baseline_domain,
+        # Store the real base model (loadable) so the dashboard's transcript-
+        # reconstruction tokenizer resolves. args.model_path is a synthetic tag used
+        # only for deterministic Hub naming. tokenizer_path pins the IT tokenizer that
+        # actually rendered the chat data.
+        model_path=args.base_model,
+        tokenizer_path=args.prompt_tokenizer_model,
+        data_sources=data_source_settings,
+    )
+    # Annotations are derived from feature_metadata.json (always written), not the
+    # per-feature features/{id}.json files, so they run even with --no_per_feature_json.
+    # They are also a required sidecar for the Hub upload below.
+    annotate_collected_features(output_dir)
+
+    if hf_feature_repo_id and hf_feature_config:
+        from analysis.features.hub_upload import upload_circuit_tracer_features_to_hub
+
+        upload_circuit_tracer_features_to_hub(
+            repo_id=hf_feature_repo_id,
+            output_dir=output_dir,
+            config=hf_feature_config,
+        )
+        logger.info(f"  Hugging Face feature repo: https://huggingface.co/{hf_feature_repo_id}")
+
+    logger.info(f"Done! Output written to {output_dir}")
+    logger.info(f"  Browse: uv run python -m analysis.features.visualize.feature_dashboard --data_dir {output_dir}")
+
+
 def run_collection(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.upload_circuit_tracer_features_to_hub is None:
         args.upload_circuit_tracer_features_to_hub = bool(args.export_circuit_tracer_features)
@@ -484,9 +543,12 @@ def run_collection(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
     export_run_arguments(parser, args, output_dir)
 
     # Reserve the Hub repo before the expensive forward passes (avoids duplicate work).
+    # Shard workers (--num_shards > 1 without --merge_shards) never export/upload -- they only
+    # pickle partial state -- so they must NOT reserve the repo (the merge step does that).
+    is_shard_worker = args.num_shards > 1 and not args.merge_shards
     hf_feature_repo_id = None
     hf_feature_config = None
-    if args.upload_circuit_tracer_features_to_hub:
+    if args.upload_circuit_tracer_features_to_hub and not is_shard_worker:
         from analysis.features.hub_upload import (
             build_feature_collection_repo_id,
             reserve_feature_collection_repo,
@@ -517,12 +579,48 @@ def run_collection(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
     if n_layers != args.gemmascope_n_layers:
         logger.warning(f"Model has {n_layers} layers but --gemmascope_n_layers={args.gemmascope_n_layers}")
 
+    if args.merge_shards:
+        import glob
+        import pickle
+
+        shard_paths = sorted(glob.glob(args.merge_shards))
+        if not shard_paths:
+            parser.error(f"--merge_shards matched no files: {args.merge_shards}")
+        logger.info(f"Merging {len(shard_paths)} shard collectors from {args.merge_shards}")
+        with open(shard_paths[0], "rb") as fh:
+            payload = pickle.load(fh)
+        collector = payload["collector"]
+        merged_data_sources = payload["data_source_settings"]
+        for shard_path in shard_paths[1:]:
+            with open(shard_path, "rb") as fh:
+                collector.merge_from(pickle.load(fh)["collector"])
+            logger.info(f"  merged {shard_path} -> {collector.total_tokens:,} tokens total")
+        _finalize_base_collection(
+            collector,
+            model=model,
+            tokenizer=tokenizer,
+            output_dir=output_dir,
+            args=args,
+            n_layers=n_layers,
+            data_source_settings=merged_data_sources,
+            hf_feature_repo_id=hf_feature_repo_id,
+            hf_feature_config=hf_feature_config,
+        )
+        return
+
     items, data_source_settings = prepare_items(
         args, tokenizer, special_tokens, has_thinking=has_thinking, shuffle_seed=shuffle_seed
     )
     if not items:
         logger.error("No sequences left to process after filtering. Exiting.")
         return
+
+    if args.num_shards > 1:
+        items = [it for it in items if int(it[3]["prepared_item_idx"]) % args.num_shards == args.shard_index]
+        logger.info(f"Shard {args.shard_index}/{args.num_shards}: processing {len(items)} of the prepared items")
+        if not items:
+            logger.error("No items fall in this shard. Exiting.")
+            return
 
     domain_names = sorted({domain for _, domain, _, _ in items})
     logger.info(f"Collecting {len(items)} sequences across domains {domain_names}")
@@ -626,47 +724,33 @@ def run_collection(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
         }
     )
 
-    logit_lens_data = compute_gemmascope_logit_lens(model, n_layers)
+    if args.num_shards > 1:
+        import pickle
 
-    export_circuit_tracer_json(
-        collector,
-        logit_lens_data,
-        tokenizer,
-        output_dir,
-        export_circuit_tracer_features=args.export_circuit_tracer_features,
-        write_per_feature_json=not args.no_per_feature_json,
-    )
-    export_activation_histograms(collector, output_dir)
-    export_metadata(
-        collector,
-        output_dir,
-        target_domain=args.relative_target_domain,
-        baseline_domain=args.relative_baseline_domain,
-        # Store the real base model (loadable) so the dashboard's transcript-
-        # reconstruction tokenizer resolves. args.model_path is a synthetic tag used
-        # only for deterministic Hub naming. tokenizer_path pins the IT tokenizer that
-        # actually rendered the chat data.
-        model_path=args.base_model,
-        tokenizer_path=args.prompt_tokenizer_model,
-        data_sources=data_source_settings,
-    )
-    # Annotations are derived from feature_metadata.json (always written), not the
-    # per-feature features/{id}.json files, so they run even with --no_per_feature_json.
-    # They are also a required sidecar for the Hub upload below.
-    annotate_collected_features(output_dir)
-
-    if hf_feature_repo_id and hf_feature_config:
-        from analysis.features.hub_upload import upload_circuit_tracer_features_to_hub
-
-        upload_circuit_tracer_features_to_hub(
-            repo_id=hf_feature_repo_id,
-            output_dir=output_dir,
-            config=hf_feature_config,
+        shard_path = output_dir / f"shard_{args.shard_index:03d}.pkl"
+        with open(shard_path, "wb") as fh:
+            pickle.dump(
+                {"collector": collector, "data_source_settings": data_source_settings},
+                fh,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        logger.info(
+            f"Wrote shard {args.shard_index}/{args.num_shards} state to {shard_path} "
+            f"({collector.total_tokens:,} tokens); skipping export. Merge with --merge_shards."
         )
-        logger.info(f"  Hugging Face feature repo: https://huggingface.co/{hf_feature_repo_id}")
+        return
 
-    logger.info(f"Done! Output written to {output_dir}")
-    logger.info(f"  Browse: uv run python -m analysis.features.visualize.feature_dashboard --data_dir {output_dir}")
+    _finalize_base_collection(
+        collector,
+        model=model,
+        tokenizer=tokenizer,
+        output_dir=output_dir,
+        args=args,
+        n_layers=n_layers,
+        data_source_settings=data_source_settings,
+        hf_feature_repo_id=hf_feature_repo_id,
+        hf_feature_config=hf_feature_config,
+    )
 
 
 def main() -> None:
