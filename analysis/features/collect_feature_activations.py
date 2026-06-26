@@ -79,6 +79,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from helpers.paths.output_path import generate_output_path
+from analysis.features.batching import compute_max_batch_tokens, form_length_packed_batches
+from analysis.features.collection_wandb import CollectionWandbLogger, add_collection_wandb_args
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
 from analysis.features.activation_histograms import (
@@ -1720,6 +1722,8 @@ def main():
         ),
     )
 
+    add_collection_wandb_args(parser)
+
     args = parser.parse_args()
     if args.upload_circuit_tracer_features_to_hub is None:
         args.upload_circuit_tracer_features_to_hub = bool(args.export_circuit_tracer_features)
@@ -1933,68 +1937,37 @@ def main():
         activation_range_examples_per_domain=args.activation_range_examples_per_domain,
     )
 
-    # Sort by length so similarly-sized sequences are batched together (less padding waste)
-    items.sort(key=lambda x: len(x[0]))
-    logger.info(f"Sorted {len(items)} sequences by length "
-                f"(shortest={len(items[0][0])}, longest={len(items[-1][0])})")
-
-    # Token budget from GPU memory.  Collection uses the transformer backbone only
-    # (no lm_head logits), so the dominant term is hook tensors: each layer keeps a
-    # bf16 [batch, seq, n_features] activation until the forward finishes.
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-    bytes_per_element = 2  # bf16
-    hook_bytes_per_token = n_layers * n_features * bytes_per_element
-    hidden = int(getattr(model.config, "hidden_size", 0) or 0)
-    # Small slack for attention / scratch (far smaller than full vocab logits).
-    scratch_bytes_per_token = max(4096, hidden * 16)
-    slack = 1.35
-    total_bytes_per_token = int(hook_bytes_per_token * slack) + scratch_bytes_per_token
-    free_bytes = torch.cuda.mem_get_info(model.device)[0]
-    safety_margin = 0.55
-    max_batch_tokens = int(free_bytes * safety_margin / total_bytes_per_token)
-    logger.info(f"GPU free memory: {free_bytes / 1e9:.1f} GB, "
-                f"per-token budget: {total_bytes_per_token / 1e6:.1f} MB "
-                f"(hooks {hook_bytes_per_token / 1e6:.1f} × {slack:.2f} + scratch {scratch_bytes_per_token / 1e6:.1f}), "
-                f"token budget: {max_batch_tokens:,}")
-    batches: list[list[tuple[list[int], str, dict, dict[str, Any]]]] = []
-    current_batch: list[tuple[list[int], str, dict, dict[str, Any]]] = []
-    current_max_len = 0
-    for item in items:
-        item_len = len(item[0])
-        new_max_len = max(current_max_len, item_len)
-        padded_tokens = (len(current_batch) + 1) * new_max_len
-        if current_batch and (len(current_batch) >= args.batch_size or padded_tokens > max_batch_tokens):
-            batches.append(current_batch)
-            current_batch = [item]
-            current_max_len = item_len
-        else:
-            current_batch.append(item)
-            current_max_len = new_max_len
-    if current_batch:
-        batches.append(current_batch)
+    # Token budget from GPU memory. Collection uses the transformer backbone only (no lm_head
+    # logits, see _run_backbone_for_hooks), so the dominant term is the per-layer hook tensors.
+    max_batch_tokens = compute_max_batch_tokens(
+        device=model.device,
+        n_layers=n_layers,
+        n_features=n_features,
+        hidden=int(getattr(model.config, "hidden_size", 0) or 0),
+    )
+    batches = form_length_packed_batches(
+        items,
+        batch_size=args.batch_size,
+        max_batch_tokens=max_batch_tokens,
+        shuffle=args.shuffle_batches,
+        shuffle_seed=args.shuffle_batches_seed,
+    )
 
-    batch_sizes = [len(b) for b in batches]
-    logger.info(f"Formed {len(batches)} batches (sizes {min(batch_sizes)}-{max(batch_sizes)}, "
-                f"token budget={max_batch_tokens:,})")
-
-    if args.shuffle_batches:
-        g = torch.Generator()
-        g.manual_seed(int(args.shuffle_batches_seed))
-        order = torch.randperm(len(batches), generator=g).tolist()
-        batches = [batches[i] for i in order]
-        logger.info(
-            "Shuffling batch execution order: %s batches permuted with torch.randperm "
-            "(seed=%s). Batch membership is unchanged; only run order differs so step times are "
-            "mixed. Disable with --no-shuffle_batches for shortest-batches-first order.",
-            len(batches),
-            args.shuffle_batches_seed,
-        )
-    else:
-        logger.info(
-            "Batch execution order: sequential after length-aware packing (shortest batches "
-            "first; progress may look fast early then slow). Enable default --shuffle_batches to "
-            "interleave cheap and expensive steps."
-        )
+    wandb_logger = CollectionWandbLogger.from_args(
+        args,
+        run_name=output_dir.name,
+        config={
+            **{k: v for k, v in vars(args).items() if not k.startswith("_")},
+            "collector": "adapter",
+            "n_layers": n_layers,
+            "n_features": n_features,
+            "n_sequences": len(items),
+            "n_batches": len(batches),
+        },
+        total_sequences=len(items),
+    )
+    wandb_logger.reset_timer()
 
     # Process batches
     collector.register_hooks(model)
@@ -2010,6 +1983,7 @@ def main():
 
         collector.process_batch(model, batch_tokens, batch_domains, batch_markers,
                                 batch_seq_idxs, batch_source_metadata, pad_token_id)
+        wandb_logger.log_batch(n_seqs=len(batch_tokens), n_tokens=sum(len(t) for t in batch_tokens))
 
     collector.remove_hooks()
 
@@ -2018,6 +1992,13 @@ def main():
     logger.info(f"  Total tokens: {collector.total_tokens:,}")
     logger.info(f"  Domains: {dict(collector.tokens_per_domain)}")
     logger.info(f"  Regions: {dict(collector.tokens_per_region)}")
+    wandb_logger.finish(
+        summary={
+            "final/total_tokens": collector.total_tokens,
+            "final/n_sequences": len(items),
+            "final/tokens_per_domain": dict(collector.tokens_per_domain),
+        }
+    )
 
     # Compute logit lens
     logit_lens_data = compute_logit_lens(model, tokenizer)

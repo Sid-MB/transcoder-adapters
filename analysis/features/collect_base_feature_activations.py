@@ -49,6 +49,7 @@ import argparse
 import json
 import shlex
 import textwrap
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +63,10 @@ from analysis.features.activation_histograms import (
     DEFAULT_ACTIVATION_EXAMPLE_RANGES,
     parse_activation_example_ranges,
 )
+from analysis.features.batching import compute_max_batch_tokens, form_length_packed_batches
+from analysis.features.collection_wandb import CollectionWandbLogger, add_collection_wandb_args
 from analysis.features.collect_feature_activations import (
+    DEFAULT_BATCH_SHUFFLE_SEED,
     DEFAULT_SHUFFLE_SEED,
     ArgumentDefaultsRawTextHelpFormatter,
     FeatureCollector,
@@ -244,6 +248,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shuffle", action="store_true", help=f"Sample rows via a seeded permutation instead of sequential order. Uses seed {DEFAULT_SHUFFLE_SEED} unless --shuffle_seed is set.")
     parser.add_argument("--shuffle_seed", type=int, default=None, help=f"Seed for row sampling (overrides the default {DEFAULT_SHUFFLE_SEED}). Each --val_data source uses an independent offset.")
     parser.add_argument("--max_length", type=int, default=2048, help="Max sequence length in tokens (longer sequences truncated). Bounds the per-prompt [n_layers, seq, n_features] activation tensor.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Max sequences per batched forward pass. A GPU token budget is auto-computed from free memory and also caps each batch; this is the per-batch sequence ceiling. Lower if CPU-side accumulation stalls the GPU on short sequences; raise on big GPUs (e.g. B200) for throughput. 1 reproduces the old per-prompt behavior.")
+    parser.add_argument("--shuffle_batches", action=argparse.BooleanOptionalAction, default=True, help="After length-aware packing, randomly reorder which batch runs first (seeded) so cheap short batches and expensive long ones interleave and tqdm ETAs are less skewed. Total compute is identical. Use --no-shuffle_batches for strict shortest-first order.")
+    parser.add_argument("--shuffle_batches_seed", type=int, default=DEFAULT_BATCH_SHUFFLE_SEED, help=f"Seed for --shuffle_batches (ignored with --no-shuffle_batches). Default: {DEFAULT_BATCH_SHUFFLE_SEED}.")
     parser.add_argument("--top_k", type=int, default=20, help="Number of global top-activating examples per feature.")
     parser.add_argument("--domain_top_k", type=int, default=10, help="Number of top-activating examples per feature per domain.")
     parser.add_argument("--n_random", type=int, default=10, help="Number of random reservoir samples per feature.")
@@ -280,6 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--hf_feature_repo_id", type=str, default=None, help="Explicit HF model repo ID for uploaded features (default: deterministic name from base model, GemmaScope, data, and collection hyperparameters).")
     parser.add_argument("--hub_org", type=str, default=None, help="HF namespace/org for the uploaded feature repo (default: authenticated user).")
+    add_collection_wandb_args(parser)
 
     parser.epilog = textwrap.dedent(
         """
@@ -400,6 +408,48 @@ def prepare_items(
     return items, data_source_settings
 
 
+def collect_base_layer_activations_batched(model: Any, padded_tokens: torch.Tensor) -> dict[int, torch.Tensor]:
+    """Batched analog of circuit-tracer ``ReplacementModel.get_activations``.
+
+    Runs one forward over a right-padded ``[B, max_len]`` token batch and returns
+    ``{layer_idx: tensor[B, max_len, n_features]}`` of post-activation GemmaScope feature
+    values, left on the model device. This mirrors
+    ``TransformerLensReplacementModel._get_activation_caching_hooks`` exactly --
+    ``transcoders.encode_layer(mlp_in, layer, apply_activation_function=True)`` at each
+    ``feature_input_hook``, with the BOS position zeroed -- but keeps the batch dimension
+    instead of squeezing it, and zeroes ``[:, zero_positions]`` per example.
+
+    Two correctness points:
+      * Right-padding is safe because gemma-2 attention is causal / sliding-window: a real
+        token never attends to padding that follows it, so every real token's activation is
+        identical to the single-sequence path. ``accumulate_batch`` then slices ``[:seq_len]``
+        to drop the padding columns.
+      * ``stop_at_layer=n_layers`` runs every block (so all per-layer hooks fire) but skips
+        ``ln_final``/unembed, so we never materialize the unused ``[B, seq, vocab]`` logits.
+
+    Activations stay on the model device; ``accumulate_batch`` slices and reduces them there.
+    This matches the GPU token budget (``n_layers * n_features`` bytes/token), which is sized
+    for holding all layers' activations resident during one batch.
+    """
+    n_layers = model.cfg.n_layers
+    layer_activations: dict[int, torch.Tensor] = {}
+
+    def _cache(acts, hook, layer):
+        transcoder_acts = model.transcoders.encode_layer(
+            acts, layer, apply_activation_function=True
+        ).detach()
+        transcoder_acts[:, model.zero_positions] = 0
+        layer_activations[layer] = transcoder_acts
+
+    hooks = [
+        (f"blocks.{layer}.{model.feature_input_hook}", partial(_cache, layer=layer))
+        for layer in range(n_layers)
+    ]
+    with torch.inference_mode(), model.hooks(hooks):
+        model(padded_tokens, stop_at_layer=n_layers)
+    return layer_activations
+
+
 def run_collection(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.upload_circuit_tracer_features_to_hub is None:
         args.upload_circuit_tracer_features_to_hub = bool(args.export_circuit_tracer_features)
@@ -504,36 +554,77 @@ def run_collection(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
         activation_range_examples_per_domain=args.activation_range_examples_per_domain,
     )
 
-    # One forward per prompt: circuit-tracer get_activations is single-prompt (it squeezes
-    # the batch dim). gemma-2-2b is small, so this is fine; batching is a future optimization.
-    #
-    # Move the activation cache to CPU before accumulation. With GemmaScope L0~76 a single
-    # sequence has hundreds of thousands of nonzero (layer, feature, token) activations; the
-    # per-example context fetch inside accumulate_batch slices this tensor, and doing that on
-    # GPU forces a device sync per kept example. Copying the whole [n_layers, seq, n_features]
-    # cache to CPU once (one DMA) instead measured ~2.6x faster accumulation (49s -> 19s per
-    # fresh-buffer sequence in misc_scripts/diag_base_density.py).
-    for prepared_idx, (tokens, domain, markers, source_metadata) in enumerate(
-        tqdm(items, desc="Collecting base activations")
-    ):
-        tokens_tensor = torch.tensor([tokens], dtype=torch.long, device=device_obj)
-        _, acts = model.get_activations(tokens_tensor)  # [n_layers, seq, n_features]
-        acts = acts.cpu()
-        layer_activations = {layer: acts[layer].unsqueeze(0) for layer in range(n_layers)}
+    # Batched forward (see collect_base_layer_activations_batched). circuit-tracer's
+    # get_activations is single-prompt, so we run our own batched analog and feed the
+    # right-padded [B, max_len, n_features] activations to accumulate_batch, which slices each
+    # example's [:seq_len]. Sequences are length-sorted and packed up to --batch_size or a
+    # GPU token budget (shared with the adapter collector via analysis.features.batching).
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    max_batch_tokens = compute_max_batch_tokens(
+        device=device_obj,
+        n_layers=n_layers,
+        n_features=n_features,
+        hidden=model.cfg.d_model,
+    )
+    batches = form_length_packed_batches(
+        items,
+        batch_size=args.batch_size,
+        max_batch_tokens=max_batch_tokens,
+        shuffle=args.shuffle_batches,
+        shuffle_seed=args.shuffle_batches_seed,
+    )
+
+    wandb_logger = CollectionWandbLogger.from_args(
+        args,
+        run_name=output_dir.name,
+        config={
+            **{k: v for k, v in vars(args).items() if not k.startswith("_")},
+            "collector": "base_gemmascope",
+            "n_layers": n_layers,
+            "n_features": n_features,
+            "n_sequences": len(items),
+            "n_batches": len(batches),
+        },
+        total_sequences=len(items),
+    )
+    wandb_logger.reset_timer()
+
+    for batch in tqdm(batches, desc="Collecting base activations"):
+        batch_tokens = [t for t, _, _, _ in batch]
+        batch_domains = [d for _, d, _, _ in batch]
+        batch_markers = [m for _, _, m, _ in batch]
+        batch_source_metadata = [meta for _, _, _, meta in batch]
+        batch_seq_idxs = [int(meta["prepared_item_idx"]) for meta in batch_source_metadata]
+
+        B = len(batch_tokens)
+        max_len = max(len(t) for t in batch_tokens)
+        padded = torch.full((B, max_len), pad_token_id, dtype=torch.long, device=device_obj)
+        for b, tokens in enumerate(batch_tokens):
+            padded[b, : len(tokens)] = torch.tensor(tokens, dtype=torch.long)
+
+        layer_activations = collect_base_layer_activations_batched(model, padded)
         collector.accumulate_batch(
-            batch_tokens=[tokens],
-            batch_domains=[domain],
-            batch_markers=[markers],
-            batch_seq_idxs=[prepared_idx],
-            batch_source_metadata=[source_metadata],
+            batch_tokens=batch_tokens,
+            batch_domains=batch_domains,
+            batch_markers=batch_markers,
+            batch_seq_idxs=batch_seq_idxs,
+            batch_source_metadata=batch_source_metadata,
             layer_activations=layer_activations,
         )
-        del acts, layer_activations
+        wandb_logger.log_batch(n_seqs=B, n_tokens=sum(len(t) for t in batch_tokens))
+        del padded, layer_activations
 
     logger.info("Collection summary:")
     logger.info(f"  Total tokens: {collector.total_tokens:,}")
     logger.info(f"  Domains: {dict(collector.tokens_per_domain)}")
     logger.info(f"  Regions: {dict(collector.tokens_per_region)}")
+    wandb_logger.finish(
+        summary={
+            "final/total_tokens": collector.total_tokens,
+            "final/n_sequences": len(items),
+            "final/tokens_per_domain": dict(collector.tokens_per_domain),
+        }
+    )
 
     logit_lens_data = compute_gemmascope_logit_lens(model, n_layers)
 
