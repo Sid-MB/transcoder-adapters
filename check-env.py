@@ -62,6 +62,22 @@ def main() -> None:
         fail("Hugging Face is not logged in — run: huggingface-cli login")
     ok(f"Hugging Face logged in as {hf_user}")
 
+    # hf_transfer: if fast downloads are enabled, the package must be importable,
+    # otherwise every model/tokenizer download aborts (it raises ValueError mid-run).
+    from huggingface_hub import constants
+
+    if constants.HF_HUB_ENABLE_HF_TRANSFER:
+        try:
+            import hf_transfer  # noqa: F401
+        except ImportError:
+            fail(
+                "HF_HUB_ENABLE_HF_TRANSFER is enabled but 'hf_transfer' is not "
+                "installed — run: uv pip install hf_transfer (or unset the var)."
+            )
+        ok("hf_transfer enabled and importable")
+    else:
+        ok("hf_transfer not enabled (HF_HUB_ENABLE_HF_TRANSFER off)")
+
     # Weights & Biases login.
     try:
         import wandb
