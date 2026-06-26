@@ -311,9 +311,10 @@ class FeatureCollector:
             other.n_layers, other.n_features, other.top_k, other.domain_top_k
         ), "merge_from: shard collectors have mismatched shape/top-k settings"
         assert self.n_random == 0 and other.n_random == 0, "sharded merge requires --n_random 0"
-        assert not self.activation_example_ranges and not other.activation_example_ranges, (
-            "sharded merge requires activation ranges disabled"
-        )
+        assert (
+            self.activation_range_examples_per_domain == 0
+            and other.activation_range_examples_per_domain == 0
+        ), "sharded merge requires activation ranges disabled (--activation_range_examples_per_domain 0)"
 
         self.total_tokens += other.total_tokens
         for d, c in other.tokens_per_domain.items():
