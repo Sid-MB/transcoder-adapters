@@ -77,7 +77,8 @@ def _ex_key(e):
     return (round(e.activation, 9), e.token_id, e.position, e.domain, e.region)
 
 
-def _assert_parity(n_layers, n_features, top_k, domain_top_k, token_count_cap, seed=0, n_batches=5):
+def _assert_parity(n_layers, n_features, top_k, domain_top_k, token_count_cap, seed=0,
+                   n_batches=5, check_token_counts=True):
     batches = _make_batches(seed, n_layers, n_features, n_batches)
     A = _collector(n_layers, n_features, top_k, domain_top_k, token_count_cap)  # legacy
     A._force_legacy = True
@@ -109,7 +110,11 @@ def _assert_parity(n_layers, n_features, top_k, domain_top_k, token_count_cap, s
             assert dict(sa.domain_counts) == dict(sb.domain_counts), (layer, f, "domain_counts")
             assert dict(sa.region_counts) == dict(sb.region_counts), (layer, f, "region_counts")
             assert list(sa.thinking_position_counts) == list(sb.thinking_position_counts), (layer, f, "thinking")
-            assert dict(sa.token_counts) == dict(sb.token_counts), (layer, f, "token_counts")
+            if check_token_counts:
+                # Exact only with no eviction (cap >= distinct tokens): legacy Space-Saving and
+                # the fast path's exact-top-cap agree. Under eviction they differ by design
+                # (see test_token_counts_exact_top_cap), so the caller disables this.
+                assert dict(sa.token_counts) == dict(sb.token_counts), (layer, f, "token_counts")
             ka = sorted((_ex_key(e) for e in sa.top_k_examples), reverse=True)
             kb = sorted((_ex_key(e) for e in sb.top_k_examples), reverse=True)
             assert ka == kb, (layer, f, "top_k")
@@ -129,23 +134,70 @@ def test_parity_no_eviction():
     assert n > 0
 
 
-def test_parity_with_eviction():
-    # Small cap forces eviction; the fast path keeps the exact per-event Space-Saving so it
-    # must still match the legacy path byte-for-byte.
-    n = _assert_parity(n_layers=3, n_features=40, top_k=4, domain_top_k=3, token_count_cap=2, seed=7)
+def test_parity_with_eviction_deterministic():
+    # Small cap forces token_counts eviction, where the fast path switched from approximate
+    # Space-Saving to EXACT top-cap, so token_counts intentionally differs. Everything else
+    # (counts, histograms, top-k) must still be byte-identical to legacy.
+    n = _assert_parity(n_layers=3, n_features=40, top_k=4, domain_top_k=3, token_count_cap=2,
+                       seed=7, check_token_counts=False)
     assert n > 0
 
 
 def test_parity_smallish_topk():
+    # cap=8 >= 4 distinct tokens -> no eviction -> token_counts also match.
     n = _assert_parity(n_layers=2, n_features=64, top_k=2, domain_top_k=2, token_count_cap=8, seed=3)
     assert n > 0
 
 
+def _ground_truth_token_counts(batches, n_layers, cap):
+    """Independent exact top-cap token counts, computed straight from the raw activations."""
+    counts: dict = {}
+    for batch in batches:
+        for b, tokens in enumerate(batch["batch_tokens"]):
+            L = len(tokens)
+            for layer in range(n_layers):
+                acts = batch["layer_activations"][layer][b, :L]
+                nz = (acts > 0).nonzero()
+                for pos, feat in nz.tolist():
+                    key = (layer, int(feat), int(tokens[pos]))
+                    counts[key] = counts.get(key, 0) + 1
+    by_lf: dict = {}
+    for (layer, feat, tok), c in counts.items():
+        by_lf.setdefault((layer, feat), {})[tok] = c
+    gt: dict = {}
+    for lf, d in by_lf.items():
+        ranked = sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))[:cap]  # count desc, token asc
+        gt[lf] = {tok: c for tok, c in ranked}
+    return gt
+
+
+def test_token_counts_exact_top_cap():
+    """The fast path's token_counts must equal the independent exact-top-cap ground truth."""
+    n_layers, n_features, cap = 3, 40, 2
+    batches = _make_batches(seed=7, n_layers=n_layers, n_features=n_features, n_batches=5)
+    B = _collector(n_layers, n_features, top_k=4, domain_top_k=3, token_count_cap=cap)
+    for batch in batches:
+        B.accumulate_batch(**batch)
+    B.finalize()
+    gt = _ground_truth_token_counts(batches, n_layers, cap)
+    n_checked = 0
+    for layer in range(n_layers):
+        for f in range(n_features):
+            got = dict(B.stats[layer][f].token_counts)
+            expected = gt.get((layer, f), {})
+            assert got == expected, (layer, f, "exact-top-cap", got, expected)
+            if expected:
+                n_checked += 1
+    assert n_checked > 0
+
+
 if __name__ == "__main__":
-    c1 = test_parity_no_eviction()
+    test_parity_no_eviction()
     print("no-eviction parity: PASS")
-    test_parity_with_eviction()
-    print("with-eviction parity: PASS")
+    test_parity_with_eviction_deterministic()
+    print("with-eviction deterministic parity: PASS")
     test_parity_smallish_topk()
     print("smallish-topk parity: PASS")
+    test_token_counts_exact_top_cap()
+    print("token_counts exact-top-cap: PASS")
     print("ALL PARITY TESTS PASSED")

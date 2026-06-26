@@ -194,6 +194,10 @@ def _run_backbone_for_hooks(
 class FeatureCollector:
     """Collects feature activation statistics across sequences."""
 
+    # Combined-key base for the vectorized token-counts accumulator: key = feature*BOUND + token.
+    # Must exceed any token id (gemma-2 vocab ~256k << 2**21). Guarded at use.
+    _TOKEN_KEY_BOUND = 1 << 21
+
     def __init__(
         self,
         n_layers: int,
@@ -278,6 +282,18 @@ class FeatureCollector:
         self._vec_thinking: list | None = None          # per layer: int64[10, n_features]
         self._region_to_index: dict[str, int] = {}
         self._region_index_to_str: list[str] = []
+        # Running per-(layer, feature) heap thresholds for the vectorized candidate pre-filter:
+        # the activation of the min element currently in each full top-k / domain-top-k heap, or
+        # -inf when the heap is not yet full. Refreshed after every heap change so the candidate
+        # mask is a pure gather+compare (no per-unique-feature Python loop).
+        self._global_thr: list | None = None             # per layer: float64[n_features]
+        self._domain_thr: list | None = None             # per layer: {domain -> float64[n_features]}
+        # Vectorized token-counts accumulator (fast path only): per layer, growing lists of
+        # combined (feature*BOUND + token) keys with batch counts; coalesced periodically and at
+        # finalize, where each feature's exact top-`token_count_cap` tokens are materialized.
+        # This is EXACT top-cap, unlike the legacy per-event Space-Saving (a strict improvement).
+        self._tc_keys: list | None = None
+        self._tc_counts: list | None = None
         self._force_legacy = False                       # test hook: force the per-event path
         self._finalized = False
 
@@ -484,19 +500,21 @@ class FeatureCollector:
                 f"Unknown activation domain {domain!r}; known domains={self.domain_names}"
             )
 
+        # Vectorized scatter-add via bincount (byte-identical to np.add.at but ~3x faster: the
+        # 2D np.add.at is unbuffered/Python-level and was a top fixed cost in the dense path).
         bin_indices = histogram_bin_indices(active_values, self.hist_bin_lower_bounds)
-        np.add.at(self.run_hist_total, bin_indices, 1)
-        np.add.at(self.run_hist_by_domain[domain_idx], bin_indices, 1)
-        np.add.at(
-            self.feature_hist_total_by_layer[layer_idx],
-            (active_features, bin_indices),
-            1,
+        n_bins = self.run_hist_total.shape[0]
+        bin_counts = np.bincount(bin_indices, minlength=n_bins).astype(self.run_hist_total.dtype)
+        self.run_hist_total += bin_counts
+        self.run_hist_by_domain[domain_idx] += bin_counts
+        flat = active_features.astype(np.int64) * n_bins + bin_indices
+        feat_bin_counts = (
+            np.bincount(flat, minlength=self.n_features * n_bins)
+            .reshape(self.n_features, n_bins)
+            .astype(self.feature_hist_total_by_layer[layer_idx].dtype)
         )
-        np.add.at(
-            self.feature_hist_by_domain_by_layer[layer_idx][domain_idx],
-            (active_features, bin_indices),
-            1,
-        )
+        self.feature_hist_total_by_layer[layer_idx] += feat_bin_counts
+        self.feature_hist_by_domain_by_layer[layer_idx][domain_idx] += feat_bin_counts
 
     def _maybe_add_activation_range_example(
         self,
@@ -658,6 +676,31 @@ class FeatureCollector:
         self._vec_domain = [dict() for _ in range(self.n_layers)]
         self._vec_region = [dict() for _ in range(self.n_layers)]
         self._vec_thinking = [np.zeros((10, self.n_features), dtype=np.int64) for _ in range(self.n_layers)]
+        self._global_thr = [np.full(self.n_features, -np.inf, dtype=np.float64) for _ in range(self.n_layers)]
+        self._domain_thr = [dict() for _ in range(self.n_layers)]
+        self._tc_keys = [[] for _ in range(self.n_layers)]
+        self._tc_counts = [[] for _ in range(self.n_layers)]
+
+    def _coalesce_token_counts(self, layer: int):
+        """Sum duplicate (feature,token) keys for a layer's accumulated counts (vectorized).
+
+        Returns coalesced ``(keys, counts)`` and compacts the layer's buffers in place so memory
+        stays bounded by the number of *distinct* (feature, token) pairs seen so far.
+        """
+        keys_list = self._tc_keys[layer]
+        if not keys_list:
+            empty = np.empty(0, dtype=np.int64)
+            return empty, empty
+        keys = np.concatenate(keys_list)
+        counts = np.concatenate(self._tc_counts[layer])
+        order = np.argsort(keys, kind="stable")
+        keys = keys[order]
+        counts = counts[order]
+        uniq, starts = np.unique(keys, return_index=True)
+        summed = np.add.reduceat(counts, starts)
+        self._tc_keys[layer] = [uniq]
+        self._tc_counts[layer] = [summed]
+        return uniq, summed
 
     def finalize(self) -> None:
         """Materialize fast-path count arrays into FeatureStats so export is unchanged.
@@ -690,10 +733,39 @@ class FeatureCollector:
                 col = think[:, f]
                 if col.any():
                     s.thinking_position_counts = [int(x) for x in col]
+
+        # token_counts: coalesce the accumulator and keep each feature's EXACT top-cap tokens.
+        if self._tc_keys is not None and self.track_token_counts and self.token_count_cap > 0:
+            bound = self._TOKEN_KEY_BOUND
+            cap = self.token_count_cap
+            for layer in range(self.n_layers):
+                uniq, summed = self._coalesce_token_counts(layer)
+                if uniq.size == 0:
+                    continue
+                feats = uniq // bound
+                toks = uniq % bound
+                # Per feature, rank tokens by count desc (ties broken by token id asc for
+                # determinism) and keep the top `cap`.
+                order = np.lexsort((toks, -summed, feats))
+                feats, toks, summed = feats[order], toks[order], summed[order]
+                ufeats, starts = np.unique(feats, return_index=True)
+                ends = np.append(starts[1:], feats.size)
+                layer_stats = self.stats[layer]
+                for k in range(ufeats.size):
+                    a = int(starts[k])
+                    e = min(a + cap, int(ends[k]))
+                    layer_stats[int(ufeats[k])].token_counts = {
+                        int(toks[j]): int(summed[j]) for j in range(a, e)
+                    }
+
         self._vec_activation = None
         self._vec_domain = None
         self._vec_region = None
         self._vec_thinking = None
+        self._global_thr = None
+        self._domain_thr = None
+        self._tc_keys = None
+        self._tc_counts = None
 
     def _accumulate_batch_fast(
         self,
@@ -795,47 +867,57 @@ class FeatureCollector:
                             tf[tb == bi], minlength=self.n_features
                         )
 
-                # --- Top-k candidate pre-filter (identical to legacy) ---
                 layer_stats = self.stats[layer_idx]
-                thresholds = np.full(self.n_features, -np.inf, dtype=np.float64)
-                for uf in np.unique(active_features).tolist():
-                    s = layer_stats[uf]
-                    global_thr = (
-                        s.top_k_examples[0].activation
-                        if len(s.top_k_examples) >= self.top_k
-                        else -np.inf
-                    )
-                    domain_heap = s.domain_top_k_examples.get(domain)
-                    domain_thr = (
-                        domain_heap[0].activation
-                        if domain_heap is not None and len(domain_heap) >= self.domain_top_k
-                        else -np.inf
-                    )
-                    thresholds[uf] = min(global_thr, domain_thr)
-                candidate_mask = active_values > thresholds[active_features]
 
-                # --- Slim per-nonzero loop: exact token_counts + candidate-only top-k ---
-                # Processed in torch.nonzero order, identical to the legacy loop, so the
-                # order-dependent Space-Saving and heap insertions match byte-for-byte.
-                for i in range(len(active_positions)):
+                # --- token_counts: vectorized exact-top-cap accumulation (no per-event loop).
+                # Sum exact (feature, token) counts for this slice as combined keys and stash them;
+                # finalize() coalesces across the run and keeps each feature's top-cap tokens. This
+                # is EXACT top-cap, replacing the legacy order-dependent Space-Saving approximation.
+                if track_tc:
+                    tokens_np = np.asarray(tokens, dtype=np.int64)
+                    tok_per_nz = tokens_np[active_positions]
+                    if tok_per_nz.size and int(tok_per_nz.max()) >= self._TOKEN_KEY_BOUND:
+                        raise ValueError(
+                            f"token id {int(tok_per_nz.max())} >= _TOKEN_KEY_BOUND "
+                            f"{self._TOKEN_KEY_BOUND}; raise FeatureCollector._TOKEN_KEY_BOUND."
+                        )
+                    keys = active_features.astype(np.int64) * self._TOKEN_KEY_BOUND + tok_per_nz
+                    uk, uc = np.unique(keys, return_counts=True)
+                    self._tc_keys[layer_idx].append(uk)
+                    self._tc_counts[layer_idx].append(uc.astype(np.int64))
+                    if len(self._tc_keys[layer_idx]) >= 64:
+                        self._coalesce_token_counts(layer_idx)
+
+                # --- Vectorized candidate pre-filter: gather running heap thresholds (no Python
+                # loop). threshold[f] = min(global_top_k_min[f], domain_top_k_min[f]); a non-full
+                # heap contributes -inf, matching the legacy per-feature computation exactly.
+                gthr = self._global_thr[layer_idx]
+                dthr = self._domain_thr[layer_idx].get(domain)
+                if dthr is None:
+                    dthr = np.full(self.n_features, -np.inf, dtype=np.float64)
+                    self._domain_thr[layer_idx][domain] = dthr
+                combined = np.minimum(gthr, dthr)
+                candidate_mask = active_values > combined[active_features]
+
+                # --- Survivor-only top-k: iterate just the candidates, in torch.nonzero order so
+                # heap insertions/replacements are byte-identical to legacy. _maybe_add_example does
+                # the exact re-check; refresh this feature's running thresholds after each call.
+                for i in np.nonzero(candidate_mask)[0].tolist():
                     feature_idx = int(active_features[i])
                     stats = layer_stats[feature_idx]
-                    if track_tc:
-                        token_id = tokens[int(active_positions[i])]
-                        token_counts = stats.token_counts
-                        if token_id in token_counts:
-                            token_counts[token_id] += 1
-                        elif len(token_counts) < self.token_count_cap:
-                            token_counts[token_id] = 1
-                        else:
-                            min_token = min(token_counts, key=token_counts.get)
-                            token_counts[token_id] = token_counts.pop(min_token) + 1
-                    if candidate_mask[i]:
-                        pos = int(active_positions[i])
-                        self._maybe_add_example(
-                            stats, float(active_values[i]), tokens, pos, features_gpu, feature_idx,
-                            domain, regions[pos], thinking_positions[pos], sequence_idx, source_metadata,
-                        )
+                    pos = int(active_positions[i])
+                    self._maybe_add_example(
+                        stats, float(active_values[i]), tokens, pos, features_gpu, feature_idx,
+                        domain, regions[pos], thinking_positions[pos], sequence_idx, source_metadata,
+                    )
+                    gthr[feature_idx] = (
+                        stats.top_k_examples[0].activation
+                        if len(stats.top_k_examples) >= self.top_k else -np.inf
+                    )
+                    dh = stats.domain_top_k_examples.get(domain)
+                    dthr[feature_idx] = (
+                        dh[0].activation if dh is not None and len(dh) >= self.domain_top_k else -np.inf
+                    )
 
     def _accumulate_batch_legacy(
         self,
