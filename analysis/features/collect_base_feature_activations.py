@@ -724,6 +724,10 @@ def run_collection(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
         }
     )
 
+    # Materialize vectorized fast-path count arrays into FeatureStats before pickle/export so
+    # the shard pickle (and merge_from) and the export path see fully-populated FeatureStats.
+    collector.finalize()
+
     if args.num_shards > 1:
         import pickle
 

@@ -267,6 +267,20 @@ class FeatureCollector:
         self._hooks: list = []
         self._layer_activations: dict[int, torch.Tensor] = {}
 
+        # Vectorized (fast-path) count accumulators. The dense base/GemmaScope case
+        # (n_random == 0, no activation ranges) replaces the per-nonzero Python loop over
+        # activation_count / domain_counts / region_counts / thinking_position_counts with
+        # per-layer bincounts into these arrays, then materializes them into FeatureStats in
+        # finalize(). Created lazily on first fast-path batch; None means legacy path / unused.
+        self._vec_activation: list | None = None       # per layer: int64[n_features]
+        self._vec_domain: list | None = None           # per layer: {domain -> int64[n_features]}
+        self._vec_region: list | None = None           # per layer: {region -> int64[n_features]}
+        self._vec_thinking: list | None = None          # per layer: int64[10, n_features]
+        self._region_to_index: dict[str, int] = {}
+        self._region_index_to_str: list[str] = []
+        self._force_legacy = False                       # test hook: force the per-event path
+        self._finalized = False
+
     def _make_hook(self, layer_idx: int):
         """Create a forward hook that captures transcoder activations.
 
@@ -606,7 +620,234 @@ class FeatureCollector:
         histogram, and reservoir-sampling logic. ``process_batch`` supplies them via
         transcoder-adapter forward hooks; the base/GemmaScope collector supplies them
         from circuit-tracer ``ReplacementModel.get_activations``.
+
+        Dispatches to a vectorized fast path for the dense base/GemmaScope case
+        (``n_random == 0`` and no activation ranges), where the per-nonzero Python loop is
+        the bottleneck. Otherwise (e.g. the adapter collector's reservoir sampling) uses the
+        exact per-event legacy path. Both produce identical FeatureStats; the fast path just
+        needs finalize() afterward to materialize its count arrays.
         """
+        use_fast = (
+            not self._force_legacy
+            and self.n_random <= 0
+            and not (self.activation_range_examples_per_domain > 0 and self.activation_example_ranges)
+        )
+        if use_fast:
+            self._accumulate_batch_fast(
+                batch_tokens=batch_tokens,
+                batch_domains=batch_domains,
+                batch_markers=batch_markers,
+                batch_seq_idxs=batch_seq_idxs,
+                batch_source_metadata=batch_source_metadata,
+                layer_activations=layer_activations,
+            )
+        else:
+            self._accumulate_batch_legacy(
+                batch_tokens=batch_tokens,
+                batch_domains=batch_domains,
+                batch_markers=batch_markers,
+                batch_seq_idxs=batch_seq_idxs,
+                batch_source_metadata=batch_source_metadata,
+                layer_activations=layer_activations,
+            )
+
+    def _ensure_vec_arrays(self) -> None:
+        if self._vec_activation is not None:
+            return
+        self._vec_activation = [np.zeros(self.n_features, dtype=np.int64) for _ in range(self.n_layers)]
+        self._vec_domain = [dict() for _ in range(self.n_layers)]
+        self._vec_region = [dict() for _ in range(self.n_layers)]
+        self._vec_thinking = [np.zeros((10, self.n_features), dtype=np.int64) for _ in range(self.n_layers)]
+
+    def finalize(self) -> None:
+        """Materialize fast-path count arrays into FeatureStats so export is unchanged.
+
+        Idempotent and safe to call once after the batch loop, before any pickle/export. A
+        no-op when the legacy path was used (arrays were never created). Frees the arrays.
+        """
+        if self._finalized:
+            return
+        self._finalized = True
+        if self._vec_activation is None:
+            return
+        for layer in range(self.n_layers):
+            act = self._vec_activation[layer]
+            layer_stats = self.stats[layer]
+            dom_items = list(self._vec_domain[layer].items())
+            reg_items = list(self._vec_region[layer].items())
+            think = self._vec_thinking[layer]
+            for f in np.nonzero(act)[0].tolist():
+                s = layer_stats[f]
+                s.activation_count = int(act[f])
+                for domain, arr in dom_items:
+                    c = int(arr[f])
+                    if c:
+                        s.domain_counts[domain] = c
+                for region, arr in reg_items:
+                    c = int(arr[f])
+                    if c:
+                        s.region_counts[region] = c
+                col = think[:, f]
+                if col.any():
+                    s.thinking_position_counts = [int(x) for x in col]
+        self._vec_activation = None
+        self._vec_domain = None
+        self._vec_region = None
+        self._vec_thinking = None
+
+    def _accumulate_batch_fast(
+        self,
+        *,
+        batch_tokens: list[list[int]],
+        batch_domains: list[str],
+        batch_markers: list[dict],
+        batch_seq_idxs: list[int],
+        batch_source_metadata: list[dict[str, Any]],
+        layer_activations: dict[int, torch.Tensor],
+    ) -> None:
+        """Vectorized accumulation for the dense base case (n_random == 0, no ranges).
+
+        Per-feature counts (activation / domain / region / thinking) are accumulated with
+        bincounts into per-layer arrays instead of a per-nonzero Python loop; histograms are
+        updated exactly as the legacy path. token_counts keeps the exact per-event
+        Space-Saving update (order-dependent), and top-k uses the same candidate pre-filter,
+        both in a single slim loop over nonzeros. finalize() then copies the arrays into
+        FeatureStats so downstream export/merge are unchanged.
+        """
+        self._ensure_vec_arrays()
+        track_tc = self.track_token_counts and self.token_count_cap > 0
+        seq_lens = [len(t) for t in batch_tokens]
+
+        for b in range(len(batch_tokens)):
+            tokens = batch_tokens[b]
+            seq_len = seq_lens[b]
+            domain = batch_domains[b]
+            markers = batch_markers[b]
+            sequence_idx = batch_seq_idxs[b]
+            source_metadata = batch_source_metadata[b]
+
+            regions, thinking_positions = precompute_regions(tokens, markers)
+
+            self.total_tokens += seq_len
+            self.tokens_per_domain[domain] += seq_len
+            # Build per-position region ids / thinking bins alongside the global per-position counts.
+            region_ids = np.empty(seq_len, dtype=np.int64)
+            think_bins = np.full(seq_len, -1, dtype=np.int64)
+            for pos in range(seq_len):
+                r = regions[pos]
+                self.tokens_per_region[r] += 1
+                rid = self._region_to_index.get(r)
+                if rid is None:
+                    rid = len(self._region_index_to_str)
+                    self._region_to_index[r] = rid
+                    self._region_index_to_str.append(r)
+                region_ids[pos] = rid
+                tpv = thinking_positions[pos]
+                if tpv is not None:
+                    bi = min(9, int(tpv * 10))
+                    self.tokens_per_thinking_bin[bi] += 1
+                    think_bins[pos] = bi
+
+            for layer_idx in range(self.n_layers):
+                features_gpu = layer_activations[layer_idx][b, :seq_len]  # [seq_len, n_features]
+
+                nonzero = torch.nonzero(features_gpu > 0)  # [N, 2]
+                if len(nonzero) == 0:
+                    continue
+
+                active_positions = nonzero[:, 0].cpu().numpy()
+                active_features = nonzero[:, 1].cpu().numpy()
+                active_values = features_gpu[nonzero[:, 0], nonzero[:, 1]].float().cpu().numpy()
+
+                self._update_activation_histograms(
+                    layer_idx=layer_idx,
+                    domain=domain,
+                    active_features=active_features,
+                    active_values=active_values,
+                )
+
+                # --- Vectorized per-feature counts (replaces the per-nonzero count loop) ---
+                base_counts = np.bincount(active_features, minlength=self.n_features)
+                self._vec_activation[layer_idx] += base_counts
+                dom_arr = self._vec_domain[layer_idx].get(domain)
+                if dom_arr is None:
+                    dom_arr = np.zeros(self.n_features, dtype=np.int64)
+                    self._vec_domain[layer_idx][domain] = dom_arr
+                dom_arr += base_counts  # one domain per item, so all nonzeros share it
+
+                region_per_nz = region_ids[active_positions]
+                for rid in np.unique(region_per_nz).tolist():
+                    m = region_per_nz == rid
+                    rstr = self._region_index_to_str[rid]
+                    rarr = self._vec_region[layer_idx].get(rstr)
+                    if rarr is None:
+                        rarr = np.zeros(self.n_features, dtype=np.int64)
+                        self._vec_region[layer_idx][rstr] = rarr
+                    rarr += np.bincount(active_features[m], minlength=self.n_features)
+
+                think_per_nz = think_bins[active_positions]
+                valid = think_per_nz >= 0
+                if valid.any():
+                    tb = think_per_nz[valid]
+                    tf = active_features[valid]
+                    for bi in np.unique(tb).tolist():
+                        self._vec_thinking[layer_idx][bi] += np.bincount(
+                            tf[tb == bi], minlength=self.n_features
+                        )
+
+                # --- Top-k candidate pre-filter (identical to legacy) ---
+                layer_stats = self.stats[layer_idx]
+                thresholds = np.full(self.n_features, -np.inf, dtype=np.float64)
+                for uf in np.unique(active_features).tolist():
+                    s = layer_stats[uf]
+                    global_thr = (
+                        s.top_k_examples[0].activation
+                        if len(s.top_k_examples) >= self.top_k
+                        else -np.inf
+                    )
+                    domain_heap = s.domain_top_k_examples.get(domain)
+                    domain_thr = (
+                        domain_heap[0].activation
+                        if domain_heap is not None and len(domain_heap) >= self.domain_top_k
+                        else -np.inf
+                    )
+                    thresholds[uf] = min(global_thr, domain_thr)
+                candidate_mask = active_values > thresholds[active_features]
+
+                # --- Slim per-nonzero loop: exact token_counts + candidate-only top-k ---
+                # Processed in torch.nonzero order, identical to the legacy loop, so the
+                # order-dependent Space-Saving and heap insertions match byte-for-byte.
+                for i in range(len(active_positions)):
+                    feature_idx = int(active_features[i])
+                    stats = layer_stats[feature_idx]
+                    if track_tc:
+                        token_id = tokens[int(active_positions[i])]
+                        token_counts = stats.token_counts
+                        if token_id in token_counts:
+                            token_counts[token_id] += 1
+                        elif len(token_counts) < self.token_count_cap:
+                            token_counts[token_id] = 1
+                        else:
+                            min_token = min(token_counts, key=token_counts.get)
+                            token_counts[token_id] = token_counts.pop(min_token) + 1
+                    if candidate_mask[i]:
+                        pos = int(active_positions[i])
+                        self._maybe_add_example(
+                            stats, float(active_values[i]), tokens, pos, features_gpu, feature_idx,
+                            domain, regions[pos], thinking_positions[pos], sequence_idx, source_metadata,
+                        )
+
+    def _accumulate_batch_legacy(
+        self,
+        *,
+        batch_tokens: list[list[int]],
+        batch_domains: list[str],
+        batch_markers: list[dict],
+        batch_seq_idxs: list[int],
+        batch_source_metadata: list[dict[str, Any]],
+        layer_activations: dict[int, torch.Tensor],
+    ) -> None:
+        """Exact per-event accumulation (reservoir / activation-range path; unchanged)."""
         seq_lens = [len(t) for t in batch_tokens]
 
         # Process each item in the batch
@@ -2065,6 +2306,10 @@ def main():
             "final/tokens_per_domain": dict(collector.tokens_per_domain),
         }
     )
+
+    # Materialize any vectorized fast-path counts into FeatureStats before export (no-op for
+    # the adapter's reservoir/legacy path, which writes FeatureStats directly).
+    collector.finalize()
 
     # Compute logit lens
     logit_lens_data = compute_logit_lens(model, tokenizer)
