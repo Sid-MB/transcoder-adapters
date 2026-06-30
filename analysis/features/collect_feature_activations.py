@@ -351,6 +351,8 @@ class FeatureCollector:
             self.tokens_per_domain[d] += c
         for r, c in other.tokens_per_region.items():
             self.tokens_per_region[r] += c
+        for i in range(len(self.tokens_per_thinking_bin)):
+            self.tokens_per_thinking_bin[i] += other.tokens_per_thinking_bin[i]
 
         self.run_hist_total += other.run_hist_total
         self.run_hist_by_domain += other.run_hist_by_domain
@@ -1949,6 +1951,69 @@ def export_run_arguments(
     logger.info(f"Saved pasteable replay command to {command_path}")
 
 
+def _finalize_collection(
+    collector: "FeatureCollector",
+    *,
+    model,
+    tokenizer,
+    output_dir: Path,
+    args,
+    hf_feature_repo_id,
+    hf_feature_config,
+    data_source_settings,
+) -> None:
+    """Export (and optionally upload) a completed collector.
+
+    Shared by the normal single-process path and the --merge_shards path so both produce the
+    same outputs (logit lens + packed cache + histograms + metadata + annotations + upload).
+    """
+    logit_lens_data = compute_logit_lens(model, tokenizer)
+
+    export_circuit_tracer_json(
+        collector,
+        logit_lens_data,
+        tokenizer,
+        output_dir,
+        export_circuit_tracer_features=args.export_circuit_tracer_features,
+        write_per_feature_json=not args.no_per_feature_json,
+    )
+    export_activation_histograms(collector, output_dir)
+    export_metadata(
+        collector,
+        output_dir,
+        target_domain=args.relative_target_domain,
+        baseline_domain=args.relative_baseline_domain,
+        model_path=args.model_path,
+        tokenizer_path=args.tokenizer,
+        data_sources=data_source_settings,
+    )
+    # Annotations are derived from feature_metadata.json (always written), not the
+    # per-feature features/{id}.json files, so they run even with --no_per_feature_json.
+    # They are also a required sidecar for the Hub upload below.
+    annotate_collected_features(output_dir)
+
+    if hf_feature_repo_id and hf_feature_config:
+        from analysis.features.hub_upload import upload_circuit_tracer_features_to_hub
+
+        upload_circuit_tracer_features_to_hub(
+            repo_id=hf_feature_repo_id,
+            output_dir=output_dir,
+            config=hf_feature_config,
+        )
+
+    logger.info(f"Done! Output written to {output_dir}")
+    logger.info("  features/: Circuit tracer JSON files")
+    if args.export_circuit_tracer_features:
+        logger.info("  circuit_tracer_features/: Packed circuit-tracer feature cache")
+    logger.info("  activation_histograms.npz: Exact activation histogram sidecar")
+    logger.info("  feature_metadata.json: Rich metadata for analysis")
+    logger.info("  feature_annotations.json: Automatic feature annotations")
+    logger.info("  collect_feature_activations_args.json: Full parsed CLI settings")
+    logger.info("  collect_feature_activations_command.sh: Pasteable replay command")
+    if hf_feature_repo_id:
+        logger.info(f"  Hugging Face feature repo: https://huggingface.co/{hf_feature_repo_id}")
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(
@@ -2111,6 +2176,17 @@ def main():
         ),
     )
 
+    # ── Sharding (data-parallel multi-GPU collection) ──────────────────────────
+    # Feature collection is pure inference, so the right way to use many GPUs is NOT DDP
+    # (which only syncs gradients): run N independent shard processes over disjoint slices of
+    # the data, each on its own GPU, then losslessly merge their collector states. This scales
+    # near-linearly, runs across heterogeneous/preemptible nodes (e.g. sc-loprio), and a dead
+    # shard is just re-run. Requires --n_random 0 and --activation_range_examples_per_domain 0
+    # so partial states merge exactly (reservoir-sampled fields cannot be merged without bias).
+    parser.add_argument("--num_shards", type=int, default=1, help="Split the work across N independent shard processes (one GPU each) to parallelize collection. Each shard processes items where prepared_item_idx %% num_shards == shard_index, then pickles its collector state to <output_dir>/shard_<i>.pkl and skips export. Merge afterwards with --merge_shards. Requires --n_random 0 and --activation_range_examples_per_domain 0 (so partial states merge exactly). Default 1 = single-process (no sharding).")
+    parser.add_argument("--shard_index", type=int, default=0, help="This shard's index in [0, num_shards). Ignored when --num_shards 1. Under Slurm array jobs set this to $SLURM_ARRAY_TASK_ID. If <output_dir>/shard_<i>.pkl already exists the shard exits immediately (idempotent re-runs make recovering preempted shards cheap).")
+    parser.add_argument("--merge_shards", type=str, default=None, help="Glob of shard pickles (e.g. '<dir>/shard_*.pkl') to merge into one collection and export/upload. In this mode no data is re-read; the model is loaded only for the logit lens and the normal export path runs on the merged collector. Use after all shards (--num_shards/--shard_index) have completed.")
+
     add_collection_wandb_args(parser)
 
     args = parser.parse_args()
@@ -2130,9 +2206,14 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
 
+    # Shard workers (--num_shards > 1 without --merge_shards) only pickle partial state -- they
+    # must NOT reserve or upload the HF repo (the merge step does that). The merge step itself
+    # runs with --no-upload + a separate salvage upload, so it also skips this reserve block.
+    is_shard_worker = args.num_shards > 1 and not args.merge_shards
+
     hf_feature_repo_id = None
     hf_feature_config = None
-    if args.upload_circuit_tracer_features_to_hub:
+    if args.upload_circuit_tracer_features_to_hub and not is_shard_worker:
         from analysis.features.hub_upload import (
             build_feature_collection_repo_id,
             check_feature_collection_exists,
@@ -2168,6 +2249,16 @@ def main():
     logger.info(f"Output directory: {output_dir}")
     export_run_arguments(parser, args, output_dir)
 
+    # Skip-if-done: a shard whose pickle already exists is complete. Exit before loading the
+    # model/data so re-running the array after preemptions only recomputes the missing shards.
+    shard_pkl_path = output_dir / f"shard_{args.shard_index:03d}.pkl"
+    if is_shard_worker and shard_pkl_path.exists():
+        logger.info(
+            f"Shard {args.shard_index}/{args.num_shards} already done ({shard_pkl_path} exists); "
+            "skipping. Delete it to force a recompute."
+        )
+        return
+
     tokenizer = load_tokenizer(args.model_path, tokenizer_path=args.tokenizer)
 
     # Load model
@@ -2191,6 +2282,36 @@ def main():
     logger.info(f"Detected special tokens: {special_tokens}")
     if not has_thinking:
         logger.info("Note: No <think> tags detected — thinking region analysis will be skipped")
+
+    # Merge mode: recombine completed shard pickles into one collection and export/upload.
+    # No data is re-read; the model (loaded above) is used only for the logit lens.
+    if args.merge_shards:
+        import glob
+        import pickle
+
+        shard_paths = sorted(glob.glob(args.merge_shards))
+        if not shard_paths:
+            parser.error(f"--merge_shards matched no files: {args.merge_shards}")
+        logger.info(f"Merging {len(shard_paths)} shard collectors from {args.merge_shards}")
+        with open(shard_paths[0], "rb") as fh:
+            payload = pickle.load(fh)
+        collector = payload["collector"]
+        merged_data_sources = payload["data_source_settings"]
+        for shard_path in shard_paths[1:]:
+            with open(shard_path, "rb") as fh:
+                collector.merge_from(pickle.load(fh)["collector"])
+            logger.info(f"  merged {shard_path} -> {collector.total_tokens:,} tokens total")
+        _finalize_collection(
+            collector,
+            model=model,
+            tokenizer=tokenizer,
+            output_dir=output_dir,
+            args=args,
+            hf_feature_repo_id=hf_feature_repo_id,
+            hf_feature_config=hf_feature_config,
+            data_source_settings=merged_data_sources,
+        )
+        return
 
     # Parse and load all val_data sources
     val_data_sources: list[tuple[str | None, str]] = [
@@ -2295,6 +2416,16 @@ def main():
         )
         return
 
+    # Sharding: keep only this shard's disjoint slice of the prepared items. The modulo on the
+    # globally-unique prepared_item_idx gives every shard a deterministic, non-overlapping subset
+    # whose merged collector state equals a single unsharded run.
+    if args.num_shards > 1:
+        items = [it for it in items if int(it[3]["prepared_item_idx"]) % args.num_shards == args.shard_index]
+        logger.info(f"Shard {args.shard_index}/{args.num_shards}: processing {len(items)} of the prepared items")
+        if not items:
+            logger.error("No items fall in this shard. Exiting.")
+            return
+
     domain_names = sorted({domain for _, domain, _, _ in items})
     logger.info(f"Activation histogram domains: {domain_names}")
     log_startup_output_size_estimate(
@@ -2389,57 +2520,37 @@ def main():
         }
     )
 
-    # Materialize any vectorized fast-path counts into FeatureStats before export (no-op for
-    # the adapter's reservoir/legacy path, which writes FeatureStats directly).
+    # Materialize any vectorized fast-path counts into FeatureStats before pickle/export (no-op
+    # for the adapter's reservoir/legacy path, which writes FeatureStats directly).
     collector.finalize()
 
-    # Compute logit lens
-    logit_lens_data = compute_logit_lens(model, tokenizer)
+    # Shard worker: persist partial collector state and stop; the --merge_shards step
+    # recombines all shards and runs export/upload once.
+    if args.num_shards > 1:
+        import pickle
 
-    # Export
-    export_circuit_tracer_json(
-        collector,
-        logit_lens_data,
-        tokenizer,
-        output_dir,
-        export_circuit_tracer_features=args.export_circuit_tracer_features,
-        write_per_feature_json=not args.no_per_feature_json,
-    )
-    export_activation_histograms(collector, output_dir)
-    export_metadata(
-        collector,
-        output_dir,
-        target_domain=args.relative_target_domain,
-        baseline_domain=args.relative_baseline_domain,
-        model_path=args.model_path,
-        tokenizer_path=args.tokenizer,
-        data_sources=data_source_settings,
-    )
-    # Annotations are derived from feature_metadata.json (always written), not the
-    # per-feature features/{id}.json files, so they run even with --no_per_feature_json.
-    # They are also a required sidecar for the Hub upload below.
-    annotate_collected_features(output_dir)
-
-    if hf_feature_repo_id and hf_feature_config:
-        from analysis.features.hub_upload import upload_circuit_tracer_features_to_hub
-
-        upload_circuit_tracer_features_to_hub(
-            repo_id=hf_feature_repo_id,
-            output_dir=output_dir,
-            config=hf_feature_config,
+        with open(shard_pkl_path, "wb") as fh:
+            pickle.dump(
+                {"collector": collector, "data_source_settings": data_source_settings},
+                fh,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        logger.info(
+            f"Wrote shard {args.shard_index}/{args.num_shards} state to {shard_pkl_path} "
+            f"({collector.total_tokens:,} tokens); skipping export. Merge with --merge_shards."
         )
+        return
 
-    logger.info(f"Done! Output written to {output_dir}")
-    logger.info("  features/: Circuit tracer JSON files")
-    if args.export_circuit_tracer_features:
-        logger.info("  circuit_tracer_features/: Packed circuit-tracer feature cache")
-    logger.info("  activation_histograms.npz: Exact activation histogram sidecar")
-    logger.info("  feature_metadata.json: Rich metadata for analysis")
-    logger.info("  feature_annotations.json: Automatic feature annotations")
-    logger.info("  collect_feature_activations_args.json: Full parsed CLI settings")
-    logger.info("  collect_feature_activations_command.sh: Pasteable replay command")
-    if hf_feature_repo_id:
-        logger.info(f"  Hugging Face feature repo: https://huggingface.co/{hf_feature_repo_id}")
+    _finalize_collection(
+        collector,
+        model=model,
+        tokenizer=tokenizer,
+        output_dir=output_dir,
+        args=args,
+        hf_feature_repo_id=hf_feature_repo_id,
+        hf_feature_config=hf_feature_config,
+        data_source_settings=data_source_settings,
+    )
 
 
 if __name__ == "__main__":
