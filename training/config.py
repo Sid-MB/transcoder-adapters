@@ -144,6 +144,17 @@ class ExperimentConfig:
     """
     loss_on_prompt: bool = True
 
+    # Warm-start: resume from a saved checkpoint that already contains TRAINED transcoder
+    # weights (e.g. a run that was preempted/requeued). No optimizer state is restored.
+    warm_start_from: str | None = None
+    """Path/HF id of a checkpoint dir to warm-start from. Loads the FULL model (incl. trained
+    transcoders) instead of base+fresh-init; skips the transcoder re-init and base-MLP swap.
+    Only Adam moments are lost (not checkpointed), so expect a brief re-stabilization."""
+    warm_start_samples_seen: int | None = None
+    """Training samples the warm-start checkpoint already saw (= its step * its batch_size).
+    Resumes the L1/LR schedule at samples_seen/total so it stays correct even if the new
+    batch_size differs; starting step = warm_start_samples_seen // batch_size."""
+
     val_frequency: int = 1000  # Run validation every N steps
     layerwise_val_frequency: int = 2000  # Run layerwise validation every N steps
     token_metrics_n_samples: int = 0  # Samples for periodic token metrics eval, run alongside validation (0 = disabled)
