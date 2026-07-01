@@ -1353,7 +1353,11 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         if final_results is not None:
             final_evaluation_stats = {
                 "token_metrics_final": {
-                    "n_samples": final_results.n_samples,
+                    # EvalResults (base TokenMetrics) has no n_samples -- only per-benchmark
+                    # BenchmarkMetrics do -- so sum them for the run total. (Accessing
+                    # final_results.n_samples AttributeError'd here after training completed,
+                    # crashing the post-eval stats before push_to_hub.)
+                    "n_samples": sum(bm.n_samples for bm in final_results.per_benchmark.values()),
                     "n_tokens": final_results.n_tokens,
                     "kl_mean": float(final_results.kl_mean),
                     "top1_agreement": float(final_results.top1_agreement),
