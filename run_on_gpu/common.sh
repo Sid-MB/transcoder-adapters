@@ -24,6 +24,28 @@ if [ -z "$SLURM_LOG_DIR" ]; then
     exit 1
 fi
 
+# ── Robust LARGE_ARTIFACTS_DIR ─────────────────────────────────────────
+# helpers.paths requires LARGE_ARTIFACTS_DIR. It is normally set by ~/.shell/set-vars.sh,
+# but that only runs in interactive bash (sourced from ~/.bashrc) -- NOT in Slurm batch
+# scripts (non-interactive, non-login shells), NOT in non-interactive submitting shells,
+# and it was empirically lost on requeue. Relying on --export=ALL to copy it from the
+# submitter is therefore fragile. Set the same default set-vars.sh would (/nlp/scr/$USER)
+# when it is missing, so every job -- including requeued ones -- has it.
+export LARGE_ARTIFACTS_DIR="${LARGE_ARTIFACTS_DIR:-/nlp/scr/$USER}"
+echo "[Slurm] LARGE_ARTIFACTS_DIR=$LARGE_ARTIFACTS_DIR"
+
+# ── Writable UV_CACHE_DIR ──────────────────────────────────────────────
+# `uv` needs a writable cache dir just to START. It's usually inherited (via set-vars.sh) as a
+# node-local /scr/$USER path, but sc-loprio spans clusters where /scr/$USER may not exist or be
+# writable -> `uv run` dies with "Failed to initialize cache ... Permission denied" before any
+# work begins (this failed ~10/64 shards). If the inherited path isn't creatable, fall back to
+# an always-writable node-local TMPDIR/tmp path (cheap: `uv run --no-sync` barely uses it).
+if [ -z "${UV_CACHE_DIR:-}" ] || ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null; then
+    export UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache-$USER"
+    mkdir -p "$UV_CACHE_DIR" 2>/dev/null || true
+fi
+echo "[Slurm] UV_CACHE_DIR=$UV_CACHE_DIR"
+
 # ── Logging ───────────────────────────────────────────────────────────
 LOG_DIR="$SLURM_LOG_DIR"
 LOG_PREFIX="${SLURM_JOB_ID:-local}"

@@ -41,6 +41,10 @@ HF_HUB_CACHE="${HF_HUB_CACHE_SHARED:-$HF_HOME/hub}"
 ARRAY_CAP="${ARRAY_CAP:-64}"
 GPU_GRES="${GPU_GRES:-gpu:1}"
 GPU_CONSTRAINT="${GPU_CONSTRAINT:-24G|48G}"
+# The MERGE loads the full model for the logit lens -> a large adapter (e.g. 16384-feature
+# gemma2_2b_huge, ~9GB + activations) OOMs a 24GB card, so give the merge a bigger GPU by
+# default. Shards (collection only) are fine on 24G|48G.
+MERGE_GPU_CONSTRAINT="${MERGE_GPU_CONSTRAINT:-48G}"
 SHARD_CPUS="${SHARD_CPUS:-6}"
 SHARD_MEM="${SHARD_MEM:-48G}"
 MERGE_MEM="${MERGE_MEM:-160G}"
@@ -50,6 +54,8 @@ mkdir -p "$SHARD_OUT"
 
 CONSTRAINT_ARG=()
 [ -n "$GPU_CONSTRAINT" ] && CONSTRAINT_ARG=(--constraint="$GPU_CONSTRAINT")
+MERGE_CONSTRAINT_ARG=()
+[ -n "$MERGE_GPU_CONSTRAINT" ] && MERGE_CONSTRAINT_ARG=(--constraint="$MERGE_GPU_CONSTRAINT")
 
 # Gap-fill: submit only shards whose pickle is still missing.
 MISSING=()
@@ -79,7 +85,7 @@ DEP_ARG=()
 MERGE_ID=$(sbatch --parsable \
   --account=nlp --partition=sc-loprio --requeue \
   "${DEP_ARG[@]}" \
-  --gres="$GPU_GRES" "${CONSTRAINT_ARG[@]}" --cpus-per-task=8 --mem="$MERGE_MEM" --time=6:00:00 \
+  --gres="$GPU_GRES" "${MERGE_CONSTRAINT_ARG[@]}" --cpus-per-task=8 --mem="$MERGE_MEM" --time=6:00:00 \
   --job-name=adapter_merge \
   --export=ALL,LARGE_ARTIFACTS_DIR="${LARGE_ARTIFACTS_DIR}",HF_HOME="${HF_HOME}",HF_HUB_CACHE="${HF_HUB_CACHE}",MERGE_SHARDS=1,SHARD_OUT="${SHARD_OUT}" \
   ./run_on_gpu/run_collect_adapter_sharded.sh "$@")
