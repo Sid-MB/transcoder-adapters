@@ -46,8 +46,11 @@ POLL_SECONDS="${POLL_SECONDS:-300}"
 # rather than 64x at once (which would 429). huggingface_hub prefers HF_HUB_CACHE over HF_HOME,
 # so set both.
 NUM_SHARDS="${NUM_SHARDS:-64}"
-HF_HOME="${HF_HOME:-/nlp/scr/siddharth/.caches/huggingface}"
-HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+# FORCE the shared cache (don't inherit): the trigger often runs with a node-local HF_HOME
+# (/scr/$USER) from --export=ALL, which made the pre-warm download to node-local disk while the
+# shards read the shared cache -> cache miss. Match the launcher's shared default exactly.
+HF_HOME=/nlp/scr/siddharth/.caches/huggingface
+HF_HUB_CACHE=/nlp/scr/siddharth/.caches/huggingface/hub
 export HF_HOME HF_HUB_CACHE
 
 mkdir -p "$WORK"
