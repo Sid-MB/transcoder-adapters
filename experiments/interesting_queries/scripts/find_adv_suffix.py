@@ -66,7 +66,10 @@ def run_nanogcg(instruct, tokenizer, prompt: str, target: str, steps: int, searc
     except Exception as e:
         logger.warning(f"nanoGCG unavailable ({e}); skipping GCG optimisation.")
         return None, None
-    cfg = GCGConfig(num_steps=steps, search_width=search_width, topk=64, seed=0, verbosity="WARNING")
+    # use_prefix_cache=False: gemma-2 uses a HybridCache that nanoGCG's prefix-cache path can't
+    # len()/index (raises "object of type 'HybridCache' has no len()"). Disabling the prefix cache
+    # recomputes the prefix each step (slower but correct) and sidesteps the incompatibility.
+    cfg = GCGConfig(num_steps=steps, search_width=search_width, topk=64, seed=0, verbosity="WARNING", use_prefix_cache=False)
     messages = [{"role": "user", "content": prompt}]
     try:
         result = nanogcg.run(instruct, tokenizer, messages, target, cfg)

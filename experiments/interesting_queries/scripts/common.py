@@ -51,8 +51,17 @@ AFFIRMATIVE_WORDS = ["Sure", "Here", "Certainly", "Of", "To", "Yes", "Absolutely
 def load_models(device: str = "cuda", base_model: str = BASE_MODEL, instruct_model: str = INSTRUCT_MODEL):
     """Load instruct tokenizer + both models in bf16 on `device`, eval mode."""
     tokenizer = AutoTokenizer.from_pretrained(instruct_model)
-    instruct = AutoModelForCausalLM.from_pretrained(instruct_model, dtype=torch.bfloat16).to(device).eval()
-    base = AutoModelForCausalLM.from_pretrained(base_model, dtype=torch.bfloat16).to(device).eval()
+
+    def _load(name):
+        # `dtype=` is the current transformers kwarg; older transformers (pulled in by nanoGCG's
+        # dependency pins) only accept `torch_dtype=`. Support both so the finders run under either.
+        try:
+            return AutoModelForCausalLM.from_pretrained(name, dtype=torch.bfloat16).to(device).eval()
+        except TypeError:
+            return AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.bfloat16).to(device).eval()
+
+    instruct = _load(instruct_model)
+    base = _load(base_model)
     return tokenizer, base, instruct
 
 

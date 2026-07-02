@@ -54,6 +54,11 @@ def main() -> None:
                 "why": f"first response token: instruct refuses ({r['instruct_first_token']!r}) but base complies ({r['base_first_token']!r})",
                 "metric": f"category={r['category']}; instruct P(I)={r['instruct_p_refusal_first']:.2f}, base P(affirm)={r['base_p_affirmative']:.2f}",
                 "prompt_txt": f"prompts/harmful/{r['id']}.txt",
+                "transcript": {
+                    "user": r["prompt"],
+                    "instruct_continuation": r["instruct_gen"],
+                    "base_continuation": r["base_gen"],
+                },
             })
 
     if divergent:
@@ -69,6 +74,10 @@ def main() -> None:
                 "why": f"argmax-KL response pos {r['argmax_pos']}: base->{r['base_top1_token']!r} vs instruct->{r['instruct_top1_token']!r}",
                 "metric": f"max KL={r['max_kl']:.2f} nats ({r['source']})",
                 "prompt_txt": f"prompts/divergent/{r['id']}.txt",
+                "transcript": {
+                    "user": r["prompt"],
+                    "instruct_rollout_first_tokens": r.get("resp_text", ""),
+                },
             })
 
     if adv:
@@ -86,6 +95,12 @@ def main() -> None:
                 "why": f"first response token flip via {b['method']}: refuses without suffix, complies with",
                 "metric": f"flipped=True; suffix P(affirm)={b['suffix_p_affirmative']:.2f}",
                 "prompt_txt": f"prompts/adv_suffix/{r['id']}_with_suffix.txt",
+                "transcript": {
+                    "user": r["prompt"],
+                    "suffix": b["suffix"],
+                    "no_suffix_continuation": b.get("plain_gen", ""),
+                    "with_suffix_continuation": b.get("suffix_gen", ""),
+                },
             })
 
     payload = {
@@ -99,18 +114,45 @@ def main() -> None:
     out_json = args.output_root / "results" / "interesting_queries.json"
     out_json.write_text(json.dumps(payload, indent=2) + "\n")
 
+    # Readable per-query transcripts for easy previewing (user prompt + base/instruct generations).
+    transcripts_dir = args.output_root / "transcripts"
+    for e in entries:
+        t = e.get("transcript", {})
+        sub = e["type"].split()[0].lstrip("#")  # 1/2/3
+        d = transcripts_dir / {"1": "harmful", "2": "divergent", "3": "adv_suffix"}[sub]
+        d.mkdir(parents=True, exist_ok=True)
+        lines = [f"# {e['id']}  ({e['type']})", "",
+                 f"USER: {t.get('user', e['query'])}", ""]
+        if "instruct_continuation" in t:
+            lines += [f"INSTRUCT (refuses): {t['instruct_continuation']}", "",
+                      f"BASE (complies): {t['base_continuation']}"]
+        if "instruct_rollout_first_tokens" in t:
+            lines += [f"INSTRUCT rollout (first tokens, argmax-KL target): {t['instruct_rollout_first_tokens']}"]
+        if "with_suffix_continuation" in t:
+            lines += [f"SUFFIX: {t['suffix']}", "",
+                      f"INSTRUCT no-suffix (refuses): {t['no_suffix_continuation']}", "",
+                      f"INSTRUCT with-suffix (complies): {t['with_suffix_continuation']}"]
+        lines += ["", f"TARGET TOKEN: {e['target_token']}  (index {e['target_index']})", f"WHY: {e['why']}"]
+        (d / f"{e['id']}.txt").write_text("\n".join(lines) + "\n")
+
     lines = ["# Interesting queries for circuit-tracing analysis", "",
              "Created by session \"explore: queries to analyze\". See README.md for reproduction.", "",
              f"Counts: {payload['counts']}", "",
-             "| type | query (+suffix) | target token (index) | why | metric | prompt |",
-             "|---|---|---|---|---|---|"]
+             "Per-query transcripts (base vs instruct generations) are in [`../transcripts/`](../transcripts/).", "",
+             "| type | query (+suffix) | target token (index) | why | metric | prompt | transcript |",
+             "|---|---|---|---|---|---|---|"]
+
+    def _clean(s):
+        return str(s).replace("|", "\\|").replace("\n", " ")
+
     for e in entries:
-        q = e["query"].replace("|", "\\|").replace("\n", " ")
+        q = _clean(e["query"])
         if e["suffix"]:
-            q += f" **[+suffix: {e['suffix'][:60].replace('|', '')}...]**"
-        tgt = f"{e['target_token']}".replace("|", "\\|")
+            q += f" **[+suffix: {_clean(e['suffix'][:60])}...]**"
         idx = e["target_index"]
-        lines.append(f"| {e['type']} | {q} | {tgt} (idx {idx}) | {e['why'].replace('|', chr(92)+'|')} | {e['metric'].replace('|', chr(92)+'|')} | `{e['prompt_txt']}` |")
+        sub = e["type"].split()[0].lstrip("#")
+        tdir = {"1": "harmful", "2": "divergent", "3": "adv_suffix"}[sub]
+        lines.append(f"| {e['type']} | {q} | {_clean(e['target_token'])} (idx {idx}) | {_clean(e['why'])} | {_clean(e['metric'])} | `{e['prompt_txt']}` | `transcripts/{tdir}/{e['id']}.txt` |")
     out_md = args.output_root / "results" / "interesting_queries.md"
     out_md.write_text("\n".join(lines) + "\n")
 

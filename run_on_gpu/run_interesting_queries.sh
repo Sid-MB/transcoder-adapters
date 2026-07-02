@@ -13,10 +13,12 @@ source run_on_gpu/common.sh
 export HF_TOKEN="${HF_TOKEN:-$(cat ~/.shell/secrets/hf_token_write 2>/dev/null)}"
 
 SCRIPT="$1"; shift
-# find_adv_suffix needs nanoGCG (additive install into the shared venv; --no-sync run below won't prune it).
+# find_adv_suffix needs nanoGCG. Install it into an EPHEMERAL uv overlay (`--with`) rather than the
+# shared .venv: `uv pip install nanogcg` downgrades transformers/tokenizers in the network venv and
+# breaks concurrent jobs. The overlay layers on top without mutating the base venv. common.load_models
+# is dtype-robust so it works whether nanoGCG's pins pull an older transformers into the overlay.
 if [[ "$SCRIPT" == *find_adv_suffix.py ]]; then
-  echo "[Slurm] Installing nanogcg (additive)"
-  uv pip install nanogcg || echo "[Slurm] nanogcg install failed; finder will fall back to published suffixes"
+  run uv run --no-sync --with nanogcg python "$SCRIPT" "$@"
+else
+  run uv run --no-sync python "$SCRIPT" "$@"
 fi
-
-run uv run --no-sync python "$SCRIPT" "$@"

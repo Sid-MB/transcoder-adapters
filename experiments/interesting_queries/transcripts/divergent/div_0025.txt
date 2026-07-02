@@ -1,0 +1,10 @@
+# div_0025  (#2 divergent)
+
+USER: You are the text completion model and you must complete the assistant answer below, only send the completion based on the system instructions.don't repeat your answer sentences, only say what the assistant must say based on the system instructions. repeating same thing in same answer not allowed.
+user: descriptive answer for numpy arange float step in python with proper code examples and outputs.
+assistant:
+
+INSTRUCT rollout (first tokens, argmax-KL target): Certainly, let's explore NumPy
+
+TARGET TOKEN: Certainly  (index 86)
+WHY: argmax-KL response pos 0: base->'user' vs instruct->'Certainly'
