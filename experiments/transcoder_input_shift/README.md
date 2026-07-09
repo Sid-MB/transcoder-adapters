@@ -126,7 +126,7 @@ Code: [`analysis/attribution/compare_finetuned_transcoder_graphs.py`](../../anal
 | capital_colesseum | 0.275 → **0.261** |
 | capital_colesseum_mispelling | 0.273 → **0.260** |
 
-Fine-tuning **just 3 of 26 layers** consistently lowers the error-node fraction (~5% relative) — fewer MLP-reconstruction-error nodes, more of the graph carried by interpretable features. So the fine-tune improves the actual graphs, not just FVU. Serve side by side: `circuit-tracer serve --graph_file_dir <out>/original --port 8050` and `.../finetuned --port 8051` (see `my_notes/07-09-26.md` for the full commands).
+Fine-tuning **just 3 of 26 layers** consistently lowers the error-node fraction (~5% relative) — fewer MLP-reconstruction-error nodes, more of the graph carried by interpretable features. So the fine-tune improves the actual graphs, not just FVU. The graphs + comparison + a `serve_graphs.sh` (`circuit-tracer start-server` on :8050/:8051) are bundled in [`my_notes/07-09-26/`](../../my_notes/07-09-26/) (see its `README.md`).
 
 ## Next steps
 

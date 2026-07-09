@@ -1,0 +1,25 @@
+{
+  "source_aggregate": "experiments/base_vs_adapter_circuit_trace/aggregate_results.json",
+  "by_bucket": {
+    "agree": {
+      "n_graphs": 14,
+      "error_node_fraction_mean": 0.02834344198370308,
+      "error_node_fraction_max": 0.029906542056074768,
+      "adapter_fraction_mean": 0.038542396901498105,
+      "base_features_mean": 1102.5,
+      "error_nodes_mean": 32,
+      "adapter_content_mean": 4,
+      "adapter_template_mean": 40.142857142857146
+    },
+    "diverge": {
+      "n_graphs": 14,
+      "error_node_fraction_mean": 0.025574566364406914,
+      "error_node_fraction_max": 0.026845637583892617,
+      "adapter_fraction_mean": 0.047584717570972414,
+      "base_features_mean": 1220.9285714285713,
+      "error_nodes_mean": 32,
+      "adapter_content_mean": 21.571428571428573,
+      "adapter_template_mean": 39.42857142857143
+    }
+  }
+}

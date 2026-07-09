@@ -1,0 +1,56 @@
+{
+  "config": {
+    "finetune_dir": "/nlp/scr/siddharth/transcoder-adapters/transcoder_input_shift_finetune/ft_gemmascope_width_16k_average_l0_76_L0-24-25_20260709_041813_16114293",
+    "ft_layers": [
+      0,
+      24,
+      25
+    ],
+    "scan_name": "google/gemma-scope-2b-pt-transcoders/width_16k/average_l0_76_nearest",
+    "output_dir": "/nlp/scr/siddharth/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260709_145430_16118628"
+  },
+  "by_prompt": {
+    "bomb_refusal_help_I": {
+      "original": {
+        "feature_nodes": 165,
+        "error_nodes": 56,
+        "total_nodes": 240,
+        "error_fraction": 0.25339366515837103
+      },
+      "finetuned": {
+        "feature_nodes": 169,
+        "error_nodes": 53,
+        "total_nodes": 241,
+        "error_fraction": 0.23873873873873874
+      }
+    },
+    "capital_colesseum": {
+      "original": {
+        "feature_nodes": 200,
+        "error_nodes": 76,
+        "total_nodes": 313,
+        "error_fraction": 0.2753623188405797
+      },
+      "finetuned": {
+        "feature_nodes": 201,
+        "error_nodes": 71,
+        "total_nodes": 309,
+        "error_fraction": 0.2610294117647059
+      }
+    },
+    "capital_colesseum_mispelling": {
+      "original": {
+        "feature_nodes": 205,
+        "error_nodes": 77,
+        "total_nodes": 317,
+        "error_fraction": 0.2730496453900709
+      },
+      "finetuned": {
+        "feature_nodes": 205,
+        "error_nodes": 72,
+        "total_nodes": 312,
+        "error_fraction": 0.259927797833935
+      }
+    }
+  }
+}
