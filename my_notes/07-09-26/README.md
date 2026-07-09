@@ -1,7 +1,19 @@
 <!-- Claude Code session "implement: new 07/02 gemmascope transcoder experiments". 2026-07-09. -->
 # 7/09/26 — GemmaScope transcoder input-distribution shift (Experiment 1 + follow-ups)
 
-Full writeup with all tables/links: [`experiments/transcoder_input_shift/README.md`](../experiments/transcoder_input_shift/README.md). This note is the session log: what was asked, what was built, every job, findings, and where everything lives.
+Full writeup with all tables/links: [`experiments/transcoder_input_shift/README.md`](../../experiments/transcoder_input_shift/README.md). This note is the session log: what was asked, what was built, every job, findings, and where everything lives.
+
+## This folder
+
+Self-contained bundle of the 7/09 work (graphs, comparisons, figures, summaries):
+
+- `README.md` — this session log.
+- `serve_graphs.sh` — serve the original vs fine-tuned circuit-tracer graphs side by side (`./serve_graphs.sh`; graphs bundled in `graphs/`).
+- `graphs/` — the old-vs-new attribution graphs (`original/`, `finetuned/`, each with `graph-metadata.json` + 3 prompt graph JSONs) plus `comparison.{md,json}` (error-node fraction table). Served by `serve_graphs.sh`.
+- `figures/` — `transcoder_input_shift_overview.png` (6-panel Exp 1), `transcoder_finetune_before_after.png` (re-finetune FVU before/after).
+- `data/` — machine-readable results: `exp1_all_layers_results.json` + `..._summary.md` + `..._fire_freq_drift.md` (26-layer profile), `exp1_{chat,web}_5layer_summary.md`, `finetune_report.json` + `finetune_summary.md`, `graph_clarity.json`.
+
+Large source artifacts (per-feature `.npz`, fine-tuned `.safetensors`, all Exp1 run dirs) stay under `$LARGE_ARTIFACTS_DIR/transcoder-adapters/`; paths in the Artifacts table below.
 
 ## The question
 
@@ -68,7 +80,7 @@ Fine-tuned endpoint layers 0/24/25 from pretrained GemmaScope weights, loss `MSE
 
 ### Tasks 2 & 4 — difference circuits + graph clarity
 
-From the existing base-vs-adapter combined-attribution graphs ([`experiments/base_vs_adapter_circuit_trace/`](../experiments/base_vs_adapter_circuit_trace/), 28 prompts) via `analyze_graph_clarity.py`. Error node = `true_mlp_out − transcoder_out` (the graph-level analog of reconstruction failure).
+From the existing base-vs-adapter combined-attribution graphs ([`experiments/base_vs_adapter_circuit_trace/`](../../experiments/base_vs_adapter_circuit_trace/), 28 prompts) via `analyze_graph_clarity.py`. Error node = `true_mlp_out − transcoder_out` (the graph-level analog of reconstruction failure).
 
 | bucket | error-node fraction | adapter fraction | adapter content / template feats |
 |---|---|---|---|
@@ -93,7 +105,7 @@ Output root: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/` (`$LARGE_ARTIFACTS_DIR=
 
 wandb project: `siddharth-stanford/transcoder-feature-collection`. Each Exp1 run dir has `results.json`, `summary.md`, `per_feature_fire_freq.npz`, `fire_freq_drift.{json,md}`, `gemmascope_config.json`; FT run dir has `finetune_report.json`, `summary.md`, `finetuned_layer_*.safetensors`. Slurm logs in `logs/transcoder_input_shift/` and `logs/finetune_transcoder_shift/`. Graph-clarity summary: `experiments/transcoder_input_shift/graph_clarity.json`.
 
-Figures (`.claude/products/transcoder_input_shift/`, gitignored): `transcoder_input_shift_overview.png` (6 panels), `transcoder_finetune_before_after.png`.
+Figures (bundled in [`figures/`](figures/)): [`transcoder_input_shift_overview.png`](figures/transcoder_input_shift_overview.png) (6 panels), [`transcoder_finetune_before_after.png`](figures/transcoder_finetune_before_after.png). Comparison graphs + table in [`graphs/`](graphs/).
 
 ## Reproduce
 
@@ -133,19 +145,28 @@ FT=/nlp/scr/siddharth/transcoder-adapters/transcoder_input_shift_finetune/ft_gem
 
 ### Serve side by side (visual, port-forward from the login node)
 
-One-shot script (already points at job 16118628's graphs; verified serving HTTP 200):
+One-shot script (bundled graphs; serves **with feature activation examples** — click a feature node to see its top activating examples; verified serving byte-range feature requests):
 
 ```bash
-./my_notes/07-09-26_serve_graphs.sh   # original :8050, finetuned :8051 (Ctrl-C stops both)
-# other run: GRAPH_DIR=<compare run dir> ./my_notes/07-09-26_serve_graphs.sh
+./serve_graphs.sh   # original :8050, finetuned :8051 (Ctrl-C stops both); graphs bundled in ./graphs
+# other run:      GRAPH_DIR=<compare run dir> ./serve_graphs.sh
+# other features: FEATURES_DIR=<collection>/circuit_tracer_features ./serve_graphs.sh
+# no examples:    NO_FEATURES=1 ./serve_graphs.sh
 ```
 
-Equivalent manual commands (note the subcommand is `start-server`, not `serve`):
+**Feature examples** come from the latest base GemmaScope feature collection (20k samples, `width_16k/average_l0_76`, chat+web) — same scan as these graphs, so feature IDs align:
+- local: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/base_ms20000_sharded` (`circuit_tracer_features/`)
+- HF: `siddharthmb/2026.TA.features_gemma-2-2b_gemmascope_width_16k_average_l0_76_ms20000_ml1024_tk10_h5609948b210f`
+
+⚠️ The fine-tuned run changed **layers 0/24/25**, so on the `:8051` (fine-tuned) side those 3 layers' examples are from the *original* weights (stale); the other 23 layers are correct. For fully-matched examples, collect features on the fine-tuned transcoders (follow-up).
+
+Equivalent manual command (note the subcommand is `start-server`, not `serve`; point `--features_dir` at the `circuit_tracer_features/` subdir):
 
 ```bash
 OUT=/nlp/scr/siddharth/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260709_145430_16118628
-uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/original"  --port 8050
-uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/finetuned" --port 8051
+FEAT=/nlp/scr/siddharth/transcoder-adapters/feature_data/base_ms20000_sharded/circuit_tracer_features
+uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/original"  --features_dir "$FEAT" --port 8050
+uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/finetuned" --features_dir "$FEAT" --port 8051
 ```
 
 Then from your laptop: `ssh -L 8050:localhost:8050 -L 8051:localhost:8051 <node>` and open `http://localhost:8050` (original) / `http://localhost:8051` (fine-tuned).
