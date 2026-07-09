@@ -116,6 +116,18 @@ Code: [`analysis/attribution/analyze_graph_clarity.py`](../../analysis/attributi
 - **Task 4 (clarity):** error nodes are only **~2.7%** of feature+error nodes — the base GemmaScope graphs stay **feature-dominated and clean** even though Exp 1 shows the reconstruction degrades on shifted inputs. So the FVU shift, while real, does not blow up graph interpretability at these node thresholds.
 - **Task 2 (difference circuits):** the adapter contributes only ~4–5% of feature nodes, but its *content-token* work jumps ~5× on divergent prompts (adapter_content 21.6 vs 4.0) — the difference circuit fires exactly where base and instruct diverge.
 
+### Circuit-tracer graphs: original vs fine-tuned transcoders ✅
+
+Code: [`analysis/attribution/compare_finetuned_transcoder_graphs.py`](../../analysis/attribution/compare_finetuned_transcoder_graphs.py) (runners `sh/slurm_batch_compare_finetuned_graphs.sh`). Builds each prompt's attribution graph twice on the base model — pretrained GemmaScope vs the fine-tuned layers 0/24/25 patched in — and compares error-node fraction (job 16118628, 3 `interesting_small` prompts):
+
+| prompt | error-frac original → fine-tuned |
+|---|---|
+| bomb_refusal_help_I | 0.253 → **0.239** |
+| capital_colesseum | 0.275 → **0.261** |
+| capital_colesseum_mispelling | 0.273 → **0.260** |
+
+Fine-tuning **just 3 of 26 layers** consistently lowers the error-node fraction (~5% relative) — fewer MLP-reconstruction-error nodes, more of the graph carried by interpretable features. So the fine-tune improves the actual graphs, not just FVU. Serve side by side: `circuit-tracer serve --graph_file_dir <out>/original --port 8050` and `.../finetuned --port 8051` (see `my_notes/07-09-26.md` for the full commands).
+
 ## Next steps
 
 - **Push L25 further** — more tokens / a second epoch, or also fine-tune the threshold, to fully close the last-layer gap; then export the fine-tuned set to circuit-tracer and re-run graphs.
