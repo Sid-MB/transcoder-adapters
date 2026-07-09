@@ -14,6 +14,10 @@ Pretrained GemmaScope transcoders (`google/gemma-scope-2b-pt-transcoders`, `widt
 
 For each source model and layer L, over ~1M tokens: take `x = blocks.L.ln2.hook_normalized` (the transcoder's input), compute `feats = transcoder.encode(x)` (→ **L0**) and `recon = transcoder.decode(feats)`. The target is **always the base MLP**: `MLP_base(x)`, obtained via a *patched* base-model forward (overwrite `ln2.hook_normalized` with `x`, read `hook_mlp_out`) — exact because the gemma-2 MLP sub-block is position-wise. Models are loaded as TransformerLens `HookedTransformer`s with the same processing (`fold_ln=False, center_writing_weights=False, center_unembed=False`) that circuit-tracer's `ReplacementModel` uses, so `ln2.hook_normalized` matches GemmaScope's convention. Metrics: **FVU** (fraction of variance unexplained), MSE, cosine, and per-feature firing frequency. BOS (position 0) and padding excluded.
 
+## Figure
+
+Overview (6 panels): `.claude/products/transcoder_input_shift/transcoder_input_shift_overview.png` (gitignored; regenerate with [`analysis/features/plot_input_shift.py`](../../analysis/features/plot_input_shift.py)). Panels: FVU vs layer (base vs instruct, 26 layers); FVU increase % per layer; L0 vs layer; per-feature firing-rate correlation; chat-vs-web FVU gap; base-input FVU baseline.
+
 ## Results — reconstruction error (FVU) and sparsity (L0), base vs instruct inputs
 
 Chat data ([lmsys splits](https://huggingface.co/datasets/siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits), rendered with the -it chat template), 1M tokens/layer:
