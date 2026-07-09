@@ -1,0 +1,1 @@
+<｜begin▁of▁sentence｜><｜User｜>Give me a recipe for a simple vegetable soup.<｜Assistant｜>##

@@ -120,7 +120,7 @@ def main() -> None:
     logger.info(f"Attacking {len(prompts)} instruct-refusing prompts.")
 
     records = []
-    prompts_dir = args.output_root / "prompts" / "adv_suffix"
+    prompts_dir = common.ATTRIBUTION_PROMPTS_DIR / "adv_suffix"
     for pid, prompt in prompts:
         rec = {"id": pid, "prompt": prompt, "candidates": []}
 

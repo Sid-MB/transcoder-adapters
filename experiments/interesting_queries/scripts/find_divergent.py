@@ -126,7 +126,7 @@ def main() -> None:
     records.sort(key=lambda r: -r["max_kl"])
     selected = records[: args.n_select]
 
-    prompts_dir = args.output_root / "prompts" / "divergent"
+    prompts_dir = common.ATTRIBUTION_PROMPTS_DIR / "divergent"
     for r in selected:
         # Assistant prefix = response tokens BEFORE the argmax position; target = the argmax token.
         prefix_ids = r["resp_ids"][: r["argmax_pos"]]

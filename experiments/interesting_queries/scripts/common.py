@@ -32,6 +32,13 @@ from models.tokens import _input_ids_from_chat_template_output
 BASE_MODEL = "google/gemma-2-2b"
 INSTRUCT_MODEL = "google/gemma-2-2b-it"
 
+# Finder-emitted prompts land in the SHARED attribution prompt library (not just under
+# experiments/), so they're discoverable + reusable alongside interesting_small/comprehensive
+# and future finder runs keep adding here. Per-type subdirs keep each set individually
+# traceable by run_combined_attribution (which takes one flat dir of .txt files).
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ATTRIBUTION_PROMPTS_DIR = REPO_ROOT / "analysis" / "attribution" / "prompts" / "interesting_queries"
+
 # DeepSeek chat markers used by the .txt prompt files (run_attribution re-renders them with the
 # actual model's chat template when --prompt_format chat is passed).
 DEEPSEEK_BOS_TOKEN = "<｜begin▁of▁sentence｜>"

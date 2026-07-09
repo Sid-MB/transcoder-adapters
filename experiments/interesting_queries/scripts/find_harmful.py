@@ -101,7 +101,7 @@ def main() -> None:
     for r in records:
         r["selected"] = r["id"] in sel_ids
 
-    prompts_dir = args.output_root / "prompts" / "harmful"
+    prompts_dir = common.ATTRIBUTION_PROMPTS_DIR / "harmful"
     for r in selected:
         common.write_prompt_txt(prompts_dir / f"{r['id']}.txt", r["prompt"], "", r["target_token"])
 
