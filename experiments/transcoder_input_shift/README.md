@@ -36,6 +36,8 @@ Web data ([fineweb-1m-sample](https://huggingface.co/datasets/science-of-finetun
 | 18 | 0.320 | 0.348 | +9% |
 | 25 | 0.177 | 0.406 | **+130%** |
 
+Full 26-layer depth profile (chat, 500k tokens/layer, job 16113808) confirms and localizes the pattern: instruct FVU ≥ base FVU at **every** layer. The degradation is concentrated at the **endpoints** — L0 **+33%**, L24 **+32%**, L25 **+104%** — while middle layers sit at ~+5–13% (a couple mid-layers are within ±1%, i.e. noise). Base FVU itself peaks mid-stack (L12 = 0.50) and is lowest at the ends (L0 = 0.08, L25 = 0.15). So the input shift hurts reconstruction most exactly where the transcoders are otherwise most accurate (first/last layers).
+
 ### Per-feature firing-frequency drift (base vs instruct)
 
 Fire-set Jaccard ≈ 1.0 at every layer (the *same* dense features fire in both configs), but the per-feature firing-**rate** Pearson r falls with depth — the same features fire at drifted rates:
@@ -66,6 +68,7 @@ Individual features move sharply, e.g. chat L25 `f13822`: fires on 35% of base t
 | smoke | 16113462 | chat, L0, 8k tok | `…/transcoder_input_shift/gemmascope_width_16k_average_l0_76_base-instruct_20260709_024443_16113462` | — |
 | **chat** | 16113538 | chat, 5 layers, 1M tok | `…_20260709_024942_16113538` | [kqlkler4](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/kqlkler4) |
 | **web** | 16113604 | fineweb, 5 layers, 1M tok | `…_20260709_030301_16113604` | [259j6xnp](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/259j6xnp) |
+| **all-layers** | 16113808 | chat, all 26 layers, 500k tok | `…_20260709_031454_16113808` | [i5yt4w7e](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/i5yt4w7e) |
 
 Output root: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/transcoder_input_shift/` (`$LARGE_ARTIFACTS_DIR=/nlp/scr/siddharth`). Each run dir has `results.json`, `summary.md`, `per_feature_fire_freq.npz`, `fire_freq_drift.{json,md}`, `gemmascope_config.json`. Slurm logs: `logs/transcoder_input_shift/*_{16113462,16113538,16113604}.{out,err}`.
 
@@ -85,6 +88,6 @@ uv run --no-sync python -m analysis.features.analyze_fire_freq_drift --run_dir <
 
 ## Next steps
 
-- **Re-fine-tune** the last-layer (and mid-layer) transcoders on instruct-distribution inputs and re-measure FVU/L0 — quantify how much the gap closes.
-- **All-26-layer** depth profile (currently a 5-layer sample) for the full picture.
+- **Re-fine-tune** the transcoders on instruct-distribution inputs (loss `‖transcoder(x) − MLP_base(x)‖`, `x` = instruct hidden states) and re-measure FVU/L0 — prioritize the endpoints (L0, L24, L25), where the input-shift gap is +32–104%. Quantify how much the gap closes.
+- ✅ **All-26-layer** depth profile — done (job 16113808); pinpoints the endpoints as the worst-hit layers.
 - **Experiment 2** (deferred): compare circuit graphs / pivot to ReLP neuron-level attribution using base MLP neurons directly ([`analysis/attribution/relp_model.py`](../../analysis/attribution/relp_model.py)).
