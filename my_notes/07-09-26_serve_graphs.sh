@@ -12,13 +12,14 @@
 # both). From your laptop, forward the ports and open the two URLs:
 #   ssh -L 8050:localhost:8050 -L 8051:localhost:8051 <this-node>
 #   http://localhost:8050  (original)   http://localhost:8051  (fine-tuned)
-set -euo pipefail
+# POSIX sh compatible (works under bash or dash / `sh script.sh`).
+set -eu
 
 GRAPH_DIR="${GRAPH_DIR:-/nlp/scr/siddharth/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260709_145430_16118628}"
 ORIG_PORT="${ORIG_PORT:-8050}"
 FT_PORT="${FT_PORT:-8051}"
 
-if [[ ! -d "$GRAPH_DIR/original" || ! -d "$GRAPH_DIR/finetuned" ]]; then
+if [ ! -d "$GRAPH_DIR/original" ] || [ ! -d "$GRAPH_DIR/finetuned" ]; then
   echo "ERROR: expected $GRAPH_DIR/{original,finetuned} to exist. Set GRAPH_DIR to a compare_finetuned_transcoder_graphs run dir." >&2
   exit 1
 fi
