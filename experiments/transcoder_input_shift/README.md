@@ -90,8 +90,42 @@ Output root: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/transcoder_input_shift/` 
 uv run --no-sync python -m analysis.features.analyze_fire_freq_drift --run_dir <run_dir>
 ```
 
+## Follow-up experiments (tasks 1, 2, 4)
+
+### Task 1 — Re-fine-tune the transcoders on instruct inputs ✅
+
+Code: [`analysis/features/finetune_transcoder_shift.py`](../../analysis/features/finetune_transcoder_shift.py) (runners `sh/slurm_batch_finetune_transcoder_shift.sh`, `run_on_gpu/run_finetune_transcoder_shift.sh`). Fine-tuned the worst-hit endpoint layers (0, 24, 25) starting from the pretrained GemmaScope weights, minimizing `MSE(transcoder(x), MLP_base(x))` with `x` = instruct `ln2.hook_normalized`, ~2M instruct tokens, lr 1e-4, JumpReLU threshold frozen (preserves L0). FVU/L0 on 200k held-out instruct tokens, before vs after (job 16114293, [wandb 61xzqknr](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/61xzqknr)):
+
+| layer | FVU before (instruct) | FVU after | ΔFVU | base-input FVU (target) |
+|---|---|---|---|---|
+| 0 | 0.108 | **0.075** | −31% | 0.082 |
+| 24 | 0.281 | **0.221** | −22% | 0.21 |
+| 25 | 0.317 | **0.212** | −33% | 0.15 |
+
+**A short (2M-token, ~14 min) re-fine-tune closes most of the shift**: L0 and L24 recover to their base-input reconstruction level; L25 improves −33% (still above base — more tokens/epochs would close it further). Figure: `.claude/products/transcoder_input_shift/transcoder_finetune_before_after.png`. Fine-tuned params saved as `finetuned_layer_{0,24,25}.safetensors` in the run dir. This confirms the "re-fine-tune the transcoders" fix is cheap and effective.
+
+### Tasks 2 & 4 — Difference circuits + graph clarity ✅
+
+Code: [`analysis/attribution/analyze_graph_clarity.py`](../../analysis/attribution/analyze_graph_clarity.py) over the existing base-vs-adapter combined-attribution graphs ([`experiments/base_vs_adapter_circuit_trace/`](../base_vs_adapter_circuit_trace/), 28 prompts). The graph-level analog of reconstruction failure is the **error node** (`true_mlp_out − transcoder_out`); a graph dominated by feature nodes is "clean". Result (`graph_clarity.json`):
+
+| bucket | error-node fraction | adapter fraction | adapter content / template features |
+|---|---|---|---|
+| agree | 0.028 | 0.039 | 4.0 / 40.1 |
+| diverge | 0.026 | 0.048 | 21.6 / 39.4 |
+
+- **Task 4 (clarity):** error nodes are only **~2.7%** of feature+error nodes — the base GemmaScope graphs stay **feature-dominated and clean** even though Exp 1 shows the reconstruction degrades on shifted inputs. So the FVU shift, while real, does not blow up graph interpretability at these node thresholds.
+- **Task 2 (difference circuits):** the adapter contributes only ~4–5% of feature nodes, but its *content-token* work jumps ~5× on divergent prompts (adapter_content 21.6 vs 4.0) — the difference circuit fires exactly where base and instruct diverge.
+
 ## Next steps
 
-- **Re-fine-tune** the transcoders on instruct-distribution inputs (loss `‖transcoder(x) − MLP_base(x)‖`, `x` = instruct hidden states) and re-measure FVU/L0 — prioritize the endpoints (L0, L24, L25), where the input-shift gap is +32–104%. Quantify how much the gap closes.
-- ✅ **All-26-layer** depth profile — done (job 16113808); pinpoints the endpoints as the worst-hit layers.
-- **Experiment 2** (deferred): compare circuit graphs / pivot to ReLP neuron-level attribution using base MLP neurons directly ([`analysis/attribution/relp_model.py`](../../analysis/attribution/relp_model.py)).
+- **Push L25 further** — more tokens / a second epoch, or also fine-tune the threshold, to fully close the last-layer gap; then export the fine-tuned set to circuit-tracer and re-run graphs.
+- **Experiment 2** (deferred): pivot to ReLP neuron-level attribution using base MLP neurons directly ([`analysis/attribution/relp_model.py`](../../analysis/attribution/relp_model.py)).
+
+## Follow-up artifacts
+
+| run | job | what | output dir | wandb |
+|---|---|---|---|---|
+| ft smoke | 16114278 | L25, 20k tok | `…/transcoder_input_shift_finetune/ft_..._L25_20260709_041359_16114278` | — |
+| **re-finetune** | 16114293 | L0/24/25, 2M tok | `…/transcoder_input_shift_finetune/ft_..._L0-24-25_20260709_041813_16114293` | [61xzqknr](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/61xzqknr) |
+
+Figures under `.claude/products/transcoder_input_shift/` (gitignored): `transcoder_input_shift_overview.png`, `transcoder_finetune_before_after.png`.

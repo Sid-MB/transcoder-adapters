@@ -46,6 +46,7 @@ def main() -> None:
     ap.add_argument("--all_layers_dir", type=Path, required=True, help="26-layer chat run dir.")
     ap.add_argument("--chat_dir", type=Path, required=True, help="5-layer chat run dir.")
     ap.add_argument("--web_dir", type=Path, required=True, help="5-layer web (fineweb) run dir.")
+    ap.add_argument("--finetune_dir", type=Path, default=None, help="Optional re-finetune run dir (finetune_report.json) for a before/after panel.")
     ap.add_argument("--out_dir", type=Path, default=Path(".claude/products/transcoder_input_shift"))
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -129,6 +130,30 @@ def main() -> None:
     out = args.out_dir / "transcoder_input_shift_overview.png"
     fig.savefig(out, dpi=130, bbox_inches="tight")
     print(f"wrote {out}")
+
+    # Separate before/after re-finetune figure.
+    if args.finetune_dir is not None:
+        rep = json.load(open(args.finetune_dir / "finetune_report.json"))
+        fl = rep["config"]["layers"]
+        before = [rep["before"][str(x)]["fvu"] for x in fl]
+        after = [rep["after"][str(x)]["fvu"] for x in fl]
+        # base-input FVU (Exp 1 target) at those layers, from the all-layers run
+        base_ref = [al["base"]["fvu"][al["layers"].index(x)] for x in fl]
+        fig2, ax = plt.subplots(figsize=(8, 5))
+        xi = range(len(fl)); w = 0.28
+        ax.bar([x - w for x in xi], before, w, color=INST_C, label="instruct, before FT")
+        ax.bar([x for x in xi], after, w, color="#f59e0b", label="instruct, after FT")
+        ax.bar([x + w for x in xi], base_ref, w, color=BASE_C, alpha=0.7, label="base (target level)")
+        ax.set_xticks(list(xi)); ax.set_xticklabels([f"L{x}" for x in fl])
+        ax.set_ylabel("FVU"); ax.set_title("Re-fine-tuning transcoders on instruct inputs closes the gap\n(2M tokens; target = MLP_base(x))", fontweight="bold")
+        for i in xi:
+            d = 100 * (after[i] - before[i]) / before[i]
+            ax.annotate(f"{d:+.0f}%", (i, after[i]), ha="center", va="bottom", fontsize=9, fontweight="bold")
+        ax.legend(); ax.grid(alpha=0.3, axis="y")
+        fig2.tight_layout()
+        out2 = args.out_dir / "transcoder_finetune_before_after.png"
+        fig2.savefig(out2, dpi=130, bbox_inches="tight")
+        print(f"wrote {out2}")
 
 
 if __name__ == "__main__":
