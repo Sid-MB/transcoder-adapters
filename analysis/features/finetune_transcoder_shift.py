@@ -11,7 +11,14 @@ script does exactly that, per layer:
     x        = instruct model's blocks.L.ln2.hook_normalized   (the shifted input)
     target   = MLP_base(x)                                     (what the transcoder imitates,
                                                                 via a patched base forward)
-    loss     = MSE( transcoder.forward(x), target )            (+ optional threshold training)
+    loss     = MSE( transcoder(x), target ) + l1_coeff * L1(features)
+
+The optional decoder-norm-weighted L1 sparsity penalty (``--l1_coeff``, matching
+``models/gemma2_transcoder.py``) is off by default. Without it, reconstruction-only fine-tuning
+lets L0 drift up (the frozen JumpReLU threshold no longer matches the shifted W_enc/b_enc, so more
+features cross it): observed L25 60->81 vs base 65. With it, activations are pushed back under the
+threshold so L0 stays near the base operating point while FVU still improves. Recommended for
+longer runs (e.g. ~10M tokens); tune l1_coeff so after-FT L0 ~= base L0.
 
 Only the selected transcoders' parameters (W_enc, b_enc, W_dec, b_dec; threshold optional and
 frozen by default so the L0 operating point is preserved) are trained; both models stay frozen
@@ -116,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max_length", type=int, default=512)
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--lr", type=float, default=1e-4, help="Adam learning rate for the transcoder params.")
+    p.add_argument("--l1_coeff", type=float, default=0.0, help="Sparsity penalty coefficient on the decoder-norm-weighted L1 of the (post-JumpReLU) features. 0 = pure reconstruction (L0 drifts up as W_enc/b_enc shift under the frozen threshold). >0 holds L0 near the base operating point while reconstruction improves; tune so after-FT L0 ~= base L0 (try ~1e-3 and adjust). Recommended for longer runs (e.g. 10M tokens).")
     p.add_argument("--train_threshold", action="store_true", help="Also train the JumpReLU threshold (changes L0). Off by default to preserve the sparsity operating point.")
     p.add_argument("--device", default="cuda")
     p.add_argument("--dtype", default="bf16")
@@ -193,11 +201,24 @@ def main() -> None:
         target_by_layer = compute_base_target(base_model, toks, x_by_layer, layers, args.feature_input_hook, args.feature_output_hook)
         optimizer.zero_grad()
         loss = torch.zeros((), device=device, dtype=torch.float32)
+        mse_sum = l1_sum = l0_sum = 0.0
         for layer in layers:
             x = x_by_layer[layer].reshape(-1, d_model)[mask].float()
             target = target_by_layer[layer].reshape(-1, d_model)[mask].float()
-            recon = transcoders[layer].forward(x)
-            loss = loss + torch.nn.functional.mse_loss(recon, target)
+            feats = transcoders[layer].encode(x)                       # post-JumpReLU, [N, n_features]
+            recon = transcoders[layer].decode(feats, x)
+            mse = torch.nn.functional.mse_loss(recon, target)
+            loss = loss + mse
+            mse_sum += mse.item()
+            if args.l1_coeff > 0:
+                # Decoder-norm-weighted L1 (matches models/gemma2_transcoder.py sparsity loss):
+                # sum_i ||W_dec_i|| * feat_i, mean over tokens. Penalizes feature magnitude ->
+                # pushes activations under the frozen JumpReLU threshold -> holds L0 down.
+                dec_norms = transcoders[layer].W_dec.float().norm(dim=1)  # [n_features]
+                l1 = (feats * dec_norms).sum(dim=-1).mean()
+                loss = loss + args.l1_coeff * l1
+                l1_sum += l1.item()
+            l0_sum += (feats > 0).float().sum(dim=-1).mean().item()
         loss.backward()
         optimizer.step()
         n = int(mask.sum().item())
@@ -205,9 +226,9 @@ def main() -> None:
         step += 1
         wandb_logger.log_batch(n_seqs=len(batch), n_tokens=n)
         if args.wandb:
-            wandb_logger._wandb.log({"train/loss": loss.item(), "train/tokens": trained_tokens})
+            wandb_logger._wandb.log({"train/loss": loss.item(), "train/mse": mse_sum, "train/l1": l1_sum, "train/l0": l0_sum / len(layers), "train/tokens": trained_tokens})
         if step % 25 == 0:
-            logger.info("step %d | %d/%d tok | loss=%.5f | %.0f tok/s", step, trained_tokens, args.train_tokens, loss.item(), trained_tokens / max(1e-6, time.time() - t0))
+            logger.info("step %d | %d/%d tok | loss=%.5f mse=%.5f l1=%.4f l0=%.1f | %.0f tok/s", step, trained_tokens, args.train_tokens, loss.item(), mse_sum, l1_sum, l0_sum / len(layers), trained_tokens / max(1e-6, time.time() - t0))
 
     # --- AFTER eval ---
     logger.info("Eval AFTER fine-tuning...")
@@ -241,7 +262,8 @@ def write_summary(output_dir: Path, report: dict, layers, args) -> None:
         f"# Transcoder re-fine-tune on instruct inputs — {report['config']['scan_name']}",
         "",
         f"Fine-tuned GemmaScope `{args.gemmascope_width}`/`{args.gemmascope_l0}` transcoders at layers "
-        f"{layers} on ~{args.train_tokens:,} instruct tokens (loss = MSE(transcoder(x), MLP_base(x)), "
+        f"{layers} on ~{args.train_tokens:,} instruct tokens (loss = MSE(transcoder(x), MLP_base(x))"
+        f"{f' + {args.l1_coeff:g}*L1(features)' if args.l1_coeff > 0 else ' (no sparsity penalty)'}, "
         f"x = instruct ln2.hook_normalized; threshold {'trained' if args.train_threshold else 'frozen'}). "
         f"FVU/L0 on {args.eval_tokens:,} held-out instruct tokens, before vs after.",
         "",
