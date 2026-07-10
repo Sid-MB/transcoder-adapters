@@ -290,6 +290,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--hf_feature_repo_id", type=str, default=None, help="Explicit HF model repo ID for uploaded features (default: deterministic name from base model, GemmaScope, data, and collection hyperparameters).")
     parser.add_argument("--hub_org", type=str, default=None, help="HF namespace/org for the uploaded feature repo (default: authenticated user).")
+    parser.add_argument("--finetuned_transcoder_dir", type=str, default=None, help="Optional dir with finetuned_layer_*.safetensors (from finetune_transcoder_shift.py). If set, those layers' transcoder weights (W_enc/W_dec/b_enc/b_dec) are patched into the loaded GemmaScope set before collection, so the examples reflect the FINE-TUNED features. Use with --finetuned_layers.")
+    parser.add_argument("--finetuned_layers", nargs="+", type=int, default=None, help="Layers to patch from --finetuned_transcoder_dir (e.g. 0 24 25). The other layers keep the pretrained GemmaScope weights.")
     add_collection_wandb_args(parser)
 
     parser.epilog = textwrap.dedent(
@@ -344,6 +346,11 @@ def load_base_replacement_model(args: argparse.Namespace, output_dir: Path):
         device=device_obj,
         dtype=dtype_obj,
     )
+    if getattr(args, "finetuned_transcoder_dir", None) and getattr(args, "finetuned_layers", None):
+        from analysis.attribution.compare_finetuned_transcoder_graphs import patch_transcoders
+
+        patch_transcoders(model.transcoders, Path(args.finetuned_transcoder_dir), args.finetuned_layers, device_obj, dtype_obj)
+        logger.info("Patched fine-tuned weights into layers %s from %s", args.finetuned_layers, args.finetuned_transcoder_dir)
     model.eval()
     return model, device_obj
 

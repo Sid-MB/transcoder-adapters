@@ -164,6 +164,23 @@ def main() -> None:
     patch_transcoders(model.transcoders, args.finetune_dir, args.ft_layers, device, dtype)
     finetuned = run_graphs(model=model, prompts=prompts, output_dir=output_dir / "finetuned", run_name="finetuned", args=args, prompt_tokenizer=prompt_tokenizer, model_type=model_type)
 
+    # Re-tag with LOCAL scans (leading '/') so the frontend loads feature examples from the
+    # local --features_dir, add dropdown title prefixes, and flag the re-collected FT layers.
+    from analysis.attribution.retag_graphs_for_local_features import retag_graph, retag_metadata_index
+
+    ft_tag = "-".join(map(str, args.ft_layers))
+    for sub, scan, title, marks in (
+        ("original", "/gemmascope_original", "[ORIGINAL GemmaScope]", set()),
+        ("finetuned", f"/gemmascope_finetuned_L{ft_tag}", f"[FINE-TUNED L{ft_tag}]", set(args.ft_layers)),
+    ):
+        gdir = output_dir / sub
+        for gp in sorted(gdir.glob("*.json")):
+            if gp.name == "graph-metadata.json":
+                continue
+            retag_graph(gp, scan=scan, title_prefix=title, mark_layers=marks, mark_text="re-collected on fine-tuned transcoder")
+        if (gdir / "graph-metadata.json").exists():
+            retag_metadata_index(gdir / "graph-metadata.json", scan=scan, title_prefix=title)
+
     # Compare.
     comparison = {"config": {"finetune_dir": str(args.finetune_dir), "ft_layers": args.ft_layers, "scan_name": args.scan_name, "output_dir": str(output_dir)}, "by_prompt": {}}
     lines = ["# Circuit-tracer graphs: original vs fine-tuned GemmaScope transcoders", "", f"Base model `{args.base_model}`, fine-tuned layers {args.ft_layers}. Error node = MLP reconstruction error; lower error fraction = cleaner graph.", "", "| prompt | orig error-frac | ft error-frac | orig err/feat | ft err/feat |", "|---|---|---|---|---|"]
