@@ -28,6 +28,7 @@ viz = [
     # circuit-tracer currently requires huggingface-hub<1.0,
     # while Gemma4 support in transformers main requires huggingface-hub>=1.5.
     "circuit-tracer",
+    "neuronpedia>=1.2.0",
 ]
 vllm = [
     "vllm>=0.20.0",
@@ -37,7 +38,7 @@ dev = [
 ]
 
 all = [
-    "transcoder-adapters[analysis,vllm]",
+    "transcoder-adapters[analysis,vllm,viz]",
 ]
 
 [tool.uv.sources]

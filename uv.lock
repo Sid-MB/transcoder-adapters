@@ -2507,6 +2507,19 @@ wheels = [
 ]
 
 [[package]]
+name = "neuronpedia"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dotenv" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/83/a2e8afeeca18f57d4e91922549222416cceb1a3047b417e0378a663eea1c/neuronpedia-1.2.0.tar.gz", hash = "sha256:9ecd02b7f5f5374b5a6595d4b8f6b5641d56428293693051e9927fc7a809ca21", size = 41944, upload-time = "2025-11-22T06:54:20.104Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/d8/3546abf55cc4e10b4c2f42859877d27c218c9aeff967b0dd56ab4e5b9949/neuronpedia-1.2.0-py3-none-any.whl", hash = "sha256:9a9e865fa5af4128de200211fea7d9395f8214a8548b50f799f3a004f2126cf9", size = 61466, upload-time = "2025-11-22T06:54:19.222Z" },
+]
+
+[[package]]
 name = "ninja"
 version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4942,6 +4955,8 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "circuit-tracer" },
+    { name = "neuronpedia" },
     { name = "openai" },
     { name = "python-dotenv" },
     { name = "vllm" },
@@ -4955,6 +4970,7 @@ dev = [
 ]
 viz = [
     { name = "circuit-tracer" },
+    { name = "neuronpedia" },
 ]
 vllm = [
     { name = "vllm" },
@@ -4966,6 +4982,7 @@ requires-dist = [
     { name = "circuit-tracer", marker = "extra == 'viz'", git = "https://github.com/decoderesearch/circuit-tracer" },
     { name = "datasets", specifier = ">=4.8.5" },
     { name = "huggingface-hub", specifier = "<2.0" },
+    { name = "neuronpedia", marker = "extra == 'viz'", specifier = ">=1.2.0" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "openai", marker = "extra == 'analysis'", specifier = ">=2.33.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -4975,7 +4992,7 @@ requires-dist = [
     { name = "sentencepiece", specifier = ">=0.2.1" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "tqdm", specifier = ">=4.67.3" },
-    { name = "transcoder-adapters", extras = ["analysis", "vllm"], marker = "extra == 'all'" },
+    { name = "transcoder-adapters", extras = ["analysis", "vllm", "viz"], marker = "extra == 'all'" },
     { name = "transformers", specifier = "<5.0" },
     { name = "vllm", marker = "extra == 'vllm'", specifier = ">=0.20.0" },
     { name = "wandb", specifier = ">=0.26.1" },
