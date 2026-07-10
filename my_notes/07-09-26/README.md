@@ -78,6 +78,16 @@ Fine-tuned endpoint layers 0/24/25 from pretrained GemmaScope weights, loss `MSE
 
 **Did it work?** Yes for reconstruction fidelity: measured on held-out tokens, the before-eval reproduced the Exp 1 instruct numbers (calibrated baseline), and after converged *to* the base target level (not past it). Caveats: (1) still only an FVU test — had NOT re-run circuit-tracer graphs with the fine-tuned set to confirm graphs get cleaner (in progress, see below); (2) L0 operating point drifted up (threshold frozen, weights push more pre-acts over threshold), though still near base's L0; (3) tested on chat held-out only.
 
+### Task 1b — sparsity penalty (keep L0 pinned while FVU improves)
+
+**The problem.** The reconstruction-only fine-tune above closed the FVU gap but let **L0 (active features per token)** drift upward — L24 60→67, L25 60→81 vs a base operating point of 56/65 — because we optimized only reconstruction while freezing the JumpReLU threshold, so the shifted encoder pushes more features over the fixed gate. Sparsity (interpretability) is the whole point of a transcoder, so an unpinned L0 is undesirable, and it would only get worse over a longer (e.g. 10M-token) run.
+
+**What we did.** Added an optional **decoder-norm-weighted L1 sparsity penalty** on the post-JumpReLU features (`loss = MSE(transcoder(x), MLP_base(x)) + l1_coeff·Σ_i ‖W_dec_i‖·feat_i`, matching the project's own convention), which pushes activation magnitudes back under the threshold. Sweeping `l1_coeff` revealed it is **layer-dependent**: a global penalty *hurts* layers already at base L0 — **layer 0** (whose no-penalty L0 was 81 ≈ base 80) over-sparsified to L0 = 32 with FVU getting *worse* — so the fix is a **per-layer coefficient**: **0 on layer 0, 1e-3 on the layers that overshoot (24, 25)**.
+
+**The result** (final run, `l1_coeff = [0, 1e-3, 1e-3]`, 2M tokens, [wandb 9o1ebt6v](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/9o1ebt6v)): every layer now keeps its reconstruction gain **and** sits on the base sparsity. FVU: L0 0.108→0.075 (−31%), L24 0.281→0.228 (−19%), L25 0.317→0.221 (−30%); L0: L0 72→81 (base 80), L24 60→**56.6** (base 56), L25 60→**68.2** (base 65) — the overshoot (67/81) is gone at a ~3% FVU cost on L24/L25. Figure: `figures/transcoder_finetune_sparsity_comparison.png` (FVU + L0, 4 bars/layer: before · after-no-penalty · after-+L1 · base). Code: [`analysis/features/finetune_transcoder_shift.py`](../../analysis/features/finetune_transcoder_shift.py) (`--l1_coeff`, one value or per-layer), plot [`analysis/features/plot_finetune_sparsity_comparison.py`](../../analysis/features/plot_finetune_sparsity_comparison.py). Data: `data/finetune_report_l1_perlayer.json`.
+
+**One-sentence version.** Adding a per-layer L1 sparsity penalty (0 on layer 0, 1e-3 on 24/25) to the transcoder fine-tune holds L0 at the base operating point while preserving almost all of the reconstruction (FVU) gain — the recommended recipe for the future 10M-token run.
+
 ### Tasks 2 & 4 — difference circuits + graph clarity
 
 From the existing base-vs-adapter combined-attribution graphs ([`experiments/base_vs_adapter_circuit_trace/`](../../experiments/base_vs_adapter_circuit_trace/), 28 prompts) via `analyze_graph_clarity.py`. Error node = `true_mlp_out − transcoder_out` (the graph-level analog of reconstruction failure).

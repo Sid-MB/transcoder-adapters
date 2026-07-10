@@ -1,0 +1,88 @@
+{
+  "config": {
+    "base_model": "google/gemma-2-2b",
+    "instruct_model": "google/gemma-2-2b-it",
+    "layers": [
+      0,
+      24,
+      25
+    ],
+    "gemmascope_repo": "google/gemma-scope-2b-pt-transcoders",
+    "gemmascope_width": "width_16k",
+    "gemmascope_l0": "average_l0_76",
+    "gemmascope_l0_match": "nearest",
+    "gemmascope_n_layers": 26,
+    "feature_input_hook": "ln2.hook_normalized",
+    "feature_output_hook": "hook_mlp_out",
+    "val_data": [
+      "chat:siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
+    ],
+    "prompt_tokenizer_model": "google/gemma-2-2b-it",
+    "train_tokens": 2000000,
+    "eval_tokens": 200000,
+    "max_length": 512,
+    "batch_size": 16,
+    "lr": 0.0001,
+    "l1_coeff": [
+      0.0,
+      0.001,
+      0.001
+    ],
+    "train_threshold": false,
+    "device": "cuda",
+    "dtype": "bf16",
+    "output_dir": "/nlp/scr/siddharth/transcoder-adapters/transcoder_input_shift_finetune/ft_gemmascope_width_16k_average_l0_76_L0-24-25_20260710_025814_16123724",
+    "wandb": true,
+    "wandb_project": null,
+    "wandb_entity": null,
+    "wandb_run_name": null,
+    "wandb_log_every": 10,
+    "scan_name": "google/gemma-scope-2b-pt-transcoders/width_16k/average_l0_76_nearest"
+  },
+  "before": {
+    "0": {
+      "n_tokens": 201318,
+      "l0_mean": 72.36830288399447,
+      "fvu": 0.10811507960349186,
+      "mse_mean": 0.0773590473802328,
+      "cosine_mean": 0.9524958588393211
+    },
+    "24": {
+      "n_tokens": 201318,
+      "l0_mean": 59.8229765843094,
+      "fvu": 0.28133704350505667,
+      "mse_mean": 5.1767951774843715,
+      "cosine_mean": 0.9070349012768308
+    },
+    "25": {
+      "n_tokens": 201318,
+      "l0_mean": 59.59056318858721,
+      "fvu": 0.3166603761022258,
+      "mse_mean": 6.297984974762841,
+      "cosine_mean": 0.9359195618161472
+    }
+  },
+  "after": {
+    "0": {
+      "n_tokens": 201318,
+      "l0_mean": 80.98598734340695,
+      "fvu": 0.07465264157632857,
+      "mse_mean": 0.053415834848779216,
+      "cosine_mean": 0.9647790115264431
+    },
+    "24": {
+      "n_tokens": 201318,
+      "l0_mean": 56.58316196266603,
+      "fvu": 0.2284326666862438,
+      "mse_mean": 4.203318242590357,
+      "cosine_mean": 0.9245864889689689
+    },
+    "25": {
+      "n_tokens": 201318,
+      "l0_mean": 68.23313364925143,
+      "fvu": 0.22051685849959154,
+      "mse_mean": 4.385808791763666,
+      "cosine_mean": 0.952122848153447
+    }
+  }
+}
