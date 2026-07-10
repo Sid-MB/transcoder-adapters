@@ -14,6 +14,16 @@ FEATURE_ID_PATCH_NEW = (
     "var sourceFeaturePrefix = d.source_model ? `${d.source_model}_` : ''\n"
     "      d.featureId = `${sourceFeaturePrefix}${d.layer}_${d.feature}_${d.ctx_idx}`"
 )
+# clerpUUID keys saved feature annotations. Upstream takes the first two featureId parts
+# (layer_feature), but our featureId patch above prefixes source_model, which would collapse
+# the key to model_layer — one shared annotation per layer. Drop only the trailing ctx_idx
+# instead so the key is layer_feature (plain) or model_layer_feature (overlay).
+CLERP_UUID_PATCH_OLD = "return '🤖' + parts[0] + '_' + parts[1];"
+CLERP_UUID_PATCH_NEW = "return '🤖' + parts.slice(0, -1).join('_');"
+# hClerpUpdateFn extracts the feature index from the key as parts[1]; with a source_model
+# prefix that would be the layer. The feature index is always the last part.
+CLERP_URL_PARAM_PATCH_OLD = ".map(([key, value]) => [key.split('🤖')[1].split('_')[1], value])"
+CLERP_URL_PARAM_PATCH_NEW = ".map(([key, value]) => [key.split('🤖')[1].split('_').at(-1), value])"
 LINK_GRAPH_STATS_BANNER_OLD = (
     "  var c = d3.conventions({\n"
     "    sel: cgSel.select('.link-graph').html(''),\n"
@@ -159,6 +169,25 @@ FEATURE_DETAIL_SCAN_OLD = (
 FEATURE_DETAIL_SCAN_NEW = (
     "      const scan = utilCg.nodeFeatureScan ? utilCg.nodeFeatureScan(data, d) : "
     "(data.metadata.scan?.startsWith('custom-') ? data.metadata.transcoder_list[d.layer] : data.metadata.scan);"
+)
+# Base (GemmaScope) features have public Neuronpedia pages; adapter features are ours and
+# don't. For base-source nodes, append a Neuronpedia link next to the feature title.
+# Base nodes keep their GemmaScope within-layer index in d.feature (see tag_combined_graph),
+# which is exactly Neuronpedia's feature id. The 16k scan name matches the width_16k
+# GemmaScope transcoders every overlay uses.
+FEATURE_DETAIL_NEURONPEDIA_OLD = (
+    "      const featureTitleSel = headerTopRowSel.append('div.feature-title')\n"
+    '        .html(`Feature&nbsp;<a style="color: inherit;" href="${d.url}" target="_blank">'
+    '${label}</a> <span style="font-size: 0.9em; color: #777;">Act: ${actText}</span>`)\n'
+)
+FEATURE_DETAIL_NEURONPEDIA_NEW = (
+    FEATURE_DETAIL_NEURONPEDIA_OLD
+    + "      if (d.source_model == 'base'){\n"
+    "        featureTitleSel.append('a')\n"
+    "          .at({href: `https://www.neuronpedia.org/gemma-2-2b/${d.layer}-gemmascope-transcoder-16k/${d.feature}`, target: '_blank'})\n"
+    "          .st({marginLeft: 6, fontSize: '0.85em', color: '#4a7bd0', textDecoration: 'none'})\n"
+    "          .text('Neuronpedia \\u2197')\n"
+    "      }\n"
 )
 FEATURE_HISTOGRAM_GUARD_OLD = "      if (typeof currentActivation == 'number') {"
 FEATURE_HISTOGRAM_GUARD_NEW = "      if (typeof currentActivation == 'number' && scan) {"
@@ -337,6 +366,8 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
 
     util_text = util_path.read_text()
     util_text = _replace_once(util_text, FEATURE_ID_PATCH_OLD, FEATURE_ID_PATCH_NEW, path=util_path)
+    util_text = _replace_once(util_text, CLERP_UUID_PATCH_OLD, CLERP_UUID_PATCH_NEW, path=util_path)
+    util_text = _replace_once(util_text, CLERP_URL_PARAM_PATCH_OLD, CLERP_URL_PARAM_PATCH_NEW, path=util_path)
     util_text = _replace_once(util_text, FEATURE_ROW_ICON_OLD, FEATURE_ROW_ICON_NEW, path=util_path)
     util_text = _replace_once(util_text, FEATURE_ROW_FONT_SIZE_OLD, FEATURE_ROW_FONT_SIZE_NEW, path=util_path)
     util_text = _replace_once(util_text, FEATURE_TYPE_FUNCTION_OLD, FEATURE_TYPE_FUNCTION_NEW, path=util_path)
@@ -387,6 +418,12 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         feature_detail_text,
         FEATURE_DETAIL_SCAN_OLD,
         FEATURE_DETAIL_SCAN_NEW,
+        path=feature_detail_path,
+    )
+    feature_detail_text = _replace_once(
+        feature_detail_text,
+        FEATURE_DETAIL_NEURONPEDIA_OLD,
+        FEATURE_DETAIL_NEURONPEDIA_NEW,
         path=feature_detail_path,
     )
     feature_detail_text = _replace_once(

@@ -5,7 +5,7 @@ window.utilCg = (function(){
     
     // Split featureId by underscore and take first two parts
     const parts = d.featureId.split('_');
-    return '🤖' + parts[0] + '_' + parts[1];
+    return '🤖' + parts.slice(0, -1).join('_');
   }
 
   function parseClerpUUID(str){
@@ -137,7 +137,7 @@ window.utilCg = (function(){
     // Save clerps to url param
     const currentFeatureIds = new Set(data.features.map(d => d.featureIndex.toString()))
     const clerps = Array.from(allLocalClerps.entries())
-      .map(([key, value]) => [key.split('🤖')[1].split('_')[1], value])
+      .map(([key, value]) => [key.split('🤖')[1].split('_').at(-1), value])
       .filter(d => currentFeatureIds.has(d[0]))
     util.params.set('clerps', JSON.stringify(clerps))
   }

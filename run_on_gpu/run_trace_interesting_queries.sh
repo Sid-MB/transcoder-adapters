@@ -53,5 +53,12 @@ for dir in "$PROMPTS_ROOT" "$PROMPTS_ROOT"/*/; do
 done
 
 [ "$traced_any" = 1 ] || { echo "[trace_iq] No .txt prompts found under $PROMPTS_ROOT" >&2; exit 1; }
+
+# Tag every graph with a dropdown title_prefix "[<category> · <stem>]" so the served dropdown
+# distinguishes harmful/divergent/adv_suffix (run_combined_attribution doesn't set title_prefix).
+# Idempotent + filesystem-derived, so it re-tags the full set (including freshly added prompts).
+run uv run --no-sync python -m analysis.attribution.annotate_graph_title_prefix \
+  --graph_dir "$OUT" --prompts_root "$PROMPTS_ROOT"
+
 echo "[trace_iq] Done. Graphs + cumulative graph-metadata.json in $OUT"
 echo "[trace_iq] Serve: uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir $OUT --port 8048"

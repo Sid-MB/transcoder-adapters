@@ -8,24 +8,44 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
   })
 
   // Comparison-graph addition: a small, graph-level stats banner summarizing the
-  // overall feature composition (base / adapter / error node counts). Reads from
-  // data.metadata.comparison.node_counts (written by tag_combined_graph). Renders
-  // once per graph and is skipped entirely for plain circuit-tracer graphs.
+  // overall feature composition. The bold figure is the as-built composition
+  // (data.metadata.comparison.node_counts, written by tag_combined_graph at the build
+  // node_threshold). The dim '(N shown)' is recomputed live from the rendered node set
+  // so it tracks the pruning slider. Skipped entirely for plain circuit-tracer graphs.
   if (data.metadata.comparison && data.metadata.comparison.node_counts) {
     var comparisonNodeCounts = data.metadata.comparison.node_counts
-    cgSel.select('.link-graph').select('.comparison-stats-banner').remove()
-    cgSel.select('.link-graph')
+    var shownNodeCounts = {base: 0, adapter: 0, error: 0}
+    nodes.forEach(function(node){
+      if (node.isError || node.node_shape == 'error' || (node.feature_type && node.feature_type.indexOf('error') != -1)) shownNodeCounts.error++
+      else if (node.node_shape == 'base_model' || node.source_model == 'base') shownNodeCounts.base++
+      else if (node.node_shape == 'adapter_model' || node.source_model == 'adapter') shownNodeCounts.adapter++
+    })
+    var fmtComparisonStat = function(label, glyph, built, shown){
+      return `<span>${label} ${glyph} ${built || 0} <span style='opacity:.55'>(${shown} shown)</span></span>`
+    }
+    var linkGraphSel = cgSel.select('.link-graph')
+    // Anchor the absolute banner to .link-graph without clobbering any positioning
+    // gridsnap may already have applied (only promote a static container to relative).
+    if (linkGraphSel.node() && getComputedStyle(linkGraphSel.node()).position == 'static') linkGraphSel.st({position: 'relative'})
+    linkGraphSel.select('.comparison-stats-banner').remove()
+    linkGraphSel
       .insert('div.comparison-stats-banner', ':first-child')
       .st({
+        position: 'absolute',
+        top: 2,
+        left: 40,
+        zIndex: 10,
         fontSize: 11,
         color: '#555',
-        padding: '2px 4px',
+        padding: '2px 6px',
+        background: 'rgba(245,244,238,0.85)',
+        borderRadius: '3px',
         pointerEvents: 'none',
       })
       .html([
-        `<span>Base \u2b22 ${comparisonNodeCounts.base_features || 0}</span>`,
-        `<span>Adapter \u25cf ${comparisonNodeCounts.adapter_features || 0}</span>`,
-        `<span>Error \u25b2 ${comparisonNodeCounts.error_nodes || 0}</span>`,
+        fmtComparisonStat('Base', '\u2b22', comparisonNodeCounts.base_features, shownNodeCounts.base),
+        fmtComparisonStat('Adapter', '\u25cf', comparisonNodeCounts.adapter_features, shownNodeCounts.adapter),
+        fmtComparisonStat('Error', '\u25b2', comparisonNodeCounts.error_nodes, shownNodeCounts.error),
       ].join('  \u00b7  '))
   }
   
@@ -117,8 +137,8 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
   c.sel
     .on('mousemove', (ev) => {
       if (ev.shiftKey) return
-      var [mouseX, mouseY] = d3.pointer(ev)
-      var [closestNode, closestDistance] = findClosestPoint(mouseX - c.margin.left, mouseY - c.margin.top, nodes)
+      var [mouseX, mouseY] = d3.pointer(ev, c.svg.node())
+      var [closestNode, closestDistance] = findClosestPoint(mouseX, mouseY, nodes)
       if (closestDistance > maxHoverDistance) {
         utilCg.unHoverFeature(visState, renderAll)
         utilCg.hideTooltip()
@@ -133,8 +153,8 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
       utilCg.hideTooltip()
     })
     .on('click', (ev) => {
-      var [mouseX, mouseY] = d3.pointer(ev)
-      var [closestNode, closestDistance] = findClosestPoint(mouseX - c.margin.left, mouseY - c.margin.top, nodes)
+      var [mouseX, mouseY] = d3.pointer(ev, c.svg.node())
+      var [closestNode, closestDistance] = findClosestPoint(mouseX, mouseY, nodes)
       if (closestDistance > maxHoverDistance) {
         visState.clickedId = null
         visState.clickedCtxIdx = null
