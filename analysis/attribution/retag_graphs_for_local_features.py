@@ -47,7 +47,7 @@ def _tags_label(entry: dict, max_tags: int = 3) -> str:
 
 def retag_graph(
     path: Path, *, scan: str, title_prefix: str | None, mark_layers: set[int], mark_text: str,
-    annotations: dict | None = None,
+    annotations: dict | None = None, np_desc=None,
 ) -> int:
     payload = json.loads(path.read_text())
     meta = payload.setdefault("metadata", {})
@@ -66,12 +66,16 @@ def retag_graph(
         if layer is not None and layer in mark_layers:
             parts.append(f"⟳ {mark_text} (L{layer})")
             marked += 1
-        if annotations is not None:
+        # Prefer the Neuronpedia LLM description; fall back to the collection's heuristic tags.
+        label = ""
+        if np_desc is not None and node.get("feature") is not None:
+            label = np_desc.get_by_cantor(int(node["feature"]))
+        if not label and annotations is not None:
             entry = annotations.get(str(node.get("feature")))
             if entry:
                 label = _tags_label(entry)
-                if label:
-                    parts.append(label)
+        if label:
+            parts.append(label)
         if parts:
             node["clerp"] = " · ".join(parts)
     path.write_text(json.dumps(payload))
@@ -96,12 +100,20 @@ def main() -> None:
     ap.add_argument("--mark_layers", nargs="*", type=int, default=[], help="Layers whose feature nodes get a clerp marker (e.g. 0 24 25).")
     ap.add_argument("--mark_text", default="re-collected on fine-tuned transcoder", help="Marker text for --mark_layers nodes.")
     ap.add_argument("--annotations", type=Path, default=None, help="Optional feature_annotations.json from a matching collection: sets each node's clerp label from its heuristic tags (no LLM). Keys are the cantor-paired feature index = node 'feature'.")
+    ap.add_argument("--neuronpedia", action="store_true", help="Set node clerp labels from Neuronpedia LLM feature descriptions (disk-cached). Preferred over --annotations tags when both present. Requires $NEURONPEDIA_API_KEY. Verify alignment first with verify_neuronpedia_alignment.py.")
     args = ap.parse_args()
 
     annotations = None
     if args.annotations is not None:
         annotations = json.loads(args.annotations.read_text())
         logger.info("Loaded %d feature annotations from %s", len(annotations), args.annotations)
+
+    np_desc = None
+    if args.neuronpedia:
+        from analysis.attribution.neuronpedia_descriptions import NeuronpediaDescriptions
+
+        np_desc = NeuronpediaDescriptions()
+        logger.info("Neuronpedia descriptions enabled (cache: %s)", np_desc.cache_path)
 
     # A leading-'/' scan => local features (served from --features_dir); anything else is treated
     # as a HuggingFace feature repo id and fetched remotely by the frontend (no local files).
