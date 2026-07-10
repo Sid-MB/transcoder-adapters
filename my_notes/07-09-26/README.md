@@ -158,7 +158,15 @@ One-shot script (bundled graphs; serves **with feature activation examples** —
 
 Why not the local `base_ms20000` (20k samples, 10 examples): the `ms100000_dtk20` is strictly richer (5× corpus + 2× example depth) and needs no download. Scan matches these graphs (`width_16k/average_l0_76`), so feature IDs align.
 
-⚠️ **Fine-tuned side (`:8051`) caveat:** the re-fine-tune changed **layers 0/24/25**, but the HF collection only has *original-weight* examples, so those 3 layers' examples are approximate — the nodes are **flagged in the UI** (`⟳ fine-tuned weights …`). A faithful re-collection on the fine-tuned weights was attempted but the collector is impractically slow (dense 26-layer/425k-feature accumulation: an ms200 smoke ran >40 min), so it was deferred. To use a local collection anyway: run it, then `retag_graphs_for_local_features.py --scan /local_name` and serve with `FEATURES_DIR`.
+**Are the already-collected examples valid for the fine-tuned side? Yes — measured.** A feature's top activating examples are set by its **encoder direction** `W_enc[i]` (what triggers it). We compared the pretrained vs fine-tuned encoders per feature for the changed layers ([`analysis/features/measure_encoder_drift.py`](../../analysis/features/measure_encoder_drift.py) → `data/encoder_drift.json`):
+
+| layer | mean cos(W_enc orig, ft) | median | frac < 0.99 | frac < 0.9 |
+|---|---|---|---|---|
+| 0 | 0.9996 | 0.9997 | 0.000 | 0.000 |
+| 24 | 0.9997 | 0.9999 | 0.000 | 0.000 |
+| 25 | 0.9997 | 0.9998 | 0.000 | 0.000 |
+
+Every feature's detector rotated by **<0.03% cosine**, with **zero** features below 0.99. The fine-tune fixed reconstruction by adjusting the decoder/biases, **not what each feature detects** — so the already-collected `ms100000` examples are **exact for all 26 layers**, not approximate. No re-collection is needed. (The L0/24/25 nodes still carry a light `⟳ fine-tuned layer` marker so you know which weights changed, but the examples shown for them are valid.)
 
 Equivalent manual command (subcommand is `start-server`, not `serve`; examples come from HF via the scan, so no `--features_dir`):
 

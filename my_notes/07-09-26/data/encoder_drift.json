@@ -1,0 +1,31 @@
+{
+  "scan": "google/gemma-scope-2b-pt-transcoders/width_16k/average_l0_76_nearest",
+  "layers": [
+    0,
+    24,
+    25
+  ],
+  "per_layer": {
+    "0": {
+      "mean_cos": 0.9996286034584045,
+      "median_cos": 0.9997215270996094,
+      "min_cos": 0.9935066103935242,
+      "frac_below_0.99": 0.0,
+      "frac_below_0.9": 0.0
+    },
+    "24": {
+      "mean_cos": 0.9997467398643494,
+      "median_cos": 0.9998543858528137,
+      "min_cos": 0.9913148880004883,
+      "frac_below_0.99": 0.0,
+      "frac_below_0.9": 0.0
+    },
+    "25": {
+      "mean_cos": 0.9997084140777588,
+      "median_cos": 0.9998223781585693,
+      "min_cos": 0.9938051700592041,
+      "frac_below_0.99": 0.0,
+      "frac_below_0.9": 0.0
+    }
+  }
+}
