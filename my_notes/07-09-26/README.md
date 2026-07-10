@@ -145,28 +145,27 @@ FT=/nlp/scr/siddharth/transcoder-adapters/transcoder_input_shift_finetune/ft_gem
 
 ### Serve side by side (visual, port-forward from the login node)
 
-One-shot script (bundled graphs; serves **with feature activation examples** — click a feature node to see its top activating examples; verified serving byte-range feature requests):
+One-shot script (bundled graphs; serves **with feature activation examples** — click a feature node → ~20 top activating examples/dataset):
 
 ```bash
-./serve_graphs.sh   # original :8050, finetuned :8051 (Ctrl-C stops both); graphs bundled in ./graphs
+./serve_graphs.sh                     # original :8050, finetuned :8051 (Ctrl-C stops both)
 # other run:      GRAPH_DIR=<compare run dir> ./serve_graphs.sh
-# other features: FEATURES_DIR=<collection>/circuit_tracer_features ./serve_graphs.sh
-# no examples:    NO_FEATURES=1 ./serve_graphs.sh
+# local features: FEATURES_DIR=<collection>/circuit_tracer_features ./serve_graphs.sh  (needs local-scan graphs)
 ```
 
-**Feature examples** come from the latest base GemmaScope feature collection (20k samples, `width_16k/average_l0_76`, chat+web) — same scan as these graphs, so feature IDs align:
-- local: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/base_ms20000_sharded` (`circuit_tracer_features/`)
-- HF: `siddharthmb/2026.TA.features_gemma-2-2b_gemmascope_width_16k_average_l0_76_ms20000_ml1024_tk10_h5609948b210f`
+**Feature examples** are baked into the graph `scan` = the project's **current-best** base collection, `base_ms100000_dtk20` (full corpus: entire 100k lmsys val + 100k fineweb, `top_k/domain_top_k 20` → ~20 examples/dataset per feature), fetched **directly from HuggingFace** (no local download — your browser pulls them over the ssh tunnel):
+- HF: `siddharthmb/2026.TA.features_gemma-2-2b_gemmascope_width_16k_average_l0_76_ms100000_ml1024_tk2_h12ad59325ffd`
 
-⚠️ The fine-tuned run changed **layers 0/24/25**, so on the `:8051` (fine-tuned) side those 3 layers' examples are from the *original* weights (stale); the other 23 layers are correct. For fully-matched examples, collect features on the fine-tuned transcoders (follow-up).
+Why not the local `base_ms20000` (20k samples, 10 examples): the `ms100000_dtk20` is strictly richer (5× corpus + 2× example depth) and needs no download. Scan matches these graphs (`width_16k/average_l0_76`), so feature IDs align.
 
-Equivalent manual command (note the subcommand is `start-server`, not `serve`; point `--features_dir` at the `circuit_tracer_features/` subdir):
+⚠️ **Fine-tuned side (`:8051`) caveat:** the re-fine-tune changed **layers 0/24/25**, but the HF collection only has *original-weight* examples, so those 3 layers' examples are approximate — the nodes are **flagged in the UI** (`⟳ fine-tuned weights …`). A faithful re-collection on the fine-tuned weights was attempted but the collector is impractically slow (dense 26-layer/425k-feature accumulation: an ms200 smoke ran >40 min), so it was deferred. To use a local collection anyway: run it, then `retag_graphs_for_local_features.py --scan /local_name` and serve with `FEATURES_DIR`.
+
+Equivalent manual command (subcommand is `start-server`, not `serve`; examples come from HF via the scan, so no `--features_dir`):
 
 ```bash
 OUT=/nlp/scr/siddharth/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260709_145430_16118628
-FEAT=/nlp/scr/siddharth/transcoder-adapters/feature_data/base_ms20000_sharded/circuit_tracer_features
-uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/original"  --features_dir "$FEAT" --port 8050
-uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/finetuned" --features_dir "$FEAT" --port 8051
+uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/original"  --port 8050
+uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/finetuned" --port 8051
 ```
 
 Then from your laptop: `ssh -L 8050:localhost:8050 -L 8051:localhost:8051 <node>` and open `http://localhost:8050` (original) / `http://localhost:8051` (fine-tuned).

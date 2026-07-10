@@ -78,8 +78,12 @@ def main() -> None:
     ap.add_argument("--mark_text", default="re-collected on fine-tuned transcoder", help="Marker text for --mark_layers nodes.")
     args = ap.parse_args()
 
-    if not args.scan.startswith(("/", "./")):
-        raise SystemExit(f"--scan must start with '/' (local features), got {args.scan!r}")
+    # A leading-'/' scan => local features (served from --features_dir); anything else is treated
+    # as a HuggingFace feature repo id and fetched remotely by the frontend (no local files).
+    if args.scan.startswith(("/", "./")):
+        logger.info("Local scan %s (serve with --features_dir).", args.scan)
+    else:
+        logger.info("HF-remote scan %s (frontend fetches examples from huggingface.co; no local features_dir needed).", args.scan)
 
     mark_layers = set(args.mark_layers)
     graph_jsons = [p for p in sorted(args.graph_dir.glob("*.json")) if p.name not in SKIP]
