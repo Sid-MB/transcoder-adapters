@@ -47,8 +47,9 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     nopen, l1 = _report(args.nopenalty_dir), _report(args.l1_dir)
-    l1_coeff = l1["config"].get("l1_coeff", "?")
     layers = [int(x) for x in nopen["config"]["layers"]]
+    lc = l1["config"].get("l1_coeff", "?")
+    l1_coeff = dict(zip(layers, lc)) if isinstance(lc, list) and len(lc) == len(layers) else lc
 
     exp1 = json.load(open(args.all_layers_dir / "results.json"))
     base_src = exp1["by_source"]["base"]

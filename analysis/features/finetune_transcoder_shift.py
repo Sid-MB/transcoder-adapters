@@ -123,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max_length", type=int, default=512)
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--lr", type=float, default=1e-4, help="Adam learning rate for the transcoder params.")
-    p.add_argument("--l1_coeff", type=float, default=0.0, help="Sparsity penalty coefficient on the decoder-norm-weighted L1 of the (post-JumpReLU) features. 0 = pure reconstruction (L0 drifts up as W_enc/b_enc shift under the frozen threshold). >0 holds L0 near the base operating point while reconstruction improves; tune so after-FT L0 ~= base L0 (try ~1e-3 and adjust). Recommended for longer runs (e.g. 10M tokens).")
+    p.add_argument("--l1_coeff", type=float, nargs="+", default=[0.0], help="Sparsity penalty coefficient(s) on the decoder-norm-weighted L1 of the (post-JumpReLU) features. Pass ONE value (applied to all --layers) or ONE PER --layers (per-layer, same order). 0 = pure reconstruction (L0 drifts up as W_enc/b_enc shift under the frozen threshold). >0 holds L0 near the base operating point while reconstruction improves. NOTE: the right coeff is layer-dependent — layers already near base L0 (e.g. layer 0) are HURT by a penalty (over-sparsify), so use 0 there and ~1e-3 on the layers that overshoot (e.g. 24/25). Tune so after-FT L0 ~= base L0. Recommended for longer runs (e.g. 10M tokens).")
     p.add_argument("--train_threshold", action="store_true", help="Also train the JumpReLU threshold (changes L0). Off by default to preserve the sparsity operating point.")
     p.add_argument("--device", default="cuda")
     p.add_argument("--dtype", default="bf16")
@@ -142,6 +142,15 @@ def main() -> None:
     device = torch.device(args.device)
     dtype = _torch_dtype(args.dtype)
     layers = parse_layers(args.layers, args.gemmascope_n_layers)
+
+    # Resolve per-layer L1 coefficients: one value broadcasts to all layers; else one per layer.
+    if len(args.l1_coeff) == 1:
+        l1_by_layer = {layer: args.l1_coeff[0] for layer in layers}
+    elif len(args.l1_coeff) == len(layers):
+        l1_by_layer = dict(zip(layers, args.l1_coeff))
+    else:
+        raise SystemExit(f"--l1_coeff must have 1 value or {len(layers)} (one per --layers), got {len(args.l1_coeff)}")
+    logger.info("Per-layer l1_coeff: %s", l1_by_layer)
 
     tag = f"ft_gemmascope_{args.gemmascope_width}_{args.gemmascope_l0}_L{'-'.join(map(str, layers))}"
     output_dir = args.output_dir or generate_output_path("transcoder_input_shift_finetune", tag)
@@ -210,13 +219,13 @@ def main() -> None:
             mse = torch.nn.functional.mse_loss(recon, target)
             loss = loss + mse
             mse_sum += mse.item()
-            if args.l1_coeff > 0:
+            if l1_by_layer[layer] > 0:
                 # Decoder-norm-weighted L1 (matches models/gemma2_transcoder.py sparsity loss):
                 # sum_i ||W_dec_i|| * feat_i, mean over tokens. Penalizes feature magnitude ->
                 # pushes activations under the frozen JumpReLU threshold -> holds L0 down.
                 dec_norms = transcoders[layer].W_dec.float().norm(dim=1)  # [n_features]
                 l1 = (feats * dec_norms).sum(dim=-1).mean()
-                loss = loss + args.l1_coeff * l1
+                loss = loss + l1_by_layer[layer] * l1
                 l1_sum += l1.item()
             l0_sum += (feats > 0).float().sum(dim=-1).mean().item()
         loss.backward()
@@ -263,7 +272,7 @@ def write_summary(output_dir: Path, report: dict, layers, args) -> None:
         "",
         f"Fine-tuned GemmaScope `{args.gemmascope_width}`/`{args.gemmascope_l0}` transcoders at layers "
         f"{layers} on ~{args.train_tokens:,} instruct tokens (loss = MSE(transcoder(x), MLP_base(x))"
-        f"{f' + {args.l1_coeff:g}*L1(features)' if args.l1_coeff > 0 else ' (no sparsity penalty)'}, "
+        f"{f' + L1(features), l1_coeff per layer={dict(zip(layers, args.l1_coeff)) if len(args.l1_coeff)==len(layers) else args.l1_coeff[0]}' if any(c > 0 for c in args.l1_coeff) else ' (no sparsity penalty)'}, "
         f"x = instruct ln2.hook_normalized; threshold {'trained' if args.train_threshold else 'frozen'}). "
         f"FVU/L0 on {args.eval_tokens:,} held-out instruct tokens, before vs after.",
         "",
