@@ -9,7 +9,7 @@ Self-contained bundle of the 7/09 work (graphs, comparisons, figures, summaries)
 
 - `README.md` — this session log.
 - `serve_graphs.sh` — serve the original vs fine-tuned circuit-tracer graphs side by side (`./serve_graphs.sh`; graphs bundled in `graphs/`).
-- `graphs/` — the old-vs-new attribution graphs (`original/`, `finetuned/`, each with `graph-metadata.json` + 3 prompt graph JSONs) plus `comparison.{md,json}` (error-node fraction table). Served by `serve_graphs.sh`.
+- `graphs/` — the old-vs-new attribution graphs (`original/`, `finetuned/`, each with `graph-metadata.json` + 3 prompt graph JSONs) plus `comparison.{md,json}` (error-node fraction table). Served by `serve_graphs.sh`. Nodes carry `clerp` labels from the collection's free (no-LLM) heuristic `tags` (`feature_annotations.json`; ~50% of nodes, mostly coarse positional tags like `assistant_response`), and fine-tuned L0/24/25 nodes are flagged `⟳ fine-tuned weights …`. Re-apply / add real auto-interp labels via [`analysis/attribution/retag_graphs_for_local_features.py`](../../analysis/attribution/retag_graphs_for_local_features.py) (`--annotations`).
 - `figures/` — `transcoder_input_shift_overview.png` (6-panel Exp 1), `transcoder_finetune_before_after.png` (re-finetune FVU before/after).
 - `data/` — machine-readable results: `exp1_all_layers_results.json` + `..._summary.md` + `..._fire_freq_drift.md` (26-layer profile), `exp1_{chat,web}_5layer_summary.md`, `finetune_report.json` + `finetune_summary.md`, `graph_clarity.json`.
 

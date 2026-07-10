@@ -37,24 +37,43 @@ from helpers.log import logger, setup_logging
 SKIP = {"graph-metadata.json", "combined_attribution_manifest.json", "run_attribution_args.json"}
 
 
-def retag_graph(path: Path, *, scan: str, title_prefix: str | None, mark_layers: set[int], mark_text: str) -> int:
+def _tags_label(entry: dict, max_tags: int = 3) -> str:
+    """Compact human label from a feature_annotations entry's heuristic tags (no LLM)."""
+    tags = entry.get("tags") or []
+    if not tags:
+        return ""
+    return ", ".join(str(t) for t in tags[:max_tags])
+
+
+def retag_graph(
+    path: Path, *, scan: str, title_prefix: str | None, mark_layers: set[int], mark_text: str,
+    annotations: dict | None = None,
+) -> int:
     payload = json.loads(path.read_text())
     meta = payload.setdefault("metadata", {})
     meta["scan"] = scan
     if title_prefix is not None:
         meta["title_prefix"] = title_prefix
     marked = 0
-    if mark_layers:
-        for node in payload.get("nodes", []):
-            try:
-                layer = int(node.get("layer"))
-            except (TypeError, ValueError):
-                continue
-            if layer in mark_layers and "transcoder" in str(node.get("feature_type") or ""):
-                existing = str(node.get("clerp") or "").strip()
-                tag = f"⟳ {mark_text} (L{layer})"
-                node["clerp"] = tag if not existing or existing.startswith("⟳") else f"{tag} — {existing}"
-                marked += 1
+    for node in payload.get("nodes", []):
+        if "transcoder" not in str(node.get("feature_type") or ""):
+            continue
+        try:
+            layer = int(node.get("layer"))
+        except (TypeError, ValueError):
+            layer = None
+        parts: list[str] = []
+        if layer is not None and layer in mark_layers:
+            parts.append(f"⟳ {mark_text} (L{layer})")
+            marked += 1
+        if annotations is not None:
+            entry = annotations.get(str(node.get("feature")))
+            if entry:
+                label = _tags_label(entry)
+                if label:
+                    parts.append(label)
+        if parts:
+            node["clerp"] = " · ".join(parts)
     path.write_text(json.dumps(payload))
     return marked
 
@@ -76,7 +95,13 @@ def main() -> None:
     ap.add_argument("--title_prefix", default=None, help="Dropdown tag, e.g. '[ORIGINAL GemmaScope]'.")
     ap.add_argument("--mark_layers", nargs="*", type=int, default=[], help="Layers whose feature nodes get a clerp marker (e.g. 0 24 25).")
     ap.add_argument("--mark_text", default="re-collected on fine-tuned transcoder", help="Marker text for --mark_layers nodes.")
+    ap.add_argument("--annotations", type=Path, default=None, help="Optional feature_annotations.json from a matching collection: sets each node's clerp label from its heuristic tags (no LLM). Keys are the cantor-paired feature index = node 'feature'.")
     args = ap.parse_args()
+
+    annotations = None
+    if args.annotations is not None:
+        annotations = json.loads(args.annotations.read_text())
+        logger.info("Loaded %d feature annotations from %s", len(annotations), args.annotations)
 
     # A leading-'/' scan => local features (served from --features_dir); anything else is treated
     # as a HuggingFace feature repo id and fetched remotely by the frontend (no local files).
@@ -89,7 +114,7 @@ def main() -> None:
     graph_jsons = [p for p in sorted(args.graph_dir.glob("*.json")) if p.name not in SKIP]
     total_marked = 0
     for path in graph_jsons:
-        total_marked += retag_graph(path, scan=args.scan, title_prefix=args.title_prefix, mark_layers=mark_layers, mark_text=args.mark_text)
+        total_marked += retag_graph(path, scan=args.scan, title_prefix=args.title_prefix, mark_layers=mark_layers, mark_text=args.mark_text, annotations=annotations)
 
     index_path = args.graph_dir / "graph-metadata.json"
     if index_path.exists():
