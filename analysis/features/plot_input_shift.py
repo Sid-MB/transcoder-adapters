@@ -155,6 +155,25 @@ def main() -> None:
         fig2.savefig(out2, dpi=130, bbox_inches="tight")
         print(f"wrote {out2}")
 
+        # L0 (sparsity) twin of the before/after figure — is L0 still comparable after FT?
+        l0_before = [rep["before"][str(x)]["l0_mean"] for x in fl]
+        l0_after = [rep["after"][str(x)]["l0_mean"] for x in fl]
+        l0_base = [al["base"]["l0"][al["layers"].index(x)] for x in fl]
+        fig3, ax = plt.subplots(figsize=(8, 5))
+        ax.bar([x - w for x in xi], l0_before, w, color=INST_C, label="instruct, before FT")
+        ax.bar([x for x in xi], l0_after, w, color="#f59e0b", label="instruct, after FT")
+        ax.bar([x + w for x in xi], l0_base, w, color=BASE_C, alpha=0.7, label="base (target level)")
+        ax.set_xticks(list(xi)); ax.set_xticklabels([f"L{x}" for x in fl])
+        ax.set_ylabel("L0 (active features / token)")
+        ax.set_title("Sparsity (L0) before vs after re-fine-tune\n(threshold frozen; L0 drifts up as W_enc/b_enc shift)", fontweight="bold")
+        for i in xi:
+            ax.annotate(f"{l0_after[i]:.0f}", (i, l0_after[i]), ha="center", va="bottom", fontsize=9, fontweight="bold")
+        ax.legend(); ax.grid(alpha=0.3, axis="y")
+        fig3.tight_layout()
+        out3 = args.out_dir / "transcoder_finetune_l0_before_after.png"
+        fig3.savefig(out3, dpi=130, bbox_inches="tight")
+        print(f"wrote {out3}")
+
 
 if __name__ == "__main__":
     main()
