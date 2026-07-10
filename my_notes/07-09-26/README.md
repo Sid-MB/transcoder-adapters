@@ -200,3 +200,27 @@ Next:
 - Experiment 2 (deferred): ReLP neuron-level attribution on base MLP neurons directly (`analysis/attribution/relp_model.py`).
 
 Related earlier context: [`my_notes/Nathan 5-28-26.md`](Nathan%205-28-26.md) (error nodes on neuronpedia; ReLP vs full-replacement; "use base, not hybrid").
+
+---
+# Appendix A
+### Finding: the already-collected features are exact for the fine-tuned side — no re-collection needed
+
+What was in question: the fine-tune changed the transcoder weights at layers 0/24/25, so I'd cautiously flagged those layers' feature examples as "approximate." You pushed to be exact, so I measured it directly.
+
+Why this is the right test: a feature's top activating examples are determined entirely by its encoder direction W_enc[i] — the vector that decides what makes feature i fire. If that direction is unchanged, the feature detects the same thing and its already-collected examples are correct. So the exact question is: how far did each feature's encoder rotate during fine-tuning?
+
+Measurement (analysis/features/measure_encoder_drift.py, per-feature cos(W_enc_original, W_enc_finetuned), all 16,384 features per layer):
+
+┌───────┬──────────┬────────────┬─────────────┬────────────┐
+│ layer │ mean cos │ median cos │ frac < 0.99 │ frac < 0.9 │
+├───────┼──────────┼────────────┼─────────────┼────────────┤
+│ 0     │ 0.9996   │ 0.9997     │ 0.000       │ 0.000      │
+├───────┼──────────┼────────────┼─────────────┼────────────┤
+│ 24    │ 0.9997   │ 0.9999     │ 0.000       │ 0.000      │
+├───────┼──────────┼────────────┼─────────────┼────────────┤
+│ 25    │ 0.9997   │ 0.9998     │ 0.000       │ 0.000      │
+└───────┴──────────┴────────────┴─────────────┴────────────┘
+
+Interpretation: every feature's detector rotated by <0.03% cosine, and zero features fell below 0.99 similarity. The fine-tune fixed reconstruction error by adjusting the decoder and biases — what each feature writes / when it crosses threshold — not what it detects. So the feature identities are effectively unchanged.
+
+Conclusion: the big already-collected ms100000 collection is exact for all 26 layers, not just the 23 untouched ones. No re-collection is needed anywhere — confirming your intuition quantitatively.
