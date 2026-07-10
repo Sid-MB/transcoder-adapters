@@ -61,25 +61,29 @@ def main() -> None:
         base = [base_src[str(L)][base_key] for L in layers]                 # base model + original transcoder
         return before, after_nopen, after_l1, base
 
+    penalized = [L for L in layers if isinstance(l1_coeff, dict) and l1_coeff.get(L, 0) > 0]
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
     fig.suptitle(
-        f"Transcoder fine-tune on instruct inputs: no sparsity penalty vs +L1 (l1_coeff={l1_coeff})\n"
-        "L1 holds L0 near the base operating point while keeping the reconstruction (FVU) gain",
-        fontsize=13, fontweight="bold",
+        "Transcoder fine-tune on instruct inputs: reconstruction-only vs. + sparsity penalty\n"
+        f"decoder-norm-weighted L1 applied to layers {penalized or '(per l1_coeff)'} only "
+        f"(coeff per layer = {l1_coeff}); it holds sparsity near base while keeping the FVU gain",
+        fontsize=12, fontweight="bold",
     )
-    specs = [("fvu", "fvu", "Reconstruction error (FVU)  ↓ better", axes[0]),
-             ("l0_mean", "l0_mean", "Sparsity L0 (active features/token)  → match base", axes[1])]
+    # (metric key in report, base-source key, panel title, y-label, axis)
+    specs = [("fvu", "fvu", "Reconstruction error (FVU)  —  lower is better", "FVU (fraction of variance unexplained)", axes[0]),
+             ("l0_mean", "l0_mean", "Sparsity  —  should match base", "active features per token  (a.k.a. L0)", axes[1])]
     x = range(len(layers))
     w = 0.2
-    for metric_key, base_key, title, ax in specs:
+    for metric_key, base_key, title, ylabel, ax in specs:
         before, after_nopen, after_l1, base = series(metric_key, base_key)
-        ax.bar([xi - 1.5 * w for xi in x], before, w, color=BEFORE_C, label="instruct, before FT")
-        ax.bar([xi - 0.5 * w for xi in x], after_nopen, w, color=NOPEN_C, label="after FT (no penalty)")
-        ax.bar([xi + 0.5 * w for xi in x], after_l1, w, color=L1_C, label="after FT (+L1)")
-        ax.bar([xi + 1.5 * w for xi in x], base, w, color=BASE_C, alpha=0.75, label="base (target level)")
-        ax.set_xticks(list(x)); ax.set_xticklabels([f"L{L}" for L in layers])
+        ax.bar([xi - 1.5 * w for xi in x], before, w, color=BEFORE_C, label="before fine-tune")
+        ax.bar([xi - 0.5 * w for xi in x], after_nopen, w, color=NOPEN_C, label="after FT, reconstruction only")
+        ax.bar([xi + 0.5 * w for xi in x], after_l1, w, color=L1_C, label="after FT, + sparsity penalty")
+        ax.bar([xi + 1.5 * w for xi in x], base, w, color=BASE_C, alpha=0.75, label="base model (target level)")
+        ax.set_xticks(list(x)); ax.set_xticklabels([f"layer {L}" for L in layers])
+        ax.set_xlabel("transcoder layer")
         ax.set_title(title, fontweight="bold")
-        ax.set_ylabel(metric_key)
+        ax.set_ylabel(ylabel)
         ax.grid(alpha=0.3, axis="y")
         ax.legend(fontsize=8)
     fig.tight_layout(rect=(0, 0, 1, 0.92))
