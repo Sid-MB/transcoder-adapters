@@ -188,17 +188,26 @@ uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/finetuned"
 
 Then from your laptop: `ssh -L 8050:localhost:8050 -L 8051:localhost:8051 <node>` and open `http://localhost:8050` (original) / `http://localhost:8051` (fine-tuned).
 
-### RESULTS (job 16118628, 3 interesting_small prompts, max_feature_nodes 256, node_threshold 0.8)
+### RESULTS (job 16129263, final sparsity-penalty weights, 3 interesting_small prompts, max_feature_nodes 256)
 
 Fine-tuning **just 3 of 26 layers** (0/24/25) consistently lowers the graph's error-node fraction:
 
 | prompt | orig error-frac | ft error-frac | orig err/feat | ft err/feat |
 |---|---|---|---|---|
-| bomb_refusal_help_I | 0.253 | **0.239** | 56/165 | 53/169 |
-| capital_colesseum | 0.275 | **0.261** | 76/200 | 71/201 |
+| bomb_refusal_help_I | 0.258 | **0.239** | 57/164 | 53/169 |
+| capital_colesseum | 0.275 | **0.265** | 76/200 | 72/200 |
 | capital_colesseum_mispelling | 0.273 | **0.260** | 77/205 | 72/205 |
 
-~0.013–0.014 absolute (~5% relative) drop in error-node fraction on every prompt — fewer MLP-reconstruction-error nodes, more of the graph carried by interpretable feature nodes. So the fine-tune improves not just FVU but the actual attribution graph. Effect is modest because only the 3 endpoint layers were fine-tuned; fine-tuning more layers (or fully closing L25) should compound it. (Absolute error-frac here (~0.25) is higher than the base-vs-adapter analysis (~0.03) only because of different node-cap/threshold settings; the old-vs-new delta is apples-to-apples.) Output: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260709_145430_16118628/` (`original/`, `finetuned/`, `comparison.{json,md}`).
+~0.01–0.02 absolute (~5% relative) drop in error-node fraction on every prompt — fewer MLP-reconstruction-error nodes, more of the graph carried by interpretable feature nodes. So the fine-tune improves not just FVU but the actual attribution graph. Effect is modest because only the 3 endpoint layers were fine-tuned; fine-tuning more layers (or fully closing L25) should compound it. (Absolute error-frac here (~0.25) is higher than the base-vs-adapter analysis (~0.03) only because of different node-cap/threshold settings; the old-vs-new delta is apples-to-apples.) The bundled `graphs/` are these (job 16129263); source at `$LARGE_ARTIFACTS_DIR/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260710_171004_16129263/`.
+
+### Applying the fine-tune in the visualizers and evals
+
+The fine-tune is per-layer `finetuned_layer_{L}.safetensors` (W_enc/W_dec/b_enc/b_dec; threshold frozen). "Applying" it = load the pretrained GemmaScope set, then copy those layers in place — one shared helper ([`analysis/attribution/gemmascope_finetune.py`](../../analysis/attribution/gemmascope_finetune.py) `patch_finetuned_layers`). Two ways to use it:
+
+- **Load-time flag** on any GemmaScope-loading tool: `--finetuned_transcoder_dir <ft run dir> --finetuned_layers 0 24 25`. Wired into: `analysis/features/transcoder_input_shift.py` (FVU/L0 **eval** across all layers/data), `analysis/features/collect_base_feature_activations.py` (feature collection), `analysis/attribution/run_base_adapter_comparison.py` (**production** base attribution + combined overlay + serve), and `analysis/attribution/compare_finetuned_transcoder_graphs.py` (the old-vs-new graphs shown here, via `--finetune_dir`).
+- **Materialized set** (no per-run flags): [`analysis/attribution/export_finetuned_transcoder_set.py`](../../analysis/attribution/export_finetuned_transcoder_set.py) bakes the fine-tune into a full 26-layer local circuit-tracer set (self-verified roundtrip). Final set: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/finetuned_transcoder_sets/gemma2_2b_width16k_l0_76nearest_ftL0-24-25_sparsity/` (`config.yaml` + `layer_*.safetensors`, 7.4 GB) — load via `--transcoder_set <dir>` / `ReplacementModel`, or upload to HF.
+
+Final fine-tune weights used everywhere: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/transcoder_input_shift_finetune/ft_..._L0-24-25_20260710_025814_16123724/` (per-layer L1 `[0,1e-3,1e-3]`).
 
 ## Bottom line & next steps
 

@@ -11,12 +11,15 @@
 # which the frontend fetches DIRECTLY from HuggingFace (no local download). Your browser needs
 # internet access (it does, over the ssh tunnel from your laptop).
 #
-# NOTE on the fine-tuned side (:8051): the re-fine-tune changed layers 0/24/25, but the HF
-# collection only has ORIGINAL-weight examples. So those 3 layers' examples are approximate
-# (nodes are flagged in the UI). Faithful re-collection on the fine-tuned weights was deemed too
-# slow (dense 26-layer/425k-feature accumulation). To use a LOCAL collection instead, set
-# FEATURES_DIR (a run's circuit_tracer_features dir) — the graphs must then be re-tagged to a
-# local '/...' scan (see analysis/attribution/retag_graphs_for_local_features.py).
+# NOTE on the fine-tuned side (:8051): these graphs use the FINAL fine-tune (per-layer sparsity
+# penalty, l1_coeff=[0,1e-3,1e-3], layers 0/24/25). The HF example collection was built on the
+# ORIGINAL weights, but that is fine: the fine-tune barely moved the encoder DIRECTIONS
+# (per-feature cos(W_enc orig, ft) = 0.9997, none < 0.99; see data/encoder_drift.json), so a
+# feature's top activating examples are unchanged — examples are valid for all layers. To rebuild
+# these graphs with different fine-tuned weights, run compare_finetuned_transcoder_graphs.py with
+# --finetune_dir <ft run>; to apply the fine-tune in the production visualizer/eval, pass
+# --finetuned_transcoder_dir/--finetuned_layers (run_base_adapter_comparison / transcoder_input_shift)
+# or point tools at the materialized set from export_finetuned_transcoder_set.py.
 #
 # Usage:
 #   ./serve_graphs.sh                    # original :8050, finetuned :8051 (HF examples)
