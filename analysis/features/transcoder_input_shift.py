@@ -250,6 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gemmascope_l0", required=True, help="GemmaScope L0 folder / target, e.g. average_l0_76.")
     parser.add_argument("--gemmascope_l0_match", default="nearest", choices=["exact", "nearest"], help="How to interpret a single --gemmascope_l0 value across layers. 'nearest' picks the closest available average_l0_* folder per layer (GemmaScope's available L0s differ by layer, so 'exact' 404s on layers lacking that exact folder).")
     parser.add_argument("--gemmascope_n_layers", type=int, default=26, help="Number of base-model layers / GemmaScope transcoders (gemma-2-2b = 26).")
+    parser.add_argument("--finetuned_transcoder_dir", type=str, default=None, help="Optional dir with finetuned_layer_*.safetensors: patch those layers' fine-tuned weights into the GemmaScope set before evaluating (so this measures the fine-tuned transcoders). Use with --finetuned_layers.")
+    parser.add_argument("--finetuned_layers", nargs="+", type=int, default=None, help="Layers to patch from --finetuned_transcoder_dir (e.g. 0 24 25).")
     parser.add_argument("--feature_input_hook", default="ln2.hook_normalized", help="TransformerLens hook the transcoder reads (its input x).")
     parser.add_argument("--feature_output_hook", default="hook_mlp_out", help="TransformerLens hook the transcoder reconstructs (the MLP output).")
 
@@ -301,6 +303,9 @@ def main() -> None:
     (output_dir / "gemmascope_config.json").write_text(json.dumps(ts_config, indent=2) + "\n")
     logger.info("Loading GemmaScope transcoders (%s)...", ts_config["scan_name"])
     transcoders = _load_gemmascope_transcoders(ts_config, device=device, dtype=dtype)
+    from analysis.attribution.gemmascope_finetune import maybe_patch
+
+    maybe_patch(transcoders, args.finetuned_transcoder_dir, args.finetuned_layers, device, dtype)
 
     # --- Load models ---
     base_model = load_hooked_model(args.base_model, device=device, dtype=dtype)

@@ -68,16 +68,7 @@ def graph_composition(graph_json: Path) -> dict:
     return {"feature_nodes": feat, "error_nodes": err, "total_nodes": len(nodes), "error_fraction": err / max(1, err + feat)}
 
 
-def patch_transcoders(transcoders, finetune_dir: Path, ft_layers: list[int], device, dtype) -> None:
-    """Copy fine-tuned W_enc/W_dec/b_enc/b_dec into the in-memory transcoders, in place."""
-    from safetensors.torch import load_file
-
-    for layer in ft_layers:
-        sd = load_file(str(finetune_dir / f"finetuned_layer_{layer}.safetensors"))
-        t = transcoders[layer]
-        for key in ("W_enc", "W_dec", "b_enc", "b_dec"):
-            getattr(t, key).data.copy_(sd[key].to(device=device, dtype=getattr(t, key).dtype))
-        logger.info("Patched layer %d transcoder with fine-tuned weights", layer)
+from analysis.attribution.gemmascope_finetune import patch_finetuned_layers as patch_transcoders
 
 
 def run_graphs(*, model, prompts, output_dir: Path, run_name: str, args, prompt_tokenizer, model_type) -> dict[str, dict]:

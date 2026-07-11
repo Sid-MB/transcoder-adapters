@@ -347,9 +347,9 @@ def load_base_replacement_model(args: argparse.Namespace, output_dir: Path):
         dtype=dtype_obj,
     )
     if getattr(args, "finetuned_transcoder_dir", None) and getattr(args, "finetuned_layers", None):
-        from analysis.attribution.compare_finetuned_transcoder_graphs import patch_transcoders
+        from analysis.attribution.gemmascope_finetune import patch_finetuned_layers
 
-        patch_transcoders(model.transcoders, Path(args.finetuned_transcoder_dir), args.finetuned_layers, device_obj, dtype_obj)
+        patch_finetuned_layers(model.transcoders, Path(args.finetuned_transcoder_dir), args.finetuned_layers, device_obj, dtype_obj)
         logger.info("Patched fine-tuned weights into layers %s from %s", args.finetuned_layers, args.finetuned_transcoder_dir)
     model.eval()
     return model, device_obj

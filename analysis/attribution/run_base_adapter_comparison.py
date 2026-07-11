@@ -389,6 +389,8 @@ def run_base_attribution(
     backend: Literal["nnsight", "transformerlens"],
     offload: Literal["cpu", "disk", None],
     prompt_tokenizer_model: str | None,
+    finetuned_transcoder_dir: str | None = None,
+    finetuned_layers: list[int] | None = None,
 ) -> dict[str, str]:
     """Run circuit-tracer attribution for the base model/GemmaScope side."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -424,6 +426,11 @@ def run_base_attribution(
         device=device_obj,
         dtype=dtype_obj,
     )
+    if finetuned_transcoder_dir and finetuned_layers:
+        from analysis.attribution.gemmascope_finetune import patch_finetuned_layers
+
+        patch_finetuned_layers(transcoders, finetuned_transcoder_dir, finetuned_layers, device_obj, dtype_obj)
+        logger.info("Applied fine-tuned transcoder weights (layers %s) from %s", finetuned_layers, finetuned_transcoder_dir)
     logger.info(f"Loading base replacement model: {base_model} ({backend})")
     model = ReplacementModel.from_pretrained_and_transcoders(
         model_name=base_model,
@@ -1050,6 +1057,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--gemmascope_n_layers", type=int, default=26)
+    parser.add_argument("--finetuned_transcoder_dir", type=str, default=None, help="Optional dir with finetuned_layer_*.safetensors: apply those layers' fine-tuned weights to the base GemmaScope transcoders before attribution/serving (from analysis/features/finetune_transcoder_shift.py). Use with --finetuned_layers.")
+    parser.add_argument("--finetuned_layers", nargs="+", type=int, default=None, help="Layers to patch from --finetuned_transcoder_dir (e.g. 0 24 25).")
     parser.add_argument("--gemmascope_config_path", type=Path, default=None)
     parser.add_argument("--feature_input_hook", default="ln2.hook_normalized")
     parser.add_argument("--feature_output_hook", default="hook_mlp_out")
@@ -1224,6 +1233,8 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
         backend=args.base_backend,
         offload=args.base_offload,
         prompt_tokenizer_model=args.prompt_tokenizer_model,
+        finetuned_transcoder_dir=args.finetuned_transcoder_dir,
+        finetuned_layers=args.finetuned_layers,
     )
     overlay_paths = write_overlay_graphs(
         base_graph_dir=base_graph_dir,
