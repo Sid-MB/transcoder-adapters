@@ -15,5 +15,6 @@
   --constraint=48G \
   --mem=64G \
   --partition=jag-standard \
+  --time=0-04:00:00 \
   --job-name=ft_transcoder_shift \
   ./run_on_gpu/run_finetune_transcoder_shift.sh "$@"

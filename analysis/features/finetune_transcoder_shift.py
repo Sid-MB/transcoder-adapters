@@ -120,6 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prompt_tokenizer_model", default="google/gemma-2-2b-it")
     p.add_argument("--train_tokens", type=int, default=2_000_000, help="Approx number of instruct tokens to train on (one pass).")
     p.add_argument("--eval_tokens", type=int, default=200_000, help="Held-out instruct tokens for before/after FVU/L0 eval.")
+    p.add_argument("--eval_every_tokens", type=int, default=0, help="If >0, also run a held-out FVU/L0 eval every this many training tokens (recorded in finetune_report.json['eval_history'] + wandb). Use on long runs (e.g. 10M) to see WHEN each layer's FVU flattens (esp. L25).")
     p.add_argument("--max_length", type=int, default=512)
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--lr", type=float, default=1e-4, help="Adam learning rate for the transcoder params.")
@@ -201,6 +202,8 @@ def main() -> None:
     logger.info("Training...")
     wandb_logger.reset_timer()
     trained_tokens, step, t0 = 0, 0, time.time()
+    eval_history: list = []
+    next_eval_at = args.eval_every_tokens if args.eval_every_tokens > 0 else float("inf")
     for batch in train_batches:
         if trained_tokens >= args.train_tokens:
             break
@@ -238,6 +241,15 @@ def main() -> None:
             wandb_logger._wandb.log({"train/loss": loss.item(), "train/mse": mse_sum, "train/l1": l1_sum, "train/l0": l0_sum / len(layers), "train/tokens": trained_tokens})
         if step % 25 == 0:
             logger.info("step %d | %d/%d tok | loss=%.5f mse=%.5f l1=%.4f l0=%.1f | %.0f tok/s", step, trained_tokens, args.train_tokens, loss.item(), mse_sum, l1_sum, l0_sum / len(layers), trained_tokens / max(1e-6, time.time() - t0))
+        # Periodic held-out FVU/L0 eval so we can see WHEN each layer's FVU flattens (e.g. L25).
+        if args.eval_every_tokens > 0 and trained_tokens >= next_eval_at:
+            mid = evaluate(instruct_model=instruct_model, base_model=base_model, transcoders=transcoders, layers=layers, batches=eval_batches, args=args, d_model=d_model, device=device)
+            eval_history.append({"tokens": trained_tokens, "per_layer": mid})
+            for layer in layers:
+                logger.info("  [eval @ %d tok] L%d: FVU=%.4f L0=%.1f", trained_tokens, layer, mid[layer]["fvu"], mid[layer]["l0_mean"])
+            if args.wandb:
+                wandb_logger._wandb.log({"eval/tokens": trained_tokens, **{f"eval/L{layer}/fvu": mid[layer]["fvu"] for layer in layers}, **{f"eval/L{layer}/l0": mid[layer]["l0_mean"] for layer in layers}})
+            next_eval_at += args.eval_every_tokens
 
     # --- AFTER eval ---
     logger.info("Eval AFTER fine-tuning...")
@@ -253,7 +265,7 @@ def main() -> None:
             sd["threshold"] = t.activation_function.threshold.detach().cpu()
         save_file(sd, str(output_dir / f"finetuned_layer_{layer}.safetensors"))
 
-    report = {"config": vars(args) | {"layers": layers, "scan_name": ts_config["scan_name"], "output_dir": str(output_dir)}, "before": {str(l): before[l] for l in layers}, "after": {str(l): after[l] for l in layers}}
+    report = {"config": vars(args) | {"layers": layers, "scan_name": ts_config["scan_name"], "output_dir": str(output_dir)}, "before": {str(l): before[l] for l in layers}, "after": {str(l): after[l] for l in layers}, "eval_history": [{"tokens": e["tokens"], "per_layer": {str(l): e["per_layer"][l] for l in layers}} for e in eval_history]}
     report["config"].pop("pad_id", None)
     (output_dir / "finetune_report.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
     write_summary(output_dir, report, layers, args)

@@ -241,6 +241,11 @@ def build_combined_replacement_model(args: argparse.Namespace):
     )
     logger.info(f"Loading GemmaScope base transcoders: {config['scan_name']}")
     base_set = _load_gemmascope_transcoders(config, device=device, dtype=dtype)
+    if getattr(args, "finetuned_transcoder_dir", None) and getattr(args, "finetuned_layers", None):
+        from analysis.attribution.gemmascope_finetune import patch_finetuned_layers
+
+        patch_finetuned_layers(base_set, args.finetuned_transcoder_dir, args.finetuned_layers, device, dtype)
+        logger.info("Applied fine-tuned base-transcoder weights (layers %s) from %s", args.finetuned_layers, args.finetuned_transcoder_dir)
     n_base = n_base_features(base_set)
 
     logger.info(f"Loading adapter checkpoint for transcoder extraction: {args.adapter_checkpoint}")
@@ -424,6 +429,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gemmascope_l0", required=True, help="GemmaScope L0 folder/target, e.g. average_l0_76")
     parser.add_argument("--gemmascope_l0_match", choices=["exact", "nearest"], default="nearest")
     parser.add_argument("--gemmascope_n_layers", type=int, default=26)
+    parser.add_argument("--finetuned_transcoder_dir", type=str, default=None, help="Optional HF repo id or local dir with finetuned_layer_*.safetensors: apply those layers' fine-tuned weights to the BASE GemmaScope transcoders before building the combined base+adapter set (so the hybrid graph's base side uses the instruct-fine-tuned transcoders). Use with --finetuned_layers.")
+    parser.add_argument("--finetuned_layers", nargs="+", type=int, default=None, help="Layers to patch from --finetuned_transcoder_dir (e.g. 0 24 25).")
     parser.add_argument("--feature_input_hook", default="ln2.hook_normalized")
     parser.add_argument("--feature_output_hook", default="hook_mlp_out")
     parser.add_argument("--prompt_format", choices=["auto", "raw", "chat"], default="auto")
