@@ -20,21 +20,37 @@ from helpers.log import logger
 _PATCH_KEYS = ("W_enc", "W_dec", "b_enc", "b_dec")
 
 
+def _resolve_layer_file(finetune_dir, layer: int) -> str:
+    """Path to ``finetuned_layer_{layer}.safetensors`` — from a local dir, or a HuggingFace repo id.
+
+    ``finetune_dir`` may be a local directory OR a HF model repo id (e.g.
+    ``siddharthmb/2026.TA.gemma2_2b_gemmascope_transcoders_instruct_ft_L0-24-25``); in the latter
+    case the file is fetched (and cached) via ``hf_hub_download``. This lets the visualizer/eval
+    take a HF id directly.
+    """
+    filename = f"finetuned_layer_{layer}.safetensors"
+    local = Path(finetune_dir) / filename
+    if local.exists():
+        return str(local)
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo_id=str(finetune_dir), filename=filename)
+
+
 def patch_finetuned_layers(transcoders, finetune_dir, layers, device, dtype) -> None:
     """Copy fine-tuned W_enc/W_dec/b_enc/b_dec into ``transcoders[L]`` in place, for each L in layers.
 
     Args:
         transcoders: a circuit-tracer ``TranscoderSet`` (indexable by layer).
-        finetune_dir: dir containing ``finetuned_layer_{L}.safetensors``.
+        finetune_dir: local dir OR HF repo id containing ``finetuned_layer_{L}.safetensors``.
         layers: layer indices to patch.
         device, dtype: unused directly (weights are cast to each param's own dtype/device); kept
             for a uniform call signature next to ``_load_gemmascope_transcoders``.
     """
     from safetensors.torch import load_file
 
-    finetune_dir = Path(finetune_dir)
     for layer in layers:
-        sd = load_file(str(finetune_dir / f"finetuned_layer_{layer}.safetensors"))
+        sd = load_file(_resolve_layer_file(finetune_dir, layer))
         t = transcoders[layer]
         for key in _PATCH_KEYS:
             param = getattr(t, key)
