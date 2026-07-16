@@ -14,6 +14,10 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --grap
 # uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:comprehensive/overlay_compact --port 8046
 # 12-token base/hybrid/instruct completions per prompt: hybrid_ft_overlay_ms100k_comprehensive/completions.{json,md}
 
+# interesting_queries set (48 prompts: harmful / divergent / adv_suffix — refusal & jailbreak behavior):
+# uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/hybrid_ft_overlay_ms100k_interesting_queries/overlay --port 8046
+# uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:interesting_queries/overlay_compact --port 8046
+
 # Original smaller set (interesting_small, 12 prompts):
 # uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/hybrid_ft_overlay_ms100k/overlay --port 8046
 # uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:overlay_compact --port 8046
