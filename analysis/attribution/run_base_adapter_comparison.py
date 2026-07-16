@@ -980,6 +980,7 @@ def write_overlay_graphs(
     overlay_graph_dir: Path,
     hide_direct_embedding_logit_links: bool = True,
     base_feature_scan: str | None = None,
+    adapter_feature_scan: str = LOCAL_FEATURE_SCAN,
 ) -> list[Path]:
     """Write overlay graph JSONs for all matched base/adapter prompt-token sets."""
     base_graphs = _load_graph_payloads_by_prompt_tokens(base_graph_dir)
@@ -998,6 +999,7 @@ def write_overlay_graphs(
             adapter_payload=adapter_graphs[prompt_key],
             hide_direct_embedding_logit_links=hide_direct_embedding_logit_links,
             base_feature_scan=base_feature_scan,
+            adapter_feature_scan=adapter_feature_scan,
         )
         overlay_path = overlay_graph_dir / f"{overlay_payload['metadata']['slug']}.json"
         overlay_path.write_text(json.dumps(overlay_payload, indent=2) + "\n")
