@@ -15,7 +15,38 @@ from analysis.attribution.run_base_adapter_comparison import (
     LOCAL_BASE_FEATURE_SCAN,
     LOCAL_FEATURE_SCAN,
 )
+from analysis.attribution.run_circuit_tracer_pipeline import (
+    is_hf_feature_ref,
+    normalize_hf_feature_ref,
+)
 from helpers.log import logger, setup_logging
+
+
+def resolve_graph_file_dir(graph_file_dir: str | Path) -> Path:
+    """Resolve ``--graph_file_dir`` to a local directory of graph JSONs.
+
+    Accepts either a local path, or a Hugging Face **dataset** repo id (optionally with a
+    ``:subdir`` suffix, e.g. ``siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:overlay_compact``)
+    which is pulled with ``snapshot_download`` and the (sub)directory returned. Use the subdir form
+    when a single repo bundles several graph sets (``overlay``/``overlay_compact``/``base``/...).
+    """
+    local = Path(graph_file_dir)
+    if local.is_dir():
+        return local
+    ref = str(graph_file_dir)
+    repo_part, _, subdir = ref.partition(":")  # HF repo ids never contain ':'
+    if is_hf_feature_ref(repo_part):
+        from huggingface_hub import snapshot_download
+
+        repo_id = normalize_hf_feature_ref(repo_part)
+        logger.info(
+            "Resolving graph dir from Hugging Face dataset repo: %s%s",
+            repo_id,
+            f" (subdir {subdir})" if subdir else "",
+        )
+        snapshot = Path(snapshot_download(repo_id, repo_type="dataset"))
+        return snapshot / subdir if subdir else snapshot
+    raise FileNotFoundError(f"Graph file directory does not exist: {graph_file_dir}")
 
 
 def _serve_local_feature_file(handler, *, root_dir: str, prefix: str) -> bool:
@@ -174,9 +205,7 @@ def start_comparison_server(
     base_features_dir: str | Path | None = None,
     port: int,
 ):
-    graph_file_dir = Path(graph_file_dir)
-    if not graph_file_dir.is_dir():
-        raise FileNotFoundError(f"Graph file directory does not exist: {graph_file_dir}")
+    graph_file_dir = resolve_graph_file_dir(graph_file_dir)
     resolved_adapter_features_dir = (
         str(Path(adapter_features_dir).resolve()) if adapter_features_dir is not None else None
     )
@@ -206,7 +235,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Serve base-vs-adapter overlay graph JSONs with node-shape UI overrides."
     )
-    parser.add_argument("--graph_file_dir", required=True, type=Path)
+    parser.add_argument(
+        "--graph_file_dir",
+        required=True,
+        help=(
+            "Local directory of graph JSONs, or a Hugging Face dataset repo id to download and serve "
+            "(optionally 'org/name:subdir' to serve one subdir of a multi-set repo, e.g. "
+            "'siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:overlay_compact')."
+        ),
+    )
     parser.add_argument(
         "--features_dir",
         default=None,
