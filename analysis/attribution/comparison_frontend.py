@@ -172,9 +172,11 @@ FEATURE_DETAIL_SCAN_NEW = (
 )
 # Base (GemmaScope) features have public Neuronpedia pages; adapter features are ours and
 # don't. For base-source nodes, append a Neuronpedia link next to the feature title.
-# Base nodes keep their GemmaScope within-layer index in d.feature (see tag_combined_graph),
-# which is exactly Neuronpedia's feature id. The 16k scan name matches the width_16k
-# GemmaScope transcoders every overlay uses.
+# On combined graphs d.feature is the Cantor pairing of (layer, within-layer index) — the
+# same encoding neuronpedia_descriptions.cantor_unpair inverts — NOT the within-layer index
+# Neuronpedia expects. Feeding the paired value straight through yields a bogus latent id
+# ("Latent <huge#> Not Found"), so unpair it here and use the recovered `feat`. The source
+# still encodes the layer; the 16k scan name matches the width_16k GemmaScope transcoders.
 FEATURE_DETAIL_NEURONPEDIA_OLD = (
     "      const featureTitleSel = headerTopRowSel.append('div.feature-title')\n"
     '        .html(`Feature&nbsp;<a style="color: inherit;" href="${d.url}" target="_blank">'
@@ -183,8 +185,11 @@ FEATURE_DETAIL_NEURONPEDIA_OLD = (
 FEATURE_DETAIL_NEURONPEDIA_NEW = (
     FEATURE_DETAIL_NEURONPEDIA_OLD
     + "      if (d.source_model == 'base'){\n"
+    "        const npW = Math.floor((Math.sqrt(8 * d.feature + 1) - 1) / 2)\n"
+    "        const npFeat = d.feature - npW * (npW + 1) / 2\n"
+    "        const npLayer = npW - npFeat\n"
     "        featureTitleSel.append('a')\n"
-    "          .at({href: `https://www.neuronpedia.org/gemma-2-2b/${d.layer}-gemmascope-transcoder-16k/${d.feature}`, target: '_blank'})\n"
+    "          .at({href: `https://www.neuronpedia.org/gemma-2-2b/${npLayer}-gemmascope-transcoder-16k/${npFeat}`, target: '_blank'})\n"
     "          .st({marginLeft: 6, fontSize: '0.85em', color: '#4a7bd0', textDecoration: 'none'})\n"
     "          .text('Neuronpedia \\u2197')\n"
     "      }\n"

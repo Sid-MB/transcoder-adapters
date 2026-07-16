@@ -1168,6 +1168,11 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
     adapter_features_dir = str(feature_output) if isinstance(feature_output, Path) else None
     if adapter_features_dir is not None:
         adapter_scan = LOCAL_FEATURE_SCAN
+    # The overlay frontend loads adapter feature examples from `adapter_feature_scan`: the local
+    # `/adapter_features` alias when features are on disk (served via --adapter_features_dir), or the
+    # HF repo id when they live on the Hub (fetched remotely, like base_feature_scan). Mirror base so
+    # HF adapter features don't 404 against an unmounted local alias.
+    adapter_feature_scan = LOCAL_FEATURE_SCAN if adapter_features_dir is not None else adapter_scan
     base_features_dir = None
     base_feature_scan = None
     if args.base_feature_data_path:
@@ -1244,6 +1249,7 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
         overlay_graph_dir=overlay_graph_dir,
         hide_direct_embedding_logit_links=not args.show_direct_embedding_logit_links,
         base_feature_scan=base_feature_scan,
+        adapter_feature_scan=adapter_feature_scan,
     )
     compact_overlay_paths: list[Path] = []
     compact_base_cap = (

@@ -6,9 +6,8 @@
 # - the real adapter model (siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860) on the adapter side → instruct completions,
 # - best 100K-corpus feature examples (ms100000_dtk20) on both sides.
 
-LARGE_ARTIFACTS_DIR=${LARGE_ARTIFACTS_DIR:-/nlp/scr/siddharth}
-uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_ft_overlay_ms100k/overlay --port 8046
-
+# LARGE_ARTIFACTS_DIR=${LARGE_ARTIFACTS_DIR:-/nlp/scr/siddharth}
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:overlay_compact --port 8046
 
 # This one suffered from a bug:
 
