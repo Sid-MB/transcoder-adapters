@@ -27,6 +27,7 @@ from analysis.attribution.run_attribution import (
 from analysis.attribution.run_circuit_tracer_pipeline import (
     ensure_feature_data_conversion,
     is_hf_feature_ref,
+    normalize_hf_feature_ref,
     run_pipeline,
     scan_name_for_feature_output,
 )
