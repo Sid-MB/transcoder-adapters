@@ -249,7 +249,14 @@ def _list_prompt_files(prompts_dir: str | Path) -> list[Path]:
         if prompts_path.suffix != ".txt":
             raise ValueError(f"Prompt file must be a .txt file: {prompts_dir}")
         return [prompts_path]
-    return sorted(prompts_path.glob("*.txt"))
+    # Prefer top-level .txt files (preserves flat prompt sets, ignoring stray subdirs like archive/).
+    # If a dir has no top-level prompts, it's category-organized (e.g. interesting_queries/{harmful,
+    # divergent,adv_suffix}/) — recurse so the whole set runs in one shot. Slugs are file stems, which
+    # must stay unique across subdirs.
+    top_level = sorted(prompts_path.glob("*.txt"))
+    if top_level:
+        return top_level
+    return sorted(prompts_path.rglob("*.txt"))
 
 
 def _prompt_names_for_shard(
