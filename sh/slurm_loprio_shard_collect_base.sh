@@ -86,7 +86,7 @@ ARRAY_ID=""
 if [ ${#MISSING[@]} -gt 0 ]; then
   ARRAY_SPEC=$(IFS=,; echo "${MISSING[*]}")   # e.g. "14" or "3,7,12"
   ARRAY_ID=$(sbatch --parsable \
-    --account=nlp --partition=sc-loprio --requeue \
+    --account=nlp --partition="${SHARD_PARTITION:-sc-loprio}" ${REQUEUE_FLAG:---requeue} \
     --array="${ARRAY_SPEC}%${ARRAY_CAP}" "${ARRAY_DEP[@]}" \
     --gres="$GPU_GRES" "${CONSTRAINT_ARG[@]}" --cpus-per-task="$SHARD_CPUS" --mem="$SHARD_MEM" --time="$SHARD_TIME" \
     --job-name=base20k_shard \
@@ -101,7 +101,7 @@ fi
 DEP_ARG=()
 [ -n "$ARRAY_ID" ] && DEP_ARG=(--dependency=afterok:"$ARRAY_ID")
 MERGE_ID=$(sbatch --parsable \
-  --account=nlp --partition=sc-loprio --requeue \
+  --account=nlp --partition="${SHARD_PARTITION:-sc-loprio}" ${REQUEUE_FLAG:---requeue} \
   "${DEP_ARG[@]}" \
   --gres="$GPU_GRES" "${MERGE_CONSTRAINT_ARG[@]}" --cpus-per-task=8 --mem="$MERGE_MEM" --time=6:00:00 \
   --job-name=base20k_merge \
