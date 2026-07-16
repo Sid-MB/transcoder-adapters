@@ -66,10 +66,41 @@ evaluate() {
 }
 
 # ===========================================================================
+# HYBRID (combined base+adapter full-replacement) graphs, with the fine-tuned
+# transcoders on the BASE side: MLP(x) = T_base_finetuned(x) + T_adapter(x) + Err,
+# all in one graph (base + adapter features + real error triangles). This is the
+# "hybrid graphs from before" but with the instruct-fine-tuned base transcoders.
+# ===========================================================================
+ADAPTER=siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860
+HYBRID_OUT=$LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_finetuned_ftL0-24-25
+BASE_FEATURES=siddharthmb/2026.TA.features_gemma-2-2b_gemmascope_width_16k_average_l0_76_ms100000_ml1024_tk2_h12ad59325ffd
+ADAPTER_FEATURES=siddharthmb/2026.TA.features_2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr_he94e9602bafa
+
+# Serve the ALREADY-BUILT hybrid graphs (job 16179855; 12 interesting_small prompts). Feature
+# examples load from HuggingFace (scans baked in). Open http://localhost:8044 (forward the port).
+serve_hybrid() {
+  uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+    --graph_file_dir "$HYBRID_OUT" --port 8044
+}
+
+# Rebuild the hybrid graphs from scratch (GPU job on jagupard), fine-tuned base transcoders from HF.
+rebuild_hybrid() {
+  ./sh/sbatch --gres=gpu:1 --constraint=48G --mem=64G --partition=jag-standard --time=0-04:00:00 --job-name=hybrid_ft \
+    ./run_on_gpu/run_combined_attribution.sh \
+      --adapter_checkpoint "$ADAPTER" --base_model "$BASE" \
+      --prompts "$PROMPTS" --prompt_format chat \
+      --gemmascope_width "$WIDTH" --gemmascope_l0 "$L0" \
+      --finetuned_transcoder_dir "$FT" --finetuned_layers $LAYERS \
+      --base_feature_data_path "$BASE_FEATURES" --adapter_feature_data_path "$ADAPTER_FEATURES" \
+      --max_feature_nodes 4096 --batch_size 4 --max_n_logits 5 --max_error_nodes 32 \
+      --run_name hybrid_finetuned_ftL0-24-25 --output_dir "$HYBRID_OUT"
+}
+
+# ===========================================================================
 # Alternatively, a fully-materialized 26-layer transcoder set (fine-tune baked in)
 # for tools that take --transcoder_set directly (no per-layer flags):
 #   local: $LARGE_ARTIFACTS_DIR/transcoder-adapters/finetuned_transcoder_sets/gemma2_2b_width16k_l0_76nearest_ftL0-24-25_sparsity
 #   (re)build: analysis/attribution/export_finetuned_transcoder_set.py --finetune_dir "$FT" --finetuned_layers 0 24 25
 # ===========================================================================
 
-echo "Source this file, then run one of: serve_bundled | rebuild_comparison | production_serve | evaluate"
+echo "Source this file, then run one of: serve_bundled | rebuild_comparison | production_serve | evaluate | serve_hybrid | rebuild_hybrid"

@@ -88,6 +88,27 @@ Fine-tuned endpoint layers 0/24/25 from pretrained GemmaScope weights, loss `MSE
 
 **One-sentence version.** Adding a per-layer L1 sparsity penalty (0 on layer 0, 1e-3 on 24/25) to the transcoder fine-tune holds L0 at the base operating point while preserving almost all of the reconstruction (FVU) gain — the recommended recipe for the future 10M-token run.
 
+### Task 1c — does L25 keep improving with more tokens? (10M-token run)
+
+**The question.** After the 2M-token fine-tune, L0 and L24 reached their base FVU targets but **L25 did not** (0.221 vs base 0.15), and the training loss was still descending — suggesting L25 might just need more tokens. We tested it directly: a 10M-token run (`--l1_coeff 0 1e-3 1e-3`) with a held-out FVU/L0 eval every 1M tokens ([wandb k1wh0nfl](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/k1wh0nfl), job 16179840).
+
+**The result — it improves but plateaus above base.** L25 FVU keeps dropping with sharply diminishing returns and flattens around ~0.21, still well above the 0.15 base target:
+
+| tokens | 1M | 2M | 3M | 5M | 7M | 10M | base |
+|---|---|---|---|---|---|---|---|
+| L25 FVU | 0.228 | 0.221 | 0.217 | 0.213 | 0.212 | **0.211** | 0.15 |
+
+Figure: `figures/transcoder_finetune_token_curve.png` (FVU and L0 vs training tokens, per layer, dashed base targets). The per-1M-token gain shrinks from −0.008 (1→2M) to −0.0004 (9→10M) — so the remaining L25 gap is **not undertraining**; it's a floor (the input shift is largest at L25, and at fixed L0 the transcoder has limited capacity to track the drifted computation). So "later layers benefit from more tokens" is true but *modestly* — 5× the tokens bought L25 only 0.221 → 0.211. Two side effects at 10M: L0 fully recovers (FVU 0.071 ≤ base 0.082), but the `1e-3` penalty over 10M tokens **over-sparsifies** L24/L25 (L24 L0 → 49.7 vs base 56; L25 L0 → 58.7 vs base 65) — confirming `l1_coeff` is budget-sensitive and would want lowering for a 10M run. **Takeaway:** the deployed 2M weights are close to the practical floor; to close L25 further you'd need a *higher L0 budget* (a denser GemmaScope variant) or a skip/error-aware objective, not just more tokens.
+
+### Hybrid (combined) graphs with the fine-tuned transcoders
+
+The fine-tuned transcoders are plugged back into the **combined base+adapter full-replacement graph** (`MLP(x) = T_base_finetuned(x) + T_adapter(x) + Err`, one graph with base + adapter features + real error nodes), via the `--finetuned_transcoder_dir/--finetuned_layers` passthrough now in `run_combined_attribution.py`. Job 16179855 built 12 `interesting_small` graphs (~1200 base + ~50 adapter features + 32 error nodes each; base/adapter feature examples served from the `ms100000_dtk20` HF repos). Output: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_finetuned_ftL0-24-25/`. Serve (and copy-paste commands): `sh/visualize graphs/visualize fine tuned transcoders.sh` → `serve_hybrid` / `rebuild_hybrid`:
+
+```bash
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_finetuned_ftL0-24-25 --port 8044
+```
+
 ### Tasks 2 & 4 — difference circuits + graph clarity
 
 From the existing base-vs-adapter combined-attribution graphs ([`experiments/base_vs_adapter_circuit_trace/`](../../experiments/base_vs_adapter_circuit_trace/), 28 prompts) via `analyze_graph_clarity.py`. Error node = `true_mlp_out − transcoder_out` (the graph-level analog of reconstruction failure).
