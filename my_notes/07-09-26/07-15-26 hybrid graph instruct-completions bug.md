@@ -57,6 +57,14 @@ Contrast the tools:
 
   The adapter side matches the instruct model (`gemma-2-2b-it` top token = `' '`), where the old `run_combined_attribution` graph had collapsed to base's `'\n'`(0.62). Base side stays base-like by construction (fine-tuned GemmaScope reconstructs the base MLP). Both feature-example sets are the 100k-corpus `ms100000_dtk20` collections.
 
+## Comprehensive set (40 prompts) + 3-model completions
+
+Rebuilt the corrected overlay over the full `analysis/attribution/prompts/comprehensive` set (job **16198499**, `run_name=hybrid_ft_overlay_ms100k_comprehensive`), categories `agree__` (14) / `diverge__` (14) / `interesting_small__` (12). Output `…/base_adapter_comparisons/hybrid_ft_overlay_ms100k_comprehensive/`; on HF at [`…hybrid_ft_overlay_ms100k_graphs`](https://huggingface.co/datasets/siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs) under `comprehensive/overlay_compact/`. Serve: `--graph_file_dir siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:comprehensive/overlay_compact`.
+
+Also generated greedy **12-token completions** for every prompt from base `gemma-2-2b`, our hybrid (adapter model), and instruct `gemma-2-2b-it` (identical chat-formatted input) — `…/hybrid_ft_overlay_ms100k_comprehensive/completions.{json,md}`, and `comprehensive/completions.*` on HF. On `diverge__` prompts the hybrid follows the instruction (one-word answers, JSON, haiku, Shakespeare, emails) closely tracking instruct, while base echoes/continues the document — direct behavioral evidence the adapter carries instruction-following. Example (`diverge__constraint_oneword_paris`, graph logits): base top = `Answer` (p=0.55, continues the instruction) vs adapter = `Paris` (p=0.957).
+
+**Second overlay bug found + fixed here:** overlays built with an HF `--feature_data_path` 404'd on `/adapter_features/index.json.gz` because `adapter_feature_scan` was hardcoded to the local `/adapter_features` alias instead of the HF repo (base already did this right). Fixed to mirror `base_feature_scan` (HF repo when features are on the Hub), threaded through `write_overlay_graphs` → `build_overlay_payload`; existing `interesting_small` graphs were patched + re-uploaded.
+
 ## Takeaways / gotchas
 - To trace **instruct** behavior, use `run_base_adapter_comparison` (overlay) or the adapter-model pipeline — **not** `run_combined_attribution`, which is a *base-model decomposition* (base completions by construction).
 - The fine-tuned GemmaScope transcoders reconstruct the **base** MLP; they improve base-side interpretability/fidelity but carry **no** instruction-following — that lives entirely in the adapter.
