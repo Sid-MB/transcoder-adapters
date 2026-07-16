@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 
 from analysis.attribution.comparison_frontend import prepare_comparison_frontend
+from analysis.attribution.neuronpedia_descriptions import (
+    NeuronpediaDescriptions,
+    cantor_unpair,
+)
 from analysis.attribution.run_base_adapter_comparison import (
     LOCAL_BASE_FEATURE_SCAN,
     LOCAL_FEATURE_SCAN,
@@ -78,6 +82,66 @@ def _serve_local_feature_file(handler, *, root_dir: str, prefix: str) -> bool:
     return True
 
 
+# Lazily-built, disk-cached Neuronpedia description fetcher shared across requests. Guarded by a
+# lock because the HTTP server is threaded and NeuronpediaDescriptions mutates its cache dict.
+import threading as _threading
+
+_neuronpedia_lock = _threading.Lock()
+_neuronpedia_descriptions: NeuronpediaDescriptions | None = None
+
+
+def _get_neuronpedia_descriptions() -> NeuronpediaDescriptions:
+    global _neuronpedia_descriptions
+    if _neuronpedia_descriptions is None:
+        _neuronpedia_descriptions = NeuronpediaDescriptions()
+    return _neuronpedia_descriptions
+
+
+def _serve_neuronpedia_description(handler) -> bool:
+    """GET /neuronpedia_description?feature=<cantor> -> {layer, feature, description, url}.
+
+    ``feature`` is the graph node's Cantor-paired ``(layer, within-layer index)`` id (node['feature']).
+    The description is fetched live from Neuronpedia's auto-interp API on first request and disk-cached
+    (see :mod:`analysis.attribution.neuronpedia_descriptions`), so repeat clicks are instant and offline.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    if urlparse(handler.path).path != "/neuronpedia_description":
+        return False
+    params = parse_qs(urlparse(handler.path).query)
+    raw = (params.get("feature") or [None])[0]
+    try:
+        cantor = int(raw)
+    except (TypeError, ValueError):
+        handler.send_response(400)
+        handler.end_headers()
+        return True
+    layer, feat = cantor_unpair(cantor)
+    try:
+        with _neuronpedia_lock:
+            npd = _get_neuronpedia_descriptions()
+            description = npd.get_by_cantor(cantor)
+            npd.save()
+    except Exception as exc:
+        logger.warning("Neuronpedia description fetch failed for %s: %s", cantor, exc)
+        description = ""
+    payload = json.dumps(
+        {
+            "layer": layer,
+            "feature": feat,
+            "description": description,
+            "url": f"https://www.neuronpedia.org/gemma-2-2b/{layer}-gemmascope-transcoder-16k/{feat}",
+        }
+    ).encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.end_headers()
+    handler.wfile.write(payload)
+    return True
+
+
 def _serve_graph_data_file(handler) -> bool:
     if not handler.path.startswith(("/data/", "/graph_data/")):
         return False
@@ -134,6 +198,8 @@ def _start_comparison_server(
                     if self.path.startswith(prefix):
                         _serve_local_feature_file(self, root_dir=root_dir, prefix=prefix)
                         return
+                if _serve_neuronpedia_description(self):
+                    return
                 if _serve_graph_data_file(self):
                     return
                 super().do_GET()

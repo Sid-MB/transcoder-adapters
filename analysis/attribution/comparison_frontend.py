@@ -188,14 +188,43 @@ FEATURE_DETAIL_NEURONPEDIA_NEW = (
     "        const npW = Math.floor((Math.sqrt(8 * d.feature + 1) - 1) / 2)\n"
     "        const npFeat = d.feature - npW * (npW + 1) / 2\n"
     "        const npLayer = npW - npFeat\n"
-    "        featureTitleSel.append('a')\n"
+    # Append to headerTopRowSel, NOT featureTitleSel: renderActHistogram binds a
+    # mouseenter to featureTitleSel that pops a .histogram-placeholder (absolute,
+    # z-index 1e6) over the title. A link inside featureTitleSel gets covered by that
+    # box (blank when the feature has no quantile_values) and is un-hoverable, so we
+    # keep the link as a sibling in the header row, outside the histogram hover zone.
+    "        headerTopRowSel.append('a.neuronpedia-link')\n"
     "          .at({href: `https://www.neuronpedia.org/gemma-2-2b/${npLayer}-gemmascope-transcoder-16k/${npFeat}`, target: '_blank'})\n"
     "          .st({marginLeft: 6, fontSize: '0.85em', color: '#4a7bd0', textDecoration: 'none'})\n"
     "          .text('Neuronpedia \\u2197')\n"
+    # Fetch Neuronpedia's auto-interp description for this base feature on click and show it
+    # inline. The server route (/neuronpedia_description) unpairs d.feature server-side and
+    # disk-caches the result, so this is a live-on-first-click, instant-thereafter lookup.
+    "        const npDescSel = headerTopRowSel.append('div.neuronpedia-desc')\n"
+    "          .st({flexBasis: '100%', fontSize: '0.85em', color: '#555', fontStyle: 'italic', marginTop: 2})\n"
+    "          .text('Neuronpedia: \\u2026')\n"
+    "        fetch(`/neuronpedia_description?feature=${d.feature}`)\n"
+    "          .then(r => r.json())\n"
+    "          .then(j => { npDescSel.text(j && j.description ? `Neuronpedia: ${j.description}` : 'Neuronpedia: (no description)') })\n"
+    "          .catch(() => { npDescSel.text('Neuronpedia: (fetch failed)') })\n"
     "      }\n"
 )
 FEATURE_HISTOGRAM_GUARD_OLD = "      if (typeof currentActivation == 'number') {"
 FEATURE_HISTOGRAM_GUARD_NEW = "      if (typeof currentActivation == 'number' && scan) {"
+
+# renderActHistogram pops a .histogram-placeholder card (absolute, z-index 1e6) over the feature
+# title on hover. For features whose loaded data has no histogram (base/comparison features here),
+# it renders as a blank white box that still intercepts the hover. Suppress it: when there's no
+# histogram to draw, remove the placeholder and unbind the mouseenter/mouseleave handlers so the
+# title (and the Neuronpedia link beside it) stay clean.
+HISTOGRAM_PLACEHOLDER_GUARD_OLD = "      if (!(featureData && featureData.histogram)) return;"
+HISTOGRAM_PLACEHOLDER_GUARD_NEW = (
+    "      if (!(featureData && featureData.histogram)) {\n"
+    "        featureTitleSel.on('mouseenter', null).on('mouseleave', null);\n"
+    "        placeholderSel.remove();\n"
+    "        return;\n"
+    "      }"
+)
 FEATURE_URL_FUNCTION_OLD = """  function featureUrl(scan, path) {
     // If the scan is a local path, fetch features from the local directory
     if (scan.startsWith('/') || scan.startsWith('./')) {
@@ -457,6 +486,16 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         path=feature_detail_path,
     )
     feature_detail_path.write_text(feature_detail_text)
+
+    histogram_path = frontend_dir / "attribution_graph" / "render-act-histogram.js"
+    histogram_text = histogram_path.read_text()
+    histogram_text = _replace_once(
+        histogram_text,
+        HISTOGRAM_PLACEHOLDER_GUARD_OLD,
+        HISTOGRAM_PLACEHOLDER_GUARD_NEW,
+        path=histogram_path,
+    )
+    histogram_path.write_text(histogram_text)
 
     feature_examples_text = feature_examples_path.read_text()
     feature_examples_text = _replace_once(
