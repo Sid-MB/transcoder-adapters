@@ -37,10 +37,16 @@ Contrast the tools:
 
 - **Command / build:** `run_base_adapter_comparison` overlay, job **16194543** (COMPLETED, 3m39s on jagupard35), with `--finetuned_transcoder_dir siddharthmb/2026.TA.gemma2_2b_gemmascope_transcoders_instruct_ft_L0-24-25 --finetuned_layers 0 24 25`, `--base_feature_data_path …ms100000…h12ad59325ffd`, `--feature_data_path …lr_he94e9602bafa`, prompts `interesting_small`, 2048 nodes / 10 logits. (Two arg-parse crashes en route — `is_hf_feature_ref` and `normalize_hf_feature_ref` were used in `run_base_adapter_comparison` but not imported from `run_circuit_tracer_pipeline`; fixed and committed.)
 - **Output:** `$LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_ft_overlay_ms100k/` (sides: `base/`, `adapter/`, `overlay/`, `overlay_compact/`).
-- **Serve:**
+- **On HF (compact overlay):** [`siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs`](https://huggingface.co/datasets/siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs) (`overlay_compact/` subdir).
+- **Serve (local dir):**
   ```bash
   uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
     --graph_file_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_ft_overlay_ms100k/overlay --port 8046
+  ```
+- **Serve (from HF, `serve_comparison_graphs` now resolves an HF dataset repo id via `snapshot_download`):**
+  ```bash
+  uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+    --graph_file_dir siddharthmb/2026.TA.hybrid_ft_overlay_ms100k_graphs:overlay_compact --port 8046
   ```
 - **RESULT — fixed. ✅** On the `Answer with one word. What city is the Eiffel Tower in? … model\nParis` prompt, the two sides now diverge exactly as they should:
 
