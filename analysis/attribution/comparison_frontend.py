@@ -84,11 +84,14 @@ LINK_GRAPH_STATS_BANNER_NEW = (
     "  // data.metadata.continuation by run_combined_attribution at BUILD time (computed once,\n"
     "  // forward-only, no traces -- the viewer only displays it). Scrollable panel under the\n"
     "  // stats banner so you can read what the traced model produces alongside its circuit.\n"
+    "  // Always clear any prior continuation panel FIRST (unconditional): without this, navigating\n"
+    "  // from a graph WITH a baked continuation (run_combined_attribution) to one WITHOUT leaves the\n"
+    "  // previous prompt's continuation on screen -- a wrong 'completion' for the current graph.\n"
+    "  var lgSel = cgSel.select('.link-graph')\n"
+    "  lgSel.select('.continuation-panel').remove()\n"
     "  if (data.metadata.continuation && data.metadata.continuation.text) {\n"
     "    var contMeta = data.metadata.continuation\n"
-    "    var lgSel = cgSel.select('.link-graph')\n"
     "    if (lgSel.node() && getComputedStyle(lgSel.node()).position == 'static') lgSel.st({position: 'relative'})\n"
-    "    lgSel.select('.continuation-panel').remove()\n"
     "    var contLabel = '\\u25b8 model continuation' + (contMeta.n_tokens ? '  \\u00b7  ' + contMeta.n_tokens + ' tok' : '') + (contMeta.stopped_at_eos === false ? '  \\u00b7  truncated @ ' + (contMeta.max_new_tokens || 600) : '')\n"
     "    var contPanel = lgSel.insert('div.continuation-panel', ':first-child')\n"
     "      .st({position: 'absolute', top: 20, left: 40, right: 10, zIndex: 9, fontSize: 11,\n"
@@ -114,6 +117,21 @@ LINK_GRAPH_NODE_OPACITY_NEW = (
     "dominantBaseline: 'central',\n"
     "      opacity: d => utilCg.nodeShapeOpacity ? utilCg.nodeShapeOpacity(d) : 1,\n"
     "    })"
+)
+# The bottom-axis logit tick labels are the row of predicted-next-token "completions" the user
+# reads. In a base-vs-adapter OVERLAY the graph carries BOTH sides' logits (source_model
+# base/adapter), rendered identically upstream -- so the base model's completions ("Answer",
+# "What"...) sit unlabeled next to the adapter's real instruct completion ("Paris") and read as
+# nonsense. Tag + color each by side so they are legible. Single-sided run_combined_attribution
+# graphs have source_model unset on logits, so this is a no-op there.
+LINK_GRAPH_LOGIT_TICK_OLD = ".append('text').text(d => d.logitToken)"
+LINK_GRAPH_LOGIT_TICK_NEW = (
+    ".append('text')"
+    ".text(d => d.source_model == 'base' ? d.logitToken + '  \\u00b7base' : "
+    "d.source_model == 'adapter' ? d.logitToken + '  \\u00b7IT' : d.logitToken)"
+    ".at({fill: d => d.source_model == 'base' ? '#b0736b' : "
+    "d.source_model == 'adapter' ? '#2f6db0' : null, "
+    "opacity: d => d.source_model == 'base' ? 0.6 : 1})"
 )
 FEATURE_ROW_ICON_OLD = ".text(d => featureTypeToText(d.feature_type))"
 FEATURE_ROW_ICON_NEW = ".text(d => nodeShapeToText(d))"
@@ -521,6 +539,12 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         link_graph_text,
         LINK_GRAPH_NODE_OPACITY_OLD,
         LINK_GRAPH_NODE_OPACITY_NEW,
+        path=link_graph_path,
+    )
+    link_graph_text = _replace_once(
+        link_graph_text,
+        LINK_GRAPH_LOGIT_TICK_OLD,
+        LINK_GRAPH_LOGIT_TICK_NEW,
         path=link_graph_path,
     )
     link_graph_text = _replace_once(
