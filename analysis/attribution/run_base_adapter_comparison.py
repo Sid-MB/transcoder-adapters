@@ -1052,6 +1052,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--adapter_checkpoint", required=True, help="HF repo ID or local adapter checkpoint")
     parser.add_argument("--base_model", default="google/gemma-2-2b")
+    parser.add_argument("--continuation_max_new_tokens", type=int, default=200, help="Greedy tokens to bake as the base/adapter continuation shown below each overlay graph (base_model vs adapter_checkpoint). 0 disables. Automatic — no flag needed to enable.")
     parser.add_argument(
         "--prompt_tokenizer_model",
         default="google/gemma-2-2b-it",
@@ -1308,6 +1309,22 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
             max_base_error_nodes=compact_base_error_cap,
             max_adapter_feature_nodes=args.overlay_max_adapter_feature_nodes,
         )
+
+    # Bake base + adapter greedy continuations into every overlay (+ compact) for the below-graph
+    # completion panel. Automatic; best-effort (never fails the run); --continuation_max_new_tokens 0 skips.
+    try:
+        from analysis.attribution.bake_overlay_continuations import bake_continuations
+
+        bake_continuations(
+            overlay_dir=overlay_graph_dir,
+            compact_dirs=[compact_overlay_graph_dir] if compact_overlay_paths else None,
+            base_model=args.base_model,
+            adapter_checkpoint=args.adapter_checkpoint,
+            max_new_tokens=args.continuation_max_new_tokens,
+            device=args.device,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation baking failed (%s: %s); overlays written without continuations", type(exc).__name__, exc)
 
     manifest = {
         "adapter_checkpoint": args.adapter_checkpoint,
