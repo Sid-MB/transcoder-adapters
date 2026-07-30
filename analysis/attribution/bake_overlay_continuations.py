@@ -120,10 +120,12 @@ def bake_continuations(
         g = json.load(open(f))
         m = g.get("metadata", {})
         comp = m.setdefault("comparison", {})
-        prompt_tokens = m.get("prompt_tokens")
-        if not prompt_tokens:
+        # metadata.prompt_tokens are DISPLAY strings (space-prefixed); re-encode the prompt string
+        # to real ids (add_special_tokens=False -- <bos>/<start_of_turn> are recognized in the text).
+        prompt_str = m.get("prompt")
+        if not prompt_str:
             continue
-        ids0 = torch.tensor([prompt_tokens], device=device)
+        ids0 = torch.tensor([tok.encode(prompt_str, add_special_tokens=False)], device=device)
         try:
             bc = _greedy(base_logits, ids0, tok, max_new_tokens)
             ac = _greedy(adapter_logits, ids0, tok, max_new_tokens)
