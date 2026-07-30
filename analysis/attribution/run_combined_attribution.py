@@ -303,6 +303,45 @@ def _resolve_feature_scans(args: argparse.Namespace) -> tuple[str | None, str | 
     return base_scan, adapter_scan
 
 
+def _greedy_continuation(model: Any, prompt_tokens: list[int], *, max_new_tokens: int) -> dict[str, Any]:
+    """Greedy-decode the model's own continuation of the prompt, for display at the top of the
+    overlay (so you can read what the traced model actually produces, alongside its circuit).
+
+    Runs until the model emits its stop token or ``max_new_tokens`` (default 600). This is cheap
+    next to attribution -- forward-only, KV-cached, no backward pass and no per-feature influence
+    -- so it is computed once here at build time and baked into the graph metadata; the viewer
+    just displays the string. The combined ReplacementModel is a HookedTransformer, so ``generate``
+    with ``do_sample=False`` is exact argmax (the "top-logit" continuation). Best-effort: any
+    failure returns an error marker rather than aborting the graph (the graph is the artifact)."""
+    import torch
+
+    if max_new_tokens <= 0:
+        return {"text": None, "disabled": True}
+    try:
+        device = next(model.parameters()).device
+        input_ids = torch.tensor([list(prompt_tokens)], device=device, dtype=torch.long)
+        with torch.no_grad():
+            out = model.generate(
+                input_ids,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,      # greedy / argmax == the top-logit continuation
+                stop_at_eos=True,
+                verbose=False,
+            )
+        gen_ids = out[0, len(prompt_tokens):].tolist()
+        text = model.tokenizer.decode(gen_ids, skip_special_tokens=False)
+        return {
+            "text": text,
+            "n_tokens": len(gen_ids),
+            "stopped_at_eos": len(gen_ids) < max_new_tokens,
+            "max_new_tokens": max_new_tokens,
+            "decoding": "greedy",
+        }
+    except Exception as exc:  # noqa: BLE001 -- never break graph production over the display bonus
+        logger.warning(f"  continuation generation failed ({type(exc).__name__}: {exc})")
+        return {"text": None, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def run_combined_attribution(args: argparse.Namespace) -> dict[str, Any]:
     import torch
     from circuit_tracer import attribute
@@ -379,6 +418,18 @@ def run_combined_attribution(args: argparse.Namespace) -> dict[str, Any]:
                 adapter_feature_scan=adapter_feature_scan,
                 max_error_nodes=max_error_nodes,
             )
+            # Bake the model's greedy continuation into the metadata so the viewer can show
+            # what the traced model produces at the top (cheap; no attribution traces needed).
+            continuation = _greedy_continuation(
+                model, prompt_tokens, max_new_tokens=args.continuation_max_tokens
+            )
+            tagged.setdefault("metadata", {})["continuation"] = continuation
+            if continuation.get("text"):
+                logger.info(
+                    f"  Continuation: {continuation['n_tokens']} tokens"
+                    f"{' (hit EOS)' if continuation.get('stopped_at_eos') else ''}: "
+                    f"{continuation['text'][:80].replace(chr(10), ' ')!r}…"
+                )
             graph_json_path.write_text(json.dumps(tagged, indent=2) + "\n")
             counts = tagged["metadata"]["comparison"]["node_counts"]
             logger.info(
@@ -445,6 +496,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--node_threshold", type=float, default=0.8)
     parser.add_argument("--edge_threshold", type=float, default=0.98)
+    parser.add_argument(
+        "--continuation_max_tokens",
+        type=int,
+        default=600,
+        help="Greedy-decode the model's own continuation of each prompt (until its stop token or "
+        "this many tokens) and bake the string into the graph metadata for the viewer to show at "
+        "the top. Cheap (forward-only, no traces). 600 = the default cap; set 0 to disable.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32", "bf16", "fp16", "fp32"], default="bfloat16")
     parser.add_argument("--base_backend", choices=["transformerlens", "nnsight"], default="transformerlens")
