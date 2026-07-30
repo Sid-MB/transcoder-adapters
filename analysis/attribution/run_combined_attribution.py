@@ -1,5 +1,12 @@
 """Full-replacement base+adapter attribution: real error nodes in ONE graph.
 
+CAVEAT (read first): the combined forward runs on the BASE backbone, so this graph's
+logit/completion nodes are the BASE model's next-token predictions, NOT the instruction-tuned
+adapter model's. For overlays that must show instruct completions on the adapter side, use
+``analysis.attribution.run_base_adapter_comparison`` (runs the real adapter model, overlays base).
+See ``my_notes/07-09-26/07-15-26 hybrid graph instruct-completions bug.md``.
+
+
 This is the full-replacement pivot from the 5/28 notes (``MLP(x) = T_base(x) + T_finetune(x) + Err``).
 Instead of the RelP path (which keeps the real base MLP and zero-pads its error nodes), this
 replaces each MLP with ``T_base`` (GemmaScope) + ``T_adapter`` (our trained adapter) and runs
@@ -363,6 +370,19 @@ def _add_node_counts_to_graph_metadata(output_dir: Path, slug: str, node_counts:
 def run_combined_attribution(args: argparse.Namespace) -> dict[str, Any]:
     import torch
     from circuit_tracer import attribute
+
+    # LOUD GUARD: the combined model's forward runs on the BASE backbone (MLP replaced by
+    # T_base + T_adapter + error, which reconstructs the base MLP), so its logit/completion nodes
+    # are the BASE model's next-token predictions -- NOT the instruct-bridging adapter model's.
+    # For overlays whose adapter side should show instruction-tuned completions, use
+    # analysis.attribution.run_base_adapter_comparison (runs the real adapter model + overlays base).
+    # See my_notes/07-09-26/07-15-26 hybrid graph instruct-completions bug.md.
+    logger.warning(
+        "run_combined_attribution: logit/completion nodes will be BASE-model completions (the "
+        "combined forward collapses to the base backbone). This is expected for a base-model "
+        "decomposition. If you want instruct-tuned completions on the adapter side, build the "
+        "overlay with run_base_adapter_comparison instead."
+    )
 
     output_dir = args.output_dir or generate_output_path(
         "combined_attribution_graphs",
