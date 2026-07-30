@@ -6,8 +6,10 @@ set -euo pipefail
 # HF until the trained adapter has been pushed (final model-*.safetensors present), then
 # submits the GPU chain on jagupard:
 #   1) collect the NEW adapter's feature activations (sparse -> fast)            [GPU]
-#   2) run_combined_attribution: base GemmaScope (reusable ms100000) vs NEW adapter,
-#      over the comprehensive prompt set -> one combined overlay graph per prompt [GPU, afterok:1]
+#   2) run_base_adapter_comparison: base GemmaScope (reusable ms100000) vs NEW adapter,
+#      over the comprehensive prompt set -> a real base-vs-adapter OVERLAY per prompt [GPU, afterok:1]
+#      (NOT run_combined_attribution: that runs one base-backbone model whose forward collapses to
+#      base, so its completions are the base model's, not the instruct-bridging adapter's.)
 #
 # Why CPU-poll instead of a Slurm dependency: training runs on an external RunPod B200, not
 # Slurm, so there's no job to depend on -- the adapter appearing on HF is the cross-system
@@ -105,20 +107,23 @@ COLLECT_MERGE_ID=$(echo "$LAUNCH_OUT" | grep -oE "Merge job submitted: *job [0-9
 [ -z "$COLLECT_MERGE_ID" ] && { echo "[autoqueue] ERROR: could not parse merge job id from launcher output"; exit 1; }
 echo "[autoqueue] adapter-collection merge job: $COLLECT_MERGE_ID -> $ADAPTER_FEATURES_DIR"
 
-# ── 2) Combined attribution: base ms100000 vs NEW adapter (afterok) ───────────
+# ── 2) Base-vs-adapter OVERLAY: base ms100000 vs NEW adapter (afterok) ─────────
+# run_base_adapter_comparison runs the base GemmaScope run and the REAL adapter model separately
+# and overlays them, so the adapter side shows instruction-tuned completions. (--overlay_max_base_error_nodes
+# caps error nodes in the compact overlay; the adapter feature repo is --feature_data_path.)
 ATTR_ID=$(./sh/sbatch \
   --gres=gpu:1 --constraint=48G --mem=128G --partition=jag-standard \
   --job-name=huge_overlay_attr --time=1-00:00:00 --parsable \
   --dependency=afterok:"$COLLECT_MERGE_ID" \
-  ./run_on_gpu/run_combined_attribution.sh \
+  ./run_on_gpu/run_base_adapter_comparison.sh \
     --adapter_checkpoint "$NEW_ADAPTER" --base_model google/gemma-2-2b \
     --prompts "$PROMPTS" --prompt_format chat \
     --gemmascope_width width_16k --gemmascope_l0 average_l0_76 \
     --base_feature_data_path "$BASE_FEATURES" \
-    --adapter_feature_data_path "$ADAPTER_FEATURES_DIR/circuit_tracer_features" \
+    --feature_data_path "$ADAPTER_FEATURES_DIR/circuit_tracer_features" \
     --max_feature_nodes "$MAX_FEATURE_NODES" --batch_size 4 \
-    --max_n_logits "$MAX_N_LOGITS" --max_error_nodes "$MAX_ERROR_NODES" \
+    --max_n_logits "$MAX_N_LOGITS" --overlay_max_base_error_nodes "$MAX_ERROR_NODES" \
     --run_name huge_overlay --output_dir "$GRAPH_OUT")
 echo "[autoqueue] attribution job: $ATTR_ID (afterok:$COLLECT_MERGE_ID) -> $GRAPH_OUT"
-echo "[autoqueue] DONE submitting. Serve afterward with:"
-echo "  uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir $GRAPH_OUT --port 8044"
+echo "[autoqueue] DONE submitting. Serve afterward with (note the /overlay subdir):"
+echo "  uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir $GRAPH_OUT/overlay --port 8044"
