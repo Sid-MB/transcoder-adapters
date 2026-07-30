@@ -133,6 +133,44 @@ LINK_GRAPH_LOGIT_TICK_NEW = (
     "d.source_model == 'adapter' ? '#2f6db0' : null, "
     "opacity: d => d.source_model == 'base' ? 0.6 : 1})"
 )
+# Adaptive output-logit LABEL LAYOUT (readability on wide graphs). Logit nodes pack into their
+# context column spaced by s = min(overallS, ctxWidth/count); with many logits / narrow columns s
+# shrinks and the fixed -45deg / 12px tick labels overlap. Measure the min horizontal gap between
+# adjacent logit ticks (== s in px) once per graph, then steepen rotation toward vertical and shrink
+# font (with a 9px floor) as they crowd. Sparse graphs (gap >= 34px) keep the original -45deg/12px,
+# so this degrades gracefully and is a no-op for single-sided run_combined_attribution graphs too.
+LINK_GRAPH_LOGIT_LAYOUT_OLD = (
+    "var logitTickSel = c.svgBot.append('g.axis')"
+    ".appendMany('g', nodes.filter(d => d.feature_type == 'logit'))"
+)
+LINK_GRAPH_LOGIT_LAYOUT_NEW = (
+    "var __logitTickNodes = nodes.filter(d => d.feature_type == 'logit')\n"
+    "  var __logitXs = __logitTickNodes.map(d => d.pos[0]).sort((a, b) => a - b)\n"
+    "  var __logitMinGap = Infinity\n"
+    "  for (var __li = 1; __li < __logitXs.length; __li++) { var __lg = __logitXs[__li] - __logitXs[__li - 1]; if (__lg > 0.5 && __lg < __logitMinGap) __logitMinGap = __lg }\n"
+    "  if (!isFinite(__logitMinGap)) __logitMinGap = 40\n"
+    "  var __logitRot = __logitMinGap >= 34 ? -45 : __logitMinGap >= 22 ? -60 : __logitMinGap >= 14 ? -72 : -82\n"
+    "  var __logitFs = __logitMinGap >= 34 ? 12 : __logitMinGap >= 22 ? 11 : __logitMinGap >= 14 ? 10 : 9\n"
+    "  var logitTickSel = c.svgBot.append('g.axis').appendMany('g', __logitTickNodes)"
+)
+# Only the logit tick block has x:5 / textAnchor:'start' (the prompt-token axis uses x:-5 /
+# textAnchor:'end'), so this targets the output-logit labels specifically.
+LINK_GRAPH_LOGIT_ROT_OLD = (
+    "      x: 5,\n"
+    "      y: 2,\n"
+    "      textAnchor: 'start',\n"
+    "      transform: 'rotate(-45)',\n"
+    "      dominantBaseline: 'middle',\n"
+    "      fontSize: 12,\n"
+)
+LINK_GRAPH_LOGIT_ROT_NEW = (
+    "      x: 5,\n"
+    "      y: 2,\n"
+    "      textAnchor: 'start',\n"
+    "      transform: 'rotate(' + __logitRot + ')',\n"
+    "      dominantBaseline: 'middle',\n"
+    "      fontSize: __logitFs,\n"
+)
 FEATURE_ROW_ICON_OLD = ".text(d => featureTypeToText(d.feature_type))"
 FEATURE_ROW_ICON_NEW = ".text(d => nodeShapeToText(d))"
 FEATURE_ROW_FONT_SIZE_OLD = "fontSize: 9,\n        textAnchor:"
@@ -545,6 +583,18 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         link_graph_text,
         LINK_GRAPH_LOGIT_TICK_OLD,
         LINK_GRAPH_LOGIT_TICK_NEW,
+        path=link_graph_path,
+    )
+    link_graph_text = _replace_once(
+        link_graph_text,
+        LINK_GRAPH_LOGIT_LAYOUT_OLD,
+        LINK_GRAPH_LOGIT_LAYOUT_NEW,
+        path=link_graph_path,
+    )
+    link_graph_text = _replace_once(
+        link_graph_text,
+        LINK_GRAPH_LOGIT_ROT_OLD,
+        LINK_GRAPH_LOGIT_ROT_NEW,
         path=link_graph_path,
     )
     link_graph_text = _replace_once(
