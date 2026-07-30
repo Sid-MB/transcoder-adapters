@@ -331,6 +331,73 @@ NODE_CONNECTIONS_HEADER_ICON_NEW = (
     "utilCg.nodeShapeToText(clickedNode) : utilCg.featureTypeToText(clickedNode.feature_type))"
 )
 
+# Comparison-graph addition: Neuronpedia auto-interp descriptions as *default* names for
+# base-source feature nodes. Pinning a base node (cmd-click) fetches its description from
+# the server's /neuronpedia_description route (disk-cached server-side) into a page-local
+# Map keyed by clerpUUID — the per-feature key shared by every ctx instance of a feature.
+# The description slots into the name chain as localClerp || remoteClerp || neuronpedia ||
+# generated clerp, so user-typed labels always win and nothing is persisted to
+# localStorage or the URL; renderAll.hClerpUpdate() repaints all label consumers
+# (subgraph, clerp list, tooltips) when a description arrives.
+NEURONPEDIA_CLERP_HELPERS_OLD = "  function clickFeature(visState, renderAll, d, metaKey){"
+NEURONPEDIA_CLERP_HELPERS_NEW = """  var neuronpediaClerps = new Map()
+  var neuronpediaClerpsPending = new Set()
+  function neuronpediaClerp(d){
+    return d ? neuronpediaClerps.get(clerpUUID(d)) : undefined
+  }
+  function requestNeuronpediaClerp(renderAll, node){
+    if (!node || node.source_model != 'base' || node.feature == null) return
+    var key = clerpUUID(node)
+    if (neuronpediaClerps.has(key) || neuronpediaClerpsPending.has(key)) return
+    neuronpediaClerpsPending.add(key)
+    fetch(`/neuronpedia_description?feature=${node.feature}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(j => {
+        neuronpediaClerpsPending.delete(key)
+        if (j && j.description){
+          neuronpediaClerps.set(key, j.description)
+          renderAll.hClerpUpdate()
+        }
+      })
+      .catch(() => neuronpediaClerpsPending.delete(key))
+  }
+
+  function clickFeature(visState, renderAll, d, metaKey){"""
+NEURONPEDIA_PIN_FETCH_OLD = "      visState.pinnedIds.push(d.nodeId)\n"
+NEURONPEDIA_PIN_FETCH_NEW = (
+    "      visState.pinnedIds.push(d.nodeId)\n"
+    "      requestNeuronpediaClerp(renderAll, d)\n"
+)
+NEURONPEDIA_PPCLERP_CHAIN_OLD = (
+    "      node.ppClerp = node.localClerp || node.remoteClerp || node.clerp;"
+)
+NEURONPEDIA_PPCLERP_CHAIN_NEW = (
+    "      node.ppClerp = node.localClerp || node.remoteClerp || neuronpediaClerp(node) || node.clerp;"
+)
+NEURONPEDIA_CLERP_EXPORTS_OLD = "    hClerpUpdateFn,\n"
+NEURONPEDIA_CLERP_EXPORTS_NEW = (
+    "    hClerpUpdateFn,\n    neuronpediaClerp,\n    requestNeuronpediaClerp,\n"
+)
+# Grouped supernode members re-derive their sub-label from localClerp || clerp directly;
+# keep the Neuronpedia default in that chain too.
+SUBGRAPH_MEMBER_CLERP_OLD = "        const nodeClerp = d.localClerp || d.clerp"
+SUBGRAPH_MEMBER_CLERP_NEW = (
+    "        const nodeClerp = d.localClerp || "
+    "(utilCg.neuronpediaClerp ? utilCg.neuronpediaClerp(d) : '') || d.clerp"
+)
+# Nodes already pinned at load time (URL pinnedIds / saved qParams) never pass through
+# togglePinned, so fetch their descriptions up front.
+INIT_PINNED_PREFETCH_OLD = (
+    "  renderAll.hClerpUpdate.fns.push(params => utilCg.hClerpUpdateFn(params, data))\n"
+)
+INIT_PINNED_PREFETCH_NEW = (
+    INIT_PINNED_PREFETCH_OLD
+    + "  if (utilCg.requestNeuronpediaClerp) (visState.pinnedIds || []).forEach(id => {\n"
+    "    var pinnedNode = data.nodes.idToNode?.[id]\n"
+    "    if (pinnedNode) utilCg.requestNeuronpediaClerp(renderAll, pinnedNode)\n"
+    "  })\n"
+)
+
 # Comparison-graph addition: append each graph's as-built composition (base/adapter/error
 # node counts, baked into graph-metadata.json as d.node_counts) to its dropdown option text,
 # with the same glyphs as the in-graph banner. Patched into BOTH option-builder sites in
@@ -406,6 +473,10 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
     util_text = _replace_once(util_text, FEATURE_ROW_FONT_SIZE_OLD, FEATURE_ROW_FONT_SIZE_NEW, path=util_path)
     util_text = _replace_once(util_text, FEATURE_TYPE_FUNCTION_OLD, FEATURE_TYPE_FUNCTION_NEW, path=util_path)
     util_text = _replace_once(util_text, FEATURE_TYPE_RETURN_OLD, FEATURE_TYPE_RETURN_NEW, path=util_path)
+    util_text = _replace_once(util_text, NEURONPEDIA_CLERP_HELPERS_OLD, NEURONPEDIA_CLERP_HELPERS_NEW, path=util_path)
+    util_text = _replace_once(util_text, NEURONPEDIA_PIN_FETCH_OLD, NEURONPEDIA_PIN_FETCH_NEW, path=util_path)
+    util_text = _replace_once(util_text, NEURONPEDIA_PPCLERP_CHAIN_OLD, NEURONPEDIA_PPCLERP_CHAIN_NEW, path=util_path)
+    util_text = _replace_once(util_text, NEURONPEDIA_CLERP_EXPORTS_OLD, NEURONPEDIA_CLERP_EXPORTS_NEW, path=util_path)
     util_path.write_text(util_text)
 
     link_graph_text = link_graph_path.read_text()
@@ -514,6 +585,26 @@ def patch_frontend_assets(frontend_dir: Path) -> None:
         path=node_connections_path,
     )
     node_connections_path.write_text(node_connections_text)
+
+    subgraph_path = frontend_dir / "attribution_graph" / "init-cg-subgraph.js"
+    subgraph_text = subgraph_path.read_text()
+    subgraph_text = _replace_once(
+        subgraph_text,
+        SUBGRAPH_MEMBER_CLERP_OLD,
+        SUBGRAPH_MEMBER_CLERP_NEW,
+        path=subgraph_path,
+    )
+    subgraph_path.write_text(subgraph_text)
+
+    init_cg_path = frontend_dir / "attribution_graph" / "init-cg.js"
+    init_cg_text = init_cg_path.read_text()
+    init_cg_text = _replace_once(
+        init_cg_text,
+        INIT_PINNED_PREFETCH_OLD,
+        INIT_PINNED_PREFETCH_NEW,
+        path=init_cg_path,
+    )
+    init_cg_path.write_text(init_cg_text)
 
     # index.html has two identical option-builder sites (initial render + refetch-on-click);
     # patch both so the dropdown shows each graph's as-built base/adapter/error counts.
