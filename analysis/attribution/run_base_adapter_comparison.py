@@ -637,6 +637,26 @@ def _node_id_map(
     return mapping
 
 
+def overlay_node_counts(nodes: Any) -> dict[str, int]:
+    """base/adapter feature-node + error-node counts, for the in-graph banner and dropdown labels."""
+    base_features = adapter_features = error_nodes = 0
+    for node in nodes:
+        feature_type = node.get("feature_type")
+        if feature_type == "mlp reconstruction error" or "error" in str(feature_type or ""):
+            error_nodes += 1
+        elif feature_type == "cross layer transcoder":
+            source = node.get("source_model")
+            if source == SOURCE_BASE:
+                base_features += 1
+            elif source == SOURCE_ADAPTER:
+                adapter_features += 1
+    return {
+        "base_features": base_features,
+        "adapter_features": adapter_features,
+        "error_nodes": error_nodes,
+    }
+
+
 def build_overlay_payload(
     *,
     base_payload: dict[str, Any],
@@ -645,6 +665,8 @@ def build_overlay_payload(
     hide_direct_embedding_logit_links: bool = True,
     base_feature_scan: str | None = None,
     adapter_feature_scan: str = LOCAL_FEATURE_SCAN,
+    base_continuation: dict[str, Any] | None = None,
+    adapter_continuation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge matched base and adapter graph JSON payloads into one visual overlay."""
     base_metadata = base_payload["metadata"]
@@ -711,6 +733,31 @@ def build_overlay_payload(
             overlay_link["source_graph_slug"] = source_slug
             overlay_links.append(overlay_link)
 
+    overlay_counts = overlay_node_counts(nodes_by_id.values())
+    overlay_comparison: dict[str, Any] = {
+        "base_slug": base_slug,
+        "adapter_slug": adapter_slug,
+        "base_scan": base_metadata.get("scan"),
+        "adapter_scan": adapter_metadata.get("scan"),
+        "base_feature_scan": base_feature_scan,
+        "adapter_feature_scan": adapter_feature_scan,
+        "node_shapes": {
+            SOURCE_BASE: BASE_NODE_SHAPE,
+            SOURCE_ADAPTER: ADAPTER_NODE_SHAPE,
+            SOURCE_SHARED: SHARED_NODE_SHAPE,
+        },
+        # base/adapter/error node composition, for the in-graph banner + dropdown labels.
+        "node_counts": overlay_counts,
+        "link_filter": {
+            "hide_direct_embedding_logit_links": hide_direct_embedding_logit_links,
+            "skipped_direct_embedding_logit_links": skipped_direct_embedding_logit_links,
+        },
+    }
+    # Model greedy continuations (base vs adapter), shown as a text panel below the graph.
+    if base_continuation is not None:
+        overlay_comparison["base_continuation"] = base_continuation
+    if adapter_continuation is not None:
+        overlay_comparison["adapter_continuation"] = adapter_continuation
     overlay_metadata = dict(adapter_metadata)
     overlay_metadata.update(
         {
@@ -718,23 +765,8 @@ def build_overlay_payload(
             "scan": "base-vs-adapter",
             "transcoder_list": [],
             "schema_version": OVERLAY_SCHEMA_VERSION,
-            "comparison": {
-                "base_slug": base_slug,
-                "adapter_slug": adapter_slug,
-                "base_scan": base_metadata.get("scan"),
-                "adapter_scan": adapter_metadata.get("scan"),
-                "base_feature_scan": base_feature_scan,
-                "adapter_feature_scan": adapter_feature_scan,
-                "node_shapes": {
-                    SOURCE_BASE: BASE_NODE_SHAPE,
-                    SOURCE_ADAPTER: ADAPTER_NODE_SHAPE,
-                    SOURCE_SHARED: SHARED_NODE_SHAPE,
-                },
-                "link_filter": {
-                    "hide_direct_embedding_logit_links": hide_direct_embedding_logit_links,
-                    "skipped_direct_embedding_logit_links": skipped_direct_embedding_logit_links,
-                },
-            },
+            "node_counts": overlay_counts,
+            "comparison": overlay_comparison,
         }
     )
     qparams = dict(adapter_payload.get("qParams") or {})
@@ -902,6 +934,10 @@ def compact_overlay_payload(
     compact_payload["metadata"]["comparison"] = dict(
         compact_payload["metadata"].get("comparison") or {}
     )
+    # Recompute node_counts from the pruned compact nodes (don't inherit the full overlay's counts).
+    compact_counts = overlay_node_counts(compact_payload["nodes"])
+    compact_payload["metadata"]["node_counts"] = compact_counts
+    compact_payload["metadata"]["comparison"]["node_counts"] = compact_counts
     if base_feature_scan is not None:
         compact_payload["metadata"]["comparison"]["base_feature_scan"] = base_feature_scan
     if adapter_feature_scan is not None:
