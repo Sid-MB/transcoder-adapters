@@ -342,6 +342,24 @@ def _greedy_continuation(model: Any, prompt_tokens: list[int], *, max_new_tokens
         return {"text": None, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _add_node_counts_to_graph_metadata(output_dir: Path, slug: str, node_counts: dict[str, Any]) -> None:
+    """Copy this graph's base/adapter/error node_counts into its entry in graph-metadata.json, so
+    the viewer's prompt DROPDOWN can label each option with its composition (the same figures the
+    in-graph banner shows). circuit_tracer's create_graph_files writes the entry without them; the
+    frontend's dropdown patch reads `d.node_counts.{base_features,adapter_features,error_nodes}`."""
+    meta_path = output_dir / "graph-metadata.json"
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning(f"  could not add node_counts to graph-metadata.json for {slug}")
+        return
+    for graph_entry in meta.get("graphs", []):
+        if graph_entry.get("slug") == slug:
+            graph_entry["node_counts"] = node_counts
+            meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+            return
+
+
 def run_combined_attribution(args: argparse.Namespace) -> dict[str, Any]:
     import torch
     from circuit_tracer import attribute
@@ -432,6 +450,7 @@ def run_combined_attribution(args: argparse.Namespace) -> dict[str, Any]:
                 )
             graph_json_path.write_text(json.dumps(tagged, indent=2) + "\n")
             counts = tagged["metadata"]["comparison"]["node_counts"]
+            _add_node_counts_to_graph_metadata(output_dir, slug, counts)
             logger.info(
                 f"  Tagged graph: {counts['base_features']} base + {counts['adapter_features']} "
                 f"adapter features + {counts['error_nodes']} error nodes -> {graph_json_path}"
