@@ -1,0 +1,1 @@
+<｜begin▁of▁sentence｜><｜User｜>Answer with one word. What is the opposite of hot?<｜Assistant｜>cold

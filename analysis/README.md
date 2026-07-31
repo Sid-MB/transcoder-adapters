@@ -53,8 +53,13 @@ python -m analysis.features.collect_feature_activations \
 ```
 
 Outputs:
-- `features/{cantor_id}.json` — per-feature activation examples + logit lens
-- `feature_metadata.json` — activation frequencies, domain/region breakdowns
+- `activation_histograms.npz` — exact nonzero activation histograms, globally and per feature/domain; the dashboard derives count, token-density, and conditional-distribution views from this sidecar
+- `feature_metadata.json` — activation frequencies, domain/region breakdowns, `feature_frequency_summary` with per-feature firing-frequency histograms including zero-firing features, and run-level nonzero token-feature density by domain
+- `features/{cantor_id}.json` — feature examples and logit lens, including top activations, per-domain top activations, random samples, and bounded activation-range tabs for medium/non-top activation inspection
+
+Useful collection flags for domain comparison and medium activations:
+- `--activation_example_ranges` and `--activation_range_examples_per_domain` control bounded activation-range example tabs.
+- `--relative_target_domain` and `--relative_baseline_domain` choose the domains used for relative density and activation-strength scores.
 
 ## Step 2: Feature analysis (independent)
 

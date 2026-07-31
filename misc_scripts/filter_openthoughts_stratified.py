@@ -357,7 +357,8 @@ def main():
     if args.output:
         base_path = args.output.replace('.jsonl', '').replace('_train', '').replace('_val', '')
     else:
-        base_path = f"/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n{total}_t{args.soft_max_tokens}_s{args.seed}"
+        from helpers.paths import PRODUCTS_DIR
+        base_path = str(PRODUCTS_DIR / "data" / "openthoughts" / f"stratified_n{total}_t{args.soft_max_tokens}_s{args.seed}")
 
     # Save splits
     save_train_val_splits(df, base_path, args.n_train, args.n_val, args.seed)

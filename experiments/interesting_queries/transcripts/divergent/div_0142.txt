@@ -1,0 +1,10 @@
+# div_0142  (#2 divergent)
+
+USER: Give me an introduction over 200 words for Alkemi, a chemical company in Poststraat, 82
+B-9160 Lokeren
+Belgium
+
+INSTRUCT rollout (first tokens, argmax-KL target): ## Alkemi: Where Chemistry Meets
+
+TARGET TOKEN: ##  (index 44)
+WHY: argmax-KL response pos 0: base->'Al' vs instruct->'##'

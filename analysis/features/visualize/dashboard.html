@@ -68,6 +68,166 @@
       overflow: hidden;
     }
     .bar-fill { height: 100%; background: linear-gradient(90deg, #388bfd, #a371f7); border-radius: 4px; }
+    .histogram-plot {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 6px;
+      margin: 6px 0 10px 0;
+      max-width: 560px;
+    }
+    .histogram-y-axis {
+      height: 86px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: flex-end;
+      color: var(--muted);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      overflow: hidden;
+    }
+    .histogram-area { min-width: 0; }
+    .histogram-bars {
+      height: 86px;
+      display: flex;
+      align-items: flex-end;
+      gap: 1px;
+      padding: 0 0 1px 1px;
+      border-left: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+    .histogram-bar {
+      flex: 1 1 0;
+      min-width: 2px;
+      background: linear-gradient(180deg, #a371f7, #388bfd);
+      border-radius: 2px 2px 0 0;
+    }
+    .histogram-bar.zero { background: transparent; }
+    .histogram-bar.range-link { cursor: pointer; }
+    .histogram-bar.range-link:hover {
+      outline: 1px solid var(--text);
+      outline-offset: -1px;
+    }
+    .histogram-marker {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 0;
+      pointer-events: auto;
+      z-index: 2;
+    }
+    .histogram-marker-p95 { border-left: 1px solid #3fb950; }
+    .histogram-marker-p99 { border-left: 1px dashed #d29922; }
+    .histogram-marker-max { border-left: 2px solid #f85149; }
+    .histogram-x-axis {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .histogram-x-axis span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .histogram-x-axis span:nth-child(2) { text-align: center; }
+    .histogram-x-axis span:nth-child(3) { text-align: right; }
+    .feature-hist-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 4px 0 8px 0;
+    }
+    .feature-hist-tabs button {
+      font-size: 12px;
+      padding: 5px 9px;
+      background: var(--panel);
+    }
+    .feature-hist-tabs button.active {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, 0.12);
+    }
+    .feature-hist-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .feature-hist-card {
+      flex: 1 1 190px;
+      min-width: 180px;
+      max-width: 280px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+    }
+    .feature-hist-card h3 {
+      margin: 0 0 2px 0;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .feature-hist-card .histogram-plot {
+      grid-template-columns: 34px minmax(0, 1fr);
+      margin: 6px 0 0 0;
+      max-width: none;
+    }
+    .feature-hist-card .histogram-y-axis,
+    .feature-hist-card .histogram-bars {
+      height: 58px;
+      font-size: 9px;
+    }
+    .feature-hist-card .histogram-bar { min-width: 1px; }
+    .feature-hist-card .histogram-x-axis { font-size: 9px; }
+    .histogram-legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .histogram-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 0;
+      margin-right: 4px;
+      vertical-align: middle;
+      border-top: 2px solid currentColor;
+    }
+    .histogram-legend .p95 { color: #3fb950; }
+    .histogram-legend .p99 { color: #d29922; }
+    .histogram-legend .max { color: #f85149; }
+    .feature-hist-footer {
+      margin-top: 8px;
+      padding-top: 7px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .graph-footer {
+      margin: 5px 0 9px 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .overview-disclosure {
+      margin-top: 8px;
+      border-top: 1px solid var(--border);
+      padding-top: 6px;
+    }
+    .overview-disclosure summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      user-select: none;
+    }
+    .overview-disclosure summary:hover { color: var(--text); }
     .controls {
       padding: 10px 16px;
       display: flex;
@@ -76,6 +236,34 @@
       align-items: center;
       border-bottom: 1px solid var(--border);
       background: var(--panel);
+    }
+    .relative-presets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      width: 100%;
+    }
+    .relative-presets[hidden] { display: none; }
+    .relative-presets button {
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+    .relative-presets button.active {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, 0.12);
+    }
+    .control-explanations {
+      width: 100%;
+      display: grid;
+      gap: 4px;
+      padding-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .control-explanations strong {
+      color: var(--text);
+      font-weight: 600;
     }
     input[type="search"], select, input[type="text"] {
       background: var(--bg);
@@ -188,6 +376,26 @@
       max-height: 200px;
       overflow: auto;
     }
+    .relative-summary {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      margin: 8px 0 10px 0;
+    }
+    .relative-summary-title {
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .relative-summary-lines {
+      display: grid;
+      gap: 4px;
+      font-size: 13px;
+    }
+    .relative-summary-lines strong {
+      color: var(--text);
+      font-weight: 600;
+    }
     .quantile-tabs {
       display: flex;
       flex-wrap: wrap;
@@ -213,6 +421,57 @@
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
+    }
+    .example-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .example-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .example-actions button {
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+    .prompt-status {
+      margin: 6px 0 0 0;
+      min-height: 16px;
+    }
+    .source-transcript {
+      margin-top: 8px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+    }
+    .source-transcript-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .source-transcript-body {
+      max-height: 520px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .source-transcript-collected-window {
+      border: 1px solid #f85149;
+      border-radius: 3px;
+      padding: 1px 2px;
+      background: rgba(248, 81, 73, 0.08);
     }
     .tok-line {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -271,6 +530,33 @@
       box-shadow: 0 0 0 1px rgba(0,0,0,0.3);
       transform: translate(-50%, -50%);
     }
+    .act-scale-hover-lbl {
+      position: absolute;
+      top: 0;
+      transform: translateX(-50%);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(145, 152, 161, 0.9);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .act-scale-hover-dot {
+      position: absolute;
+      top: 50%;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: rgba(248, 81, 73, 0.24);
+      border: 2px solid rgba(248, 81, 73, 0.55);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.16);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+    .act-scale-hover-lbl[hidden],
+    .act-scale-hover-dot[hidden] {
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -283,6 +569,8 @@
       <div class="overview" id="overview"></div>
       <div class="controls">
         <input type="search" id="q" placeholder="Search layer, feature, cantor…" />
+        <input type="search" id="logit-q" placeholder="Top logit token…" />
+        <span class="meta-mini" id="logit-status"></span>
         <label style="font-size:12px;color:var(--muted)">Tag
           <select id="tag-filter"><option value="">All</option></select>
         </label>
@@ -294,6 +582,11 @@
           <option value="desc">Desc</option>
           <option value="asc">Asc</option>
         </select>
+        <div class="relative-presets" id="relative-presets" hidden></div>
+        <div class="control-explanations">
+          <div id="sort-explainer"></div>
+          <div id="relative-explainer"></div>
+        </div>
       </div>
       <div class="scroll">
         <table>
@@ -328,8 +621,12 @@
   let annotations = {};
   let sortKey = 'freq';
   let sortDir = 'desc';
+  let relativePreset = 'all';
   let page = 0;
   let selectedCantor = null;
+  let logitSearchIds = null;
+  let logitSearchTimer = null;
+  let logitSearchSerial = 0;
 
   function el(id) { return document.getElementById(id); }
 
@@ -339,6 +636,44 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function shortLabel(s, maxLen = 14) {
+    const text = String(s || '');
+    return text.length > maxLen ? text.slice(0, maxLen - 1) + '…' : text;
+  }
+
+  function relativeDomains() {
+    const config = rawMeta && rawMeta.relative_score_config ? rawMeta.relative_score_config : {};
+    const sample = rows.find((f) => f._relative) || {};
+    const rel = sample._relative || {};
+    return {
+      target: config.target_domain || rel.target_domain || 'target',
+      baseline: config.baseline_domain || rel.baseline_domain || 'baseline',
+    };
+  }
+
+  function hasRelativeScores() {
+    return rows.some((f) => f._relative);
+  }
+
+  function relativeFrequencyRatio(r) {
+    if (!r || r.log2_density_lift == null) return null;
+    const lift = Number(r.log2_density_lift);
+    return Number.isFinite(lift) ? Math.pow(2, lift) : null;
+  }
+
+  function relativeStrengthRatio(r) {
+    if (!r) return null;
+    for (const key of ['p99_ratio', 'p95_ratio', 'max_nonzero_bin_ratio']) {
+      if (r[key] != null && Number.isFinite(Number(r[key]))) return Number(r[key]);
+    }
+    return null;
+  }
+
+  function formatMultiple(v) {
+    if (v == null || Number.isNaN(v)) return '–';
+    return `${formatScalar(Number(v))}x`;
   }
 
   function domainSkew(f) {
@@ -353,6 +688,7 @@
     return (meta.features || []).map((f) => ({
       ...f,
       _skew: domainSkew(f),
+      _relative: f.relative_domain_scores || null,
     }));
   }
 
@@ -377,9 +713,152 @@
     el('tag-filter').value = allTags().includes(current) ? current : '';
   }
 
+  function renderRelativePresets() {
+    const target = el('relative-presets');
+    if (!target) return;
+    if (!hasRelativeScores()) {
+      target.hidden = true;
+      target.innerHTML = '';
+      relativePreset = 'all';
+      renderControlExplanations();
+      return;
+    }
+    const labels = relativeDomains();
+    const t = shortLabel(labels.target, 18);
+    const b = shortLabel(labels.baseline, 18);
+    const presets = [
+      ['all', 'All'],
+      ['target_frequent', `${t} frequent`],
+      ['target_strong', `${t} strong`],
+      ['target_frequent_strong', `${t} freq + strong`],
+      ['target_frequent_baseline_strong', `${t} freq + ${b} strong`],
+    ];
+    target.hidden = false;
+    target.innerHTML = presets.map(([key, label]) =>
+      `<button type="button" data-relative-preset="${key}" class="${key === relativePreset ? 'active' : ''}">${escapeHtml(label)}</button>`
+    ).join('');
+    target.querySelectorAll('[data-relative-preset]').forEach((button) => {
+      button.onclick = () => {
+        relativePreset = button.getAttribute('data-relative-preset') || 'all';
+        renderRelativePresets();
+        renderControlExplanations();
+        applyFilter();
+      };
+    });
+  }
+
   function tagsHtml(tags) {
     if (!tags || tags.length === 0) return '<span class="meta-mini">–</span>';
     return tags.map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`).join('');
+  }
+
+  function relativePresetPass(f) {
+    const r = f._relative;
+    if (relativePreset === 'all') return true;
+    if (!r) return false;
+    const freqRatio = relativeFrequencyRatio(r);
+    const strengthRatio = relativeStrengthRatio(r);
+    const targetFrequent = freqRatio != null && freqRatio > 1;
+    const targetStrong = strengthRatio != null && strengthRatio > 1;
+    const baselineStrong = strengthRatio != null && strengthRatio < 1;
+    if (relativePreset === 'target_frequent') return targetFrequent;
+    if (relativePreset === 'target_strong') return targetStrong;
+    if (relativePreset === 'target_frequent_strong') return targetFrequent && targetStrong;
+    if (relativePreset === 'target_frequent_baseline_strong') return targetFrequent && baselineStrong;
+    return true;
+  }
+
+  function sortExplanation() {
+    const labels = relativeDomains();
+    if (sortKey === 'freq') {
+      return 'Activation frequency ranks by activation_count / total_tokens. activation_count counts every positive activation for this feature across all collected tokens and domains.';
+    }
+    if (sortKey === 'layer') {
+      return 'Layer orders features by transformer layer index. Ties fall back to Cantor id.';
+    }
+    if (sortKey === 'skew') {
+      return 'Domain skew ranks by max(domain_fraction) - min(domain_fraction). domain_fraction is each domain\'s share of this feature\'s positive activations.';
+    }
+    if (sortKey === 'cantor') {
+      return 'Cantor id orders by the stable packed id cantor_pair(layer, feature), which is also the per-feature JSON filename.';
+    }
+    if (sortKey === 'rel') {
+      return `${labels.target} / ${labels.baseline} frequency lift ranks by log2(smoothed ${labels.target} density / smoothed ${labels.baseline} density). Raw density is domain_count / tokens_per_domain; smoothing floors each density at 1 / domain_tokens.`;
+    }
+    if (sortKey === 'p95_ratio') {
+      return `${labels.target} / ${labels.baseline} p95 strength ranks by ${labels.target} p95 activation / ${labels.baseline} p95 activation. Each p95 is approximated from this feature's exact per-domain activation-magnitude histogram.`;
+    }
+    if (sortKey === 'p99_ratio') {
+      return `${labels.target} / ${labels.baseline} p99 strength ranks by ${labels.target} p99 activation / ${labels.baseline} p99 activation. Each p99 is approximated from this feature's exact per-domain activation-magnitude histogram.`;
+    }
+    if (sortKey === 'max_ratio') {
+      return `${labels.target} / ${labels.baseline} max-bin strength ranks by ${labels.target} strongest occupied activation bin / ${labels.baseline} strongest occupied activation bin, using the lower bound of each domain's highest nonzero activation-magnitude bin.`;
+    }
+    if (sortKey.startsWith('d_')) {
+      const domain = decodeURIComponent(sortKey.slice(2));
+      return `Density for ${domain} ranks by this feature's positive activation count in ${domain} divided by tokens_per_domain["${domain}"].`;
+    }
+    return '';
+  }
+
+  function relativePresetExplanation() {
+    if (!hasRelativeScores()) return '';
+    const labels = relativeDomains();
+    const freq = `frequency lift = smoothed ${labels.target} activation density / smoothed ${labels.baseline} activation density, where raw density is feature activations in a domain divided by that domain's token count`;
+    const strength = `strength ratio = ${labels.target} activation strength / ${labels.baseline} activation strength, using p99 when available, then p95, then max occupied activation bin`;
+    if (relativePreset === 'all') {
+      return `All keeps every feature with no relative-domain filtering. The relative metrics shown in the table still compare ${labels.target} against ${labels.baseline}.`;
+    }
+    if (relativePreset === 'target_frequent') {
+      return `${labels.target} frequent keeps features where ${freq}, and the lift is greater than 1.`;
+    }
+    if (relativePreset === 'target_strong') {
+      return `${labels.target} strong keeps features where ${strength}, and the ratio is greater than 1.`;
+    }
+    if (relativePreset === 'target_frequent_strong') {
+      return `${labels.target} freq + strong keeps features satisfying both conditions: frequency lift greater than 1 and strength ratio greater than 1.`;
+    }
+    if (relativePreset === 'target_frequent_baseline_strong') {
+      return `${labels.target} freq + ${labels.baseline} strong keeps features that fire more frequently in ${labels.target} (frequency lift greater than 1) but have stronger activations in ${labels.baseline} (strength ratio less than 1).`;
+    }
+    return '';
+  }
+
+  function renderControlExplanations() {
+    const sortTarget = el('sort-explainer');
+    const relativeTarget = el('relative-explainer');
+    if (sortTarget) {
+      const text = sortExplanation();
+      sortTarget.innerHTML = text ? `<strong>Sort:</strong> ${escapeHtml(text)}` : '';
+    }
+    if (relativeTarget) {
+      const text = relativePresetExplanation();
+      relativeTarget.innerHTML = text ? `<strong>Relative filter:</strong> ${escapeHtml(text)}` : '';
+    }
+  }
+
+  function histogramDisplayBinCount(binLowerBounds, histograms) {
+    const nBins = binLowerBounds ? binLowerBounds.length : 0;
+    if (!nBins) return 0;
+    let lastNonzero = -1;
+    for (const hist of histograms || []) {
+      if (!hist) continue;
+      const limit = Math.min(nBins, hist.length || 0);
+      for (let i = 0; i < limit; i++) {
+        if (Number(hist[i]) > 0) lastNonzero = Math.max(lastNonzero, i);
+      }
+    }
+    if (lastNonzero < 0) return Math.min(nBins, 1);
+    return Math.min(nBins, lastNonzero + 2);
+  }
+
+  function activationHistogramDisplayBinCount() {
+    const hs = rawMeta && rawMeta.activation_histogram_summary;
+    if (!hs || !hs.bin_lower_bounds) return null;
+    const histograms = [];
+    if (hs.run_hist_total) histograms.push(hs.run_hist_total);
+    for (const hist of (hs.run_hist_by_domain || [])) histograms.push(hist);
+    return histogramDisplayBinCount(hs.bin_lower_bounds, histograms);
   }
 
   function renderOverview(meta) {
@@ -391,28 +870,68 @@
       const pct = (100 * n / total).toFixed(1);
       h += `<div class="bar-row"><span class="bar-label" title="${escapeHtml(name)}">${escapeHtml(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
     }
-    h += '<h2>Regions (all tokens)</h2>';
+    h += graphFooter('Validation mix is token share by input domain: tokens_per_domain[domain] / total_tokens.');
+    let stats = '';
+    stats += '<h2>Regions (all tokens)</h2>';
     const tpr = meta.tokens_per_region || {};
     const tr = Object.values(tpr).reduce((a, b) => a + b, 0) || 1;
     for (const [name, n] of Object.entries(tpr).sort((a, b) => b[1] - a[1])) {
       const pct = (100 * n / tr).toFixed(1);
-      h += `<div class="bar-row"><span class="bar-label">${escapeHtml(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
+      stats += `<div class="bar-row"><span class="bar-label">${escapeHtml(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
     }
+    stats += graphFooter('Region bars show token-region coverage across the collected corpus: tokens_per_region[region] / sum(tokens_per_region).');
     const ttb = meta.tokens_per_thinking_bin || [];
     const tsum = ttb.reduce((a, b) => a + b, 0);
     if (tsum > 0) {
-      h += '<h2>Thinking position bins</h2>';
+      stats += '<h2>Thinking position bins</h2>';
       for (let i = 0; i < ttb.length; i++) {
         const pct = (100 * ttb[i] / tsum).toFixed(1);
-        h += `<div class="bar-row"><span class="bar-label">${i / 10}-${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
+        stats += `<div class="bar-row"><span class="bar-label">${i / 10}-${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
       }
+      stats += graphFooter('Thinking-position bins count thinking-region tokens by normalized position in the think span, then divide by total thinking tokens.');
+    }
+    const hs = meta.activation_histogram_summary;
+    if (hs && hs.bin_lower_bounds && hs.run_hist_total) {
+      const activationBinCount = histogramDisplayBinCount(
+        hs.bin_lower_bounds,
+        [hs.run_hist_total].concat(hs.run_hist_by_domain || [])
+      );
+      stats += '<h2>Nonzero activation histogram</h2>';
+      stats += renderHistogramBars(hs.bin_lower_bounds, hs.run_hist_total, '', null, activationBinCount);
+      stats += graphFooter('This histogram counts every positive feature activation across all layers, features, tokens, and domains by activation magnitude bin.');
+      const domains = hs.domain_names || [];
+      const byDomain = hs.run_hist_by_domain || [];
+      const tokens = meta.tokens_per_domain || {};
+      for (let i = 0; i < domains.length; i++) {
+        const domain = domains[i];
+        const denom = tokens[domain] || 0;
+        if (!denom || !byDomain[i]) continue;
+        stats += `<h2>Nonzero activation density · ${escapeHtml(domain)}</h2>`;
+        stats += renderHistogramBars(hs.bin_lower_bounds, byDomain[i].map((c) => c / denom), '', null, activationBinCount);
+        stats += graphFooter(`Domain activation density divides each activation-bin count by tokens_per_domain["${domain}"].`);
+      }
+    }
+    stats += renderFeatureFrequencySummary(meta);
+    stats += renderRelativeScatter(rows);
+    if (stats) {
+      h += `<details class="overview-disclosure"><summary>Overall stats</summary>${stats}</details>`;
     }
     od.innerHTML = h;
   }
 
   function thead() {
     const tr = el('thead-row');
-    let h = '<th>L</th><th>F</th><th>Cantor</th><th>Tags</th><th>Freq</th><th>Skew</th>';
+    const labels = relativeDomains();
+    const t = shortLabel(labels.target, 10);
+    const b = shortLabel(labels.baseline, 10);
+    let h = '<th>L</th><th>F</th><th>Cantor</th><th>Tags</th><th>Freq</th>';
+    if (hasRelativeScores()) {
+      h += `<th title="Frequency lift: ${escapeHtml(labels.target)} density divided by ${escapeHtml(labels.baseline)} density. The table value is shown as a multiple; sorting uses log2 lift.">${escapeHtml(t)} freq lift</th>`;
+      h += `<th title="Activation strength ratio: ${escapeHtml(labels.target)} p95 activation divided by ${escapeHtml(labels.baseline)} p95 activation.">${escapeHtml(t)}/${escapeHtml(b)} p95</th>`;
+      h += `<th title="Activation strength ratio: ${escapeHtml(labels.target)} p99 activation divided by ${escapeHtml(labels.baseline)} p99 activation.">${escapeHtml(t)}/${escapeHtml(b)} p99</th>`;
+      h += `<th title="Strongest occupied activation-bin ratio: ${escapeHtml(labels.target)} max nonzero bin divided by ${escapeHtml(labels.baseline)} max nonzero bin.">${escapeHtml(t)}/${escapeHtml(b)} max</th>`;
+    }
+    h += '<th>Skew</th>';
     for (const dk of domainKeys) {
       h += `<th title="${escapeHtml(dk)}">${escapeHtml(dk.length > 10 ? dk.slice(0, 9) + '…' : dk)}</th>`;
     }
@@ -425,6 +944,22 @@
     else if (sortKey === 'layer') { va = a.layer; vb = b.layer; }
     else if (sortKey === 'skew') { va = a._skew; vb = b._skew; }
     else if (sortKey === 'cantor') { va = a.cantor_id; vb = b.cantor_id; }
+    else if (sortKey === 'rel') {
+      va = a._relative && a._relative.log2_density_lift != null ? a._relative.log2_density_lift : -Infinity;
+      vb = b._relative && b._relative.log2_density_lift != null ? b._relative.log2_density_lift : -Infinity;
+    }
+    else if (sortKey === 'p95_ratio') {
+      va = a._relative && a._relative.p95_ratio != null ? a._relative.p95_ratio : -Infinity;
+      vb = b._relative && b._relative.p95_ratio != null ? b._relative.p95_ratio : -Infinity;
+    }
+    else if (sortKey === 'p99_ratio') {
+      va = a._relative && a._relative.p99_ratio != null ? a._relative.p99_ratio : -Infinity;
+      vb = b._relative && b._relative.p99_ratio != null ? b._relative.p99_ratio : -Infinity;
+    }
+    else if (sortKey === 'max_ratio') {
+      va = a._relative && a._relative.max_nonzero_bin_ratio != null ? a._relative.max_nonzero_bin_ratio : -Infinity;
+      vb = b._relative && b._relative.max_nonzero_bin_ratio != null ? b._relative.max_nonzero_bin_ratio : -Infinity;
+    }
     else if (sortKey.startsWith('d_')) {
       const k = decodeURIComponent(sortKey.slice(2));
       va = (a.domain_density || {})[k] ?? 0;
@@ -446,10 +981,13 @@
     const lmax = el('layer-max').value;
     sortKey = el('sort-key').value;
     sortDir = el('sort-dir').value;
+    renderControlExplanations();
 
     filtered = rows.filter((f) => {
       if (lmin !== '' && f.layer < Number(lmin)) return false;
       if (lmax !== '' && f.layer > Number(lmax)) return false;
+      if (!relativePresetPass(f)) return false;
+      if (logitSearchIds && !logitSearchIds.has(Number(f.cantor_id))) return false;
       const ann = annotationFor(f.cantor_id);
       if (tagFilter && !(ann.tags || []).includes(tagFilter)) return false;
       if (!q) return true;
@@ -461,22 +999,147 @@
     renderTable();
   }
 
+  function updateLogitSearchStatus(message, isError) {
+    const target = el('logit-status');
+    if (!target) return;
+    target.className = isError ? 'meta-mini err' : 'meta-mini';
+    target.textContent = message || '';
+  }
+
+  async function runLogitSearch(query, serial) {
+    if (!query) {
+      logitSearchIds = null;
+      updateLogitSearchStatus('', false);
+      applyFilter();
+      return;
+    }
+    updateLogitSearchStatus('Searching top logits...', false);
+    try {
+      const res = await fetch('/api/logit_search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      const payload = await res.json();
+      if (serial !== logitSearchSerial) return;
+      if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+      logitSearchIds = new Set((payload.matches || []).map((m) => Number(m.cantor_id)));
+      updateLogitSearchStatus(`${payload.count || 0} matches`, false);
+      applyFilter();
+    } catch (e) {
+      if (serial !== logitSearchSerial) return;
+      logitSearchIds = new Set();
+      updateLogitSearchStatus(`Logit search failed: ${e.message}`, true);
+      applyFilter();
+    }
+  }
+
+  function scheduleLogitSearch() {
+    const query = el('logit-q').value.trim();
+    logitSearchSerial += 1;
+    const serial = logitSearchSerial;
+    if (logitSearchTimer) clearTimeout(logitSearchTimer);
+    logitSearchTimer = setTimeout(() => runLogitSearch(query, serial), query ? 250 : 0);
+  }
+
+  function relativeCellTitle(r, kind) {
+    if (!r) return '';
+    const labels = relativeDomains();
+    if (kind === 'freq') {
+      return `${labels.target} density ${formatScalar(r.target_density)} / ${labels.baseline} density ${formatScalar(r.baseline_density)}; log2 lift ${formatScalar(r.log2_density_lift)}`;
+    }
+    if (kind === 'p95') {
+      return `${labels.target} p95 ${formatScalar(r.target_p95)} / ${labels.baseline} p95 ${formatScalar(r.baseline_p95)}`;
+    }
+    if (kind === 'p99') {
+      return `${labels.target} p99 ${formatScalar(r.target_p99)} / ${labels.baseline} p99 ${formatScalar(r.baseline_p99)}`;
+    }
+    return `${labels.target} max occupied bin ${formatScalar(r.target_max_nonzero_bin)} / ${labels.baseline} max occupied bin ${formatScalar(r.baseline_max_nonzero_bin)}`;
+  }
+
+  function relativeCellValue(r, key) {
+    if (!r) return '–';
+    if (key === 'freq') return formatMultiple(relativeFrequencyRatio(r));
+    return formatMultiple(r[key]);
+  }
+
+  function cantorIdFromPath() {
+    const match = /^\/cantor\/(\d+)\/?$/.exec(window.location.pathname);
+    return match ? Number(match[1]) : null;
+  }
+
+  function cantorPath(cantorId) {
+    return `/cantor/${encodeURIComponent(String(cantorId))}`;
+  }
+
+  function updateCantorUrl(cantorId, replace = false) {
+    const path = cantorId == null ? '/' : cantorPath(cantorId);
+    if (window.location.pathname === path) return;
+    const state = cantorId == null ? {} : { cantorId };
+    if (replace) {
+      window.history.replaceState(state, '', path);
+    } else {
+      window.history.pushState(state, '', path);
+    }
+  }
+
+  function rowForCantor(cantorId) {
+    return Array.from(el('tbody').querySelectorAll('tr[data-cantor]')).find(
+      (tr) => tr.getAttribute('data-cantor') === String(cantorId)
+    );
+  }
+
+  async function selectCantor(cantorId, options = {}) {
+    const row = rows.find((f) => f.cantor_id === cantorId);
+    if (!row) {
+      if (options.updateUrl) updateCantorUrl(null, true);
+      return false;
+    }
+    selectedCantor = cantorId;
+    const filteredIndex = filtered.findIndex((f) => f.cantor_id === cantorId);
+    if (filteredIndex >= 0) {
+      const targetPage = Math.floor(filteredIndex / PAGE);
+      if (targetPage !== page) {
+        page = targetPage;
+        renderTable();
+      }
+    } else {
+      renderTable();
+    }
+    const tr = rowForCantor(cantorId);
+    if (tr) {
+      el('tbody').querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
+      tr.classList.add('selected');
+      if (options.scroll !== false) tr.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    if (options.updateUrl) updateCantorUrl(cantorId, options.replaceUrl === true);
+    await loadDetail(cantorId);
+    return true;
+  }
+
   function renderTable() {
     const tbody = el('tbody');
     const start = page * PAGE;
     const slice = filtered.slice(start, start + PAGE);
+    const showRelative = hasRelativeScores();
     tbody.innerHTML = slice.map((f) => {
       const sel = f.cantor_id === selectedCantor ? ' class="selected"' : '';
       const dens = domainKeys.map((k) => {
         const d = (f.domain_density || {})[k];
         return `<td class="num">${d != null ? d.toExponential(2) : '–'}</td>`;
       }).join('');
+      const rel = showRelative ? `
+        <td class="num" title="${escapeHtml(relativeCellTitle(f._relative, 'freq'))}">${relativeCellValue(f._relative, 'freq')}</td>
+        <td class="num" title="${escapeHtml(relativeCellTitle(f._relative, 'p95'))}">${relativeCellValue(f._relative, 'p95_ratio')}</td>
+        <td class="num" title="${escapeHtml(relativeCellTitle(f._relative, 'p99'))}">${relativeCellValue(f._relative, 'p99_ratio')}</td>
+        <td class="num" title="${escapeHtml(relativeCellTitle(f._relative, 'max'))}">${relativeCellValue(f._relative, 'max_nonzero_bin_ratio')}</td>` : '';
       return `<tr data-cantor="${f.cantor_id}"${sel}>
         <td class="num">${f.layer}</td>
         <td class="num">${f.feature}</td>
         <td class="num">${f.cantor_id}</td>
         <td class="tag-cell">${tagsHtml(annotationFor(f.cantor_id).tags || [])}</td>
         <td class="num">${f.activation_freq != null ? f.activation_freq.toExponential(3) : ''}</td>
+        ${rel}
         <td class="num">${f._skew.toFixed(3)}</td>
         ${dens}
       </tr>`;
@@ -485,10 +1148,7 @@
     tbody.querySelectorAll('tr').forEach((tr) => {
       tr.onclick = () => {
         const id = Number(tr.getAttribute('data-cantor'));
-        selectedCantor = id;
-        tbody.querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
-        tr.classList.add('selected');
-        loadDetail(id);
+        selectCantor(id, { updateUrl: true, scroll: false });
       };
     });
 
@@ -533,6 +1193,390 @@
     return v.toExponential(4);
   }
 
+  function graphFooter(text) {
+    return `<div class="graph-footer">${escapeHtml(text)}</div>`;
+  }
+
+  function histogramBinLabel(binLowerBounds, i, labelPrefix) {
+    const lo = binLowerBounds[i];
+    const hi = i + 1 < binLowerBounds.length ? binLowerBounds[i + 1] : null;
+    return hi == null ? `${labelPrefix}${formatScalar(lo)}+` : `${labelPrefix}${formatScalar(lo)}-${formatScalar(hi)}`;
+  }
+
+  function parseActivationRangeQuantileName(name) {
+    const match = /^Activation range ([^ ]+)-([^ ]+) \((.*)\)$/.exec(String(name || ''));
+    if (!match) return null;
+    const lo = Number(match[1]);
+    const hi = Number(match[2]);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+    return { lo, hi, domain: match[3] };
+  }
+
+  function findActivationRangeTabIndex(domain, binLo, binHi) {
+    const qtabs = el('qtabs');
+    if (!qtabs || domain == null || binLo == null || Number.isNaN(binLo)) return -1;
+    const effectiveHi = binHi == null || Number.isNaN(binHi) ? Number.POSITIVE_INFINITY : binHi;
+    const eps = 1e-6;
+    const buttons = Array.from(qtabs.querySelectorAll('button[data-quantile-index]'));
+    return buttons.findIndex((button) => {
+      const range = parseActivationRangeQuantileName(button.getAttribute('data-quantile-name'));
+      if (!range || range.domain !== domain) return false;
+      return binLo + eps >= range.lo && effectiveHi <= range.hi + eps;
+    });
+  }
+
+  function openActivationRangeTab(domain, binLo, binHi) {
+    const qtabs = el('qtabs');
+    if (!qtabs) return false;
+    const buttons = Array.from(qtabs.querySelectorAll('button[data-quantile-index]'));
+    const idx = findActivationRangeTabIndex(domain, binLo, binHi);
+    if (idx < 0 || !buttons[idx]) return false;
+    buttons[idx].click();
+    buttons[idx].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const qbody = el('qbody');
+    if (qbody) qbody.scrollIntoView({ block: 'start', inline: 'nearest' });
+    return true;
+  }
+
+  function histogramQuantileBinIndex(values, q) {
+    const total = (values || []).reduce((acc, v) => acc + Math.max(0, Number(v) || 0), 0);
+    if (total <= 0) return null;
+    const threshold = total * q;
+    let cumulative = 0;
+    for (let i = 0; i < values.length; i++) {
+      cumulative += Math.max(0, Number(values[i]) || 0);
+      if (cumulative >= threshold) return i;
+    }
+    return values.length - 1;
+  }
+
+  function histogramMaxNonzeroBinIndex(values) {
+    for (let i = (values || []).length - 1; i >= 0; i--) {
+      if (Number(values[i]) > 0) return i;
+    }
+    return null;
+  }
+
+  function histogramStatisticMarkers(binLowerBounds, values, labelPrefix) {
+    const p95 = histogramQuantileBinIndex(values, 0.95);
+    const p99 = histogramQuantileBinIndex(values, 0.99);
+    const max = histogramMaxNonzeroBinIndex(values);
+    const markers = [];
+    if (p95 != null) markers.push({
+      binIndex: p95,
+      className: 'p95',
+      label: `${labelPrefix} p95: ${histogramBinLabel(binLowerBounds, p95, '')}`,
+    });
+    if (p99 != null) markers.push({
+      binIndex: p99,
+      className: 'p99',
+      label: `${labelPrefix} p99: ${histogramBinLabel(binLowerBounds, p99, '')}`,
+    });
+    if (max != null) markers.push({
+      binIndex: max,
+      className: 'max',
+      label: `${labelPrefix} max occupied bin: ${histogramBinLabel(binLowerBounds, max, '')}`,
+    });
+    return markers;
+  }
+
+  function renderHistogramBars(binLowerBounds, counts, labelPrefix, sharedScaleMax, displayBinCount, markers, clickMeta) {
+    const values = counts || [];
+    if (!values.length && displayBinCount == null) return '';
+    const nBins = Math.min(
+      binLowerBounds.length,
+      displayBinCount != null ? displayBinCount : values.length
+    );
+    if (!nBins) return '';
+    const visibleCounts = Array.from({ length: nBins }, (_, i) => Number(values[i]) || 0);
+    const maxCount = Math.max(...visibleCounts, 0);
+    const scaleMax = sharedScaleMax != null
+      ? (sharedScaleMax > 0 ? sharedScaleMax : 1)
+      : (maxCount > 0 ? maxCount : 1);
+    const bars = visibleCounts.map((count, i) => {
+      const label = histogramBinLabel(binLowerBounds, i, labelPrefix);
+      const lo = binLowerBounds[i];
+      const hi = i + 1 < binLowerBounds.length ? binLowerBounds[i + 1] : null;
+      const height = count > 0 ? Math.max(1, 100 * count / scaleMax) : 0;
+      const clickable = clickMeta && clickMeta.domain != null && count > 0;
+      const cls = count > 0
+        ? `histogram-bar${clickable ? ' range-link' : ''}`
+        : 'histogram-bar zero';
+      const dataAttrs = clickable
+        ? ` data-activation-range-domain="${escapeHtml(clickMeta.domain)}" data-activation-range-lo="${escapeHtml(lo)}"${hi == null ? '' : ` data-activation-range-hi="${escapeHtml(hi)}"`}`
+        : '';
+      const hint = clickable ? ' Click to open matching activation-range examples.' : '';
+      return `<div class="${cls}" style="height:${height}%" title="${escapeHtml(label)}: ${escapeHtml(formatScalar(count))}${hint}"${dataAttrs}></div>`;
+    }).join('');
+    const markerHtml = (markers || []).filter((marker) =>
+      marker && marker.binIndex != null && marker.binIndex >= 0 && marker.binIndex < nBins
+    ).map((marker) => {
+      const cls = ['p95', 'p99', 'max'].includes(marker.className) ? marker.className : 'p95';
+      const left = 100 * (marker.binIndex + 0.5) / nBins;
+      return `<div class="histogram-marker histogram-marker-${cls}" style="left:${left.toFixed(3)}%" title="${escapeHtml(marker.label || cls)}"></div>`;
+    }).join('');
+    const firstLabel = `${labelPrefix}${formatScalar(binLowerBounds[0])}`;
+    const midIdx = Math.floor((nBins - 1) / 2);
+    const midLabel = `${labelPrefix}${formatScalar(binLowerBounds[midIdx])}`;
+    const lastIdx = nBins - 1;
+    const lastLabel = lastIdx + 1 < binLowerBounds.length
+      ? `${labelPrefix}${formatScalar(binLowerBounds[lastIdx])}`
+      : `${labelPrefix}${formatScalar(binLowerBounds[lastIdx])}+`;
+    return `<div class="histogram-plot">
+      <div class="histogram-y-axis" aria-hidden="true">
+        <span>${escapeHtml(formatScalar(scaleMax))}</span>
+        <span>${escapeHtml(formatScalar(scaleMax / 2))}</span>
+        <span>0</span>
+      </div>
+      <div class="histogram-area">
+        <div class="histogram-bars">${bars}${markerHtml}</div>
+        <div class="histogram-x-axis">
+          <span title="${escapeHtml(firstLabel)}">${escapeHtml(firstLabel)}</span>
+          <span title="${escapeHtml(midLabel)}">${escapeHtml(midLabel)}</span>
+          <span title="${escapeHtml(lastLabel)}">${escapeHtml(lastLabel)}</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderRelativeScatter(featureRows) {
+    const pts = featureRows.filter((f) => f._relative && f._relative.target_density != null && f._relative.baseline_density != null);
+    if (!pts.length) return '';
+    const labels = relativeDomains();
+    const sample = pts.slice(0, 2500);
+    const maxX = Math.max(...sample.map((f) => f._relative.baseline_density), 1e-12);
+    const maxY = Math.max(...sample.map((f) => f._relative.target_density), 1e-12);
+    const circles = sample.map((f) => {
+      const x = 36 + 250 * Math.sqrt(Math.max(0, f._relative.baseline_density) / maxX);
+      const y = 286 - 250 * Math.sqrt(Math.max(0, f._relative.target_density) / maxY);
+      const lift = f._relative.log2_density_lift || 0;
+      const fill = lift >= 0 ? '#58a6ff' : '#f85149';
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.2" fill="${fill}" opacity="0.55"><title>L${f.layer} F${f.feature} log2_lift=${formatScalar(lift)}</title></circle>`;
+    }).join('');
+    return `<h2>Joint domain distribution</h2>
+      <div class="meta-mini">Each point is one feature. X = ${escapeHtml(labels.baseline)} density, Y = ${escapeHtml(labels.target)} density; blue means ${escapeHtml(labels.target)}-enriched.</div>
+      <svg viewBox="0 0 320 310" width="100%" height="240" role="img">
+        <line x1="36" y1="286" x2="302" y2="286" stroke="var(--border)" />
+        <line x1="36" y1="286" x2="36" y2="20" stroke="var(--border)" />
+        <line x1="36" y1="286" x2="286" y2="36" stroke="var(--muted)" opacity="0.45" />
+        ${circles}
+      </svg>${graphFooter(`Scatter coordinates use per-feature domain densities: x = ${labels.baseline}_count / ${labels.baseline}_tokens, y = ${labels.target}_count / ${labels.target}_tokens. Axes are square-root scaled for visibility; color is based on log2 density lift.`)}`;
+  }
+
+  function renderFeatureFrequencySummary(meta) {
+    const fs = meta.feature_frequency_summary;
+    if (!fs || !fs.frequency_bin_lower_bounds) return '';
+    let h = '<h2>Feature firing frequency distribution</h2>';
+    h += '<div class="meta-mini">Histograms are over all features, including zero-firing features. Per-domain frequency is feature fires divided by tokens in that domain.</div>';
+    const byDomain = fs.feature_frequency_hist_by_domain || {};
+    const frequencyBinCount = histogramDisplayBinCount(
+      fs.frequency_bin_lower_bounds,
+      [fs.feature_frequency_hist_total || []].concat(Object.values(byDomain))
+    );
+    h += renderHistogramBars(
+      fs.frequency_bin_lower_bounds,
+      fs.feature_frequency_hist_total || [],
+      '',
+      null,
+      frequencyBinCount
+    );
+    h += graphFooter('Total feature firing frequency bins every feature by activation_count / total_tokens, including zero-firing features.');
+    const domains = fs.domain_names || [];
+    const globalDensity = fs.global_nonzero_density_by_domain || {};
+    const activeCounts = fs.active_feature_count_by_domain || {};
+    for (const domain of domains) {
+      const hist = byDomain[domain];
+      if (!hist) continue;
+      const density = globalDensity[domain] != null ? formatScalar(globalDensity[domain]) : '0';
+      const active = activeCounts[domain] != null ? activeCounts[domain] : 0;
+      h += `<h2>Feature firing frequency · ${escapeHtml(domain)}</h2>`;
+      h += `<div class="meta-mini">Run-level nonzero token-feature density ${escapeHtml(density)}; active features ${escapeHtml(active)} / ${escapeHtml(fs.all_features_total || 0)}.</div>`;
+      h += renderHistogramBars(fs.frequency_bin_lower_bounds, hist, '', null, frequencyBinCount);
+      h += graphFooter(`Per-domain feature firing frequency bins every feature by domain_count / tokens_per_domain["${domain}"]. The run-level density is sum(domain_count) / (domain_tokens * total_features).`);
+    }
+    return h;
+  }
+
+  function exampleTranscript(ex) {
+    return (ex.tokens || []).join('');
+  }
+
+  function renderActivationTokenSpans(example, actMin, actMax) {
+    const idx = example.train_token_ind;
+    const toks = example.tokens || [];
+    const acts = example.tokens_acts_list || [];
+    let html = '';
+    for (let i = 0; i < toks.length; i++) {
+      const act = acts[i];
+      const hasAct = act != null && Number.isFinite(Number(act));
+      const bg = tokenStyle(hasAct ? Number(act) : 0, actMin, actMax);
+      const mark = i === idx ? ' font-weight:700;border-bottom:2px solid #58a6ff' : '';
+      const actAttrs = hasAct
+        ? ` class="activation-token" data-act="${escapeHtml(String(Number(act)))}" title="act=${escapeHtml(formatScalar(Number(act)))}"`
+        : '';
+      html += `<span style="background:${bg};${mark}"${actAttrs}>${escapeHtml(toks[i])}</span>`;
+    }
+    return html;
+  }
+
+  function findCollectedWindowSpan(transcript, example) {
+    const snippet = exampleTranscript(example);
+    if (!transcript || !snippet) return null;
+
+    let start = transcript.indexOf(snippet);
+    let needle = snippet;
+    if (start < 0) {
+      needle = snippet.trim();
+      if (!needle) return null;
+      start = transcript.indexOf(needle);
+    }
+    if (start < 0) return null;
+    return { start, end: start + needle.length, exactTokenWindow: needle === snippet };
+  }
+
+  function findCollectedWindowTokenStart(transcriptTokens, example) {
+    const toks = example.tokens || [];
+    if (!Array.isArray(transcriptTokens) || toks.length === 0 || transcriptTokens.length < toks.length) {
+      return -1;
+    }
+    outer:
+    for (let i = 0; i <= transcriptTokens.length - toks.length; i++) {
+      for (let j = 0; j < toks.length; j++) {
+        if (transcriptTokens[i + j] !== toks[j]) continue outer;
+      }
+      return i;
+    }
+    return -1;
+  }
+
+  function renderSourceTranscriptTokens(transcriptTokens, example, actMin, actMax) {
+    const toks = example.tokens || [];
+    const start = findCollectedWindowTokenStart(transcriptTokens, example);
+    if (start < 0) {
+      return transcriptTokens.map((tok) => escapeHtml(tok)).join('');
+    }
+    const before = transcriptTokens.slice(0, start).map((tok) => escapeHtml(tok)).join('');
+    const after = transcriptTokens.slice(start + toks.length).map((tok) => escapeHtml(tok)).join('');
+    const windowHtml = renderActivationTokenSpans(example, actMin, actMax);
+    return `${before}<span class="source-transcript-collected-window" title="Collected activation window">${windowHtml}</span>${after}`;
+  }
+
+  function renderSourceTranscriptBody(transcript, transcriptTokens, example, actMin, actMax) {
+    if (Array.isArray(transcriptTokens)) {
+      return renderSourceTranscriptTokens(transcriptTokens, example, actMin, actMax);
+    }
+    const span = findCollectedWindowSpan(transcript, example);
+    if (!span) return escapeHtml(transcript || '');
+    const before = transcript.slice(0, span.start);
+    const match = transcript.slice(span.start, span.end);
+    const after = transcript.slice(span.end);
+    const windowHtml = span.exactTokenWindow
+      ? renderActivationTokenSpans(example, actMin, actMax)
+      : escapeHtml(match);
+    return `${escapeHtml(before)}<span class="source-transcript-collected-window" title="Collected activation window">${windowHtml}</span>${escapeHtml(after)}`;
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+
+  function setPromptStatus(container, message, isError) {
+    const target = container.querySelector('.prompt-status');
+    if (!target) return;
+    target.className = isError ? 'prompt-status meta-mini err' : 'prompt-status meta-mini';
+    target.textContent = message;
+  }
+
+  function sourceMetadataLabel(sourceMetadata) {
+    if (!sourceMetadata) return '';
+    const pieces = [];
+    if (sourceMetadata.conversation_id != null) pieces.push(`conversation_id=${sourceMetadata.conversation_id}`);
+    if (sourceMetadata.id != null) pieces.push(`id=${sourceMetadata.id}`);
+    if (sourceMetadata.dataset_row_idx != null) pieces.push(`row=${sourceMetadata.dataset_row_idx}`);
+    if (sourceMetadata.source_path) pieces.push(String(sourceMetadata.source_path));
+    return pieces.join(' · ');
+  }
+
+  function renderSourceMetadata(ex) {
+    const sourceMetadata = ex.source_metadata;
+    if (!sourceMetadata) return '';
+    const label = sourceMetadataLabel(sourceMetadata);
+    if (!label) return '';
+    return `<div class="meta-mini">Source: ${escapeHtml(label)}</div>`;
+  }
+
+  async function showSourceTranscript(example, container, actMin, actMax) {
+    const panel = container.querySelector('.source-transcript');
+    const body = panel ? panel.querySelector('.source-transcript-body') : null;
+    if (!panel || !body) return;
+    if (panel.hidden === false && body.getAttribute('data-loaded') === 'true') {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    body.removeAttribute('data-loaded');
+    body.classList.remove('err');
+    body.textContent = 'Loading...';
+    try {
+      const payload = await loadSourceTranscriptPayload(example, false);
+      const idParts = [];
+      for (const [key, value] of Object.entries(payload.ids || {})) {
+        idParts.push(`${key}=${value}`);
+      }
+      const meta = [
+        payload.source_path,
+        payload.split ? `split=${payload.split}` : null,
+        `row=${payload.dataset_row_idx}`,
+        idParts.join(' · '),
+      ].filter(Boolean).join(' · ');
+      const head = panel.querySelector('.source-transcript-head span');
+      if (head) head.textContent = meta;
+      body.innerHTML = renderSourceTranscriptBody(
+        payload.transcript || '',
+        payload.transcript_tokens,
+        example,
+        actMin,
+        actMax
+      );
+      bindHoverActivationMarkers(container, actMin, actMax);
+      body.setAttribute('data-loaded', 'true');
+    } catch (e) {
+      body.textContent = `Transcript load failed: ${e.message}`;
+      body.classList.add('err');
+    }
+  }
+
+  async function loadSourceTranscriptPayload(example, requireModelNative) {
+    if (!example.source_metadata) {
+      throw new Error('No source metadata is available for this example.');
+    }
+    const res = await fetch('/api/source_transcript', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_metadata: example.source_metadata }),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || JSON.stringify(payload));
+    if (requireModelNative && payload.source_kind !== 'model_native_token_transcript') {
+      throw new Error(
+        'Full model-native transcript is unavailable for this run. Re-run collection with current code so feature_metadata.json records tokenization settings.'
+      );
+    }
+    return payload;
+  }
+
   function renderActScaleBar(peak, actMin, actMax) {
     if (peak == null || Number.isNaN(peak)) return '';
     if (actMin == null || actMax == null || !Number.isFinite(actMin) || !Number.isFinite(actMax)) {
@@ -545,7 +1589,7 @@
     } else {
       pct = 50;
     }
-    return `<div class="act-scale-wrap" title="Heatmap colors use act_min–act_max from global Top + Random examples only.">
+    return `<div class="act-scale-wrap" title="Heatmap colors use act_min–act_max from the feature JSON examples.">
       <div class="act-scale-row">
         <div class="act-scale-side">
           <div class="act-scale-tag">act_min</div>
@@ -554,8 +1598,10 @@
         <div class="act-scale-center">
           <div class="act-scale-track-wrap">
             <div class="act-scale-peak-lbl" style="left:${pct}%">${escapeHtml(formatScalar(peak))}</div>
+            <div class="act-scale-hover-lbl" hidden></div>
             <div class="act-scale-track" style="background:${tokenGradient(0.45)}">
               <div class="act-scale-dot" style="left:${pct}%"></div>
+              <div class="act-scale-hover-dot" hidden></div>
             </div>
           </div>
         </div>
@@ -567,21 +1613,216 @@
     </div>`;
   }
 
+  function activationScalePct(act, actMin, actMax) {
+    if (!Number.isFinite(act) || !Number.isFinite(actMin) || !Number.isFinite(actMax)) return null;
+    if (actMax <= actMin) return 50;
+    const t = (act - actMin) / (actMax - actMin);
+    return 100 * Math.max(0, Math.min(1, t));
+  }
+
+  function bindHoverActivationMarkers(container, actMin, actMax) {
+    const scale = container.querySelector('.act-scale-wrap');
+    if (!scale) return;
+    const label = scale.querySelector('.act-scale-hover-lbl');
+    const dot = scale.querySelector('.act-scale-hover-dot');
+    if (!label || !dot) return;
+
+    const hide = () => {
+      label.hidden = true;
+      dot.hidden = true;
+    };
+    const show = (act) => {
+      const pct = activationScalePct(act, actMin, actMax);
+      if (pct == null) {
+        hide();
+        return;
+      }
+      label.textContent = formatScalar(act);
+      label.style.left = `${pct}%`;
+      dot.style.left = `${pct}%`;
+      label.hidden = false;
+      dot.hidden = false;
+    };
+
+    container.querySelectorAll('.activation-token').forEach((token) => {
+      const act = Number(token.getAttribute('data-act'));
+      token.onmouseenter = () => show(act);
+      token.onmousemove = () => show(act);
+      token.onmouseleave = hide;
+    });
+  }
+
   function renderExample(ex, actMin, actMax) {
-    const idx = ex.train_token_ind;
-    const toks = ex.tokens || [];
-    const acts = ex.tokens_acts_list || [];
     const peak = peakActivation(ex);
     const meta = renderActScaleBar(peak, actMin, actMax);
-    let html = meta + '<div class="tok-line">';
-    for (let i = 0; i < toks.length; i++) {
-      const bg = tokenStyle(acts[i] ?? 0, actMin, actMax);
-      const mark = i === idx ? ' font-weight:700;border-bottom:2px solid #58a6ff' : '';
-      const actHint = acts[i] != null ? ` title="act=${formatScalar(acts[i])}"` : '';
-      html += `<span style="background:${bg};${mark}"${actHint}>${escapeHtml(toks[i])}</span>`;
+    return meta + `<div class="tok-line">${renderActivationTokenSpans(ex, actMin, actMax)}</div>`;
+  }
+
+  function histogramExplanation(mode) {
+    const explanations = {
+      counts: 'Counts are exact positive activations for this feature in each activation-magnitude bin. Dataset cards share a y-axis scale. Click a bar when that bin falls inside a saved activation-range tab for that dataset.',
+      density: 'Token density divides each bin count by total tokens from that domain. Dataset cards share a y-axis scale. Click a bar when that bin falls inside a saved activation-range tab for that dataset.',
+      magnitude: "Conditional magnitude distribution divides each bin count by this feature's total positive activations in that domain, so bars sum to 1 within a domain. Dataset cards share a y-axis scale. Click a bar when that bin falls inside a saved activation-range tab for that dataset.",
+    };
+    return `<div class="feature-hist-footer">${escapeHtml(explanations[mode] || explanations.counts)}</div>`;
+  }
+
+  function featureHistogramDisplayBinCount(payload) {
+    const globalBinCount = activationHistogramDisplayBinCount();
+    if (globalBinCount != null) {
+      return Math.min(payload.bin_lower_bounds ? payload.bin_lower_bounds.length : 0, globalBinCount);
     }
-    html += '</div>';
-    return html;
+    const histograms = [];
+    if (payload.total_counts) histograms.push(payload.total_counts);
+    for (const hist of Object.values(payload.by_domain_counts || {})) histograms.push(hist);
+    return histogramDisplayBinCount(payload.bin_lower_bounds || [], histograms);
+  }
+
+  function renderFeatureHistogramCards(binLowerBounds, entries, displayBinCount) {
+    const nBins = Math.min(
+      binLowerBounds.length,
+      displayBinCount != null ? displayBinCount : binLowerBounds.length
+    );
+    const sharedScaleMax = Math.max(
+      ...entries.flatMap((entry) => (entry.values || []).slice(0, nBins)),
+      0
+    );
+    return `<div class="feature-hist-grid">${entries.map((entry) => `
+      <div class="feature-hist-card">
+        <h3>${escapeHtml(entry.title)}</h3>
+        ${entry.subtitle ? `<div class="meta-mini">${escapeHtml(entry.subtitle)}</div>` : ''}
+        ${renderHistogramBars(
+          binLowerBounds,
+          entry.values || [],
+          '',
+          sharedScaleMax,
+          nBins,
+          histogramStatisticMarkers(binLowerBounds, entry.markerValues || entry.values || [], entry.title),
+          entry.domain ? { domain: entry.domain } : null
+        )}
+      </div>
+    `).join('')}</div>
+    <div class="histogram-legend"><span class="p95">p95</span><span class="p99">p99</span><span class="max">max</span></div>`;
+  }
+
+  function featureHistogramEntries(payload, mode) {
+    const domains = payload.domain_names || [];
+    if (mode === 'counts') {
+      const entries = [];
+      for (const domain of domains) {
+        const counts = payload.by_domain_counts ? payload.by_domain_counts[domain] : null;
+        if (counts) entries.push({
+          title: domain,
+          subtitle: 'raw activation counts',
+          values: counts,
+          markerValues: counts,
+          domain,
+        });
+      }
+      if (entries.length) return entries;
+      return [{
+        title: 'All domains',
+        subtitle: 'raw activation counts',
+        values: payload.total_counts || [],
+        markerValues: payload.total_counts || [],
+      }];
+    }
+    if (mode === 'density') {
+      return domains.map((domain) => ({
+        title: domain,
+        subtitle: 'count / domain tokens',
+        values: payload.by_domain_token_density ? payload.by_domain_token_density[domain] || [] : [],
+        markerValues: payload.by_domain_counts ? payload.by_domain_counts[domain] || [] : [],
+        domain,
+      })).filter((entry) => entry.values.length);
+    }
+    return domains.map((domain) => ({
+      title: domain,
+      subtitle: 'count / feature fires in domain',
+      values: payload.by_domain_activation_fraction ? payload.by_domain_activation_fraction[domain] || [] : [],
+      markerValues: payload.by_domain_counts ? payload.by_domain_counts[domain] || [] : [],
+      domain,
+    })).filter((entry) => entry.values.length);
+  }
+
+  function renderFeatureHistogramMode(payload, mode) {
+    const panel = el('feature-hist-panel');
+    if (!panel) return;
+    const entries = featureHistogramEntries(payload, mode);
+    if (!entries.length) {
+      panel.innerHTML = '<div class="meta-mini">No histogram data for this view.</div>' + histogramExplanation(mode);
+      return;
+    }
+    panel.innerHTML = renderFeatureHistogramCards(
+      payload.bin_lower_bounds || [],
+      entries,
+      featureHistogramDisplayBinCount(payload)
+    ) + histogramExplanation(mode);
+    panel.querySelectorAll('[data-activation-range-domain]').forEach((bar) => {
+      const domain = bar.getAttribute('data-activation-range-domain');
+      const lo = Number(bar.getAttribute('data-activation-range-lo'));
+      const hiAttr = bar.getAttribute('data-activation-range-hi');
+      const hi = hiAttr == null ? null : Number(hiAttr);
+      if (findActivationRangeTabIndex(domain, lo, hi) < 0) {
+        bar.classList.remove('range-link');
+        bar.title = bar.title.replace(' Click to open matching activation-range examples.', '');
+        return;
+      }
+      bar.onclick = () => {
+        openActivationRangeTab(domain, lo, hi);
+      };
+    });
+  }
+
+  function activateFeatureHistogramTab(container, payload, mode) {
+    container.querySelectorAll('[data-feature-hist-mode]').forEach((button) => {
+      button.classList.toggle('active', button.getAttribute('data-feature-hist-mode') === mode);
+    });
+    renderFeatureHistogramMode(payload, mode);
+  }
+
+  async function loadFeatureHistogram(cantorId) {
+    const target = el('feature-histograms');
+    if (!target) return;
+    try {
+      const res = await fetch('/api/feature_hist/' + cantorId);
+      if (!res.ok) throw new Error(await res.text());
+      const payload = await res.json();
+      target.innerHTML = `<div class="feature-hist-tabs">
+        <button type="button" class="active" data-feature-hist-mode="counts">Counts</button>
+        <button type="button" data-feature-hist-mode="density">Token density</button>
+        <button type="button" data-feature-hist-mode="magnitude">Magnitude distribution</button>
+      </div>
+      <div id="feature-hist-panel"></div>`;
+      target.querySelectorAll('[data-feature-hist-mode]').forEach((button) => {
+        button.onclick = () => activateFeatureHistogramTab(
+          target,
+          payload,
+          button.getAttribute('data-feature-hist-mode')
+        );
+      });
+      renderFeatureHistogramMode(payload, 'counts');
+    } catch (e) {
+      target.innerHTML = `<span class="err">Histogram load failed: ${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  function renderRelativeDomainSummary(r) {
+    if (!r) return '';
+    const labels = relativeDomains();
+    const freqRatio = relativeFrequencyRatio(r);
+    const p95Ratio = r.p95_ratio != null ? Number(r.p95_ratio) : null;
+    const p99Ratio = r.p99_ratio != null ? Number(r.p99_ratio) : null;
+    const maxRatio = r.max_nonzero_bin_ratio != null ? Number(r.max_nonzero_bin_ratio) : null;
+    return `<div class="relative-summary">
+      <div class="relative-summary-title">${escapeHtml(labels.target)} vs ${escapeHtml(labels.baseline)}</div>
+      <div class="relative-summary-lines">
+        <div>Smoothed firing frequency: <strong>${escapeHtml(labels.target)} / ${escapeHtml(labels.baseline)}</strong> = <strong>${escapeHtml(formatMultiple(freqRatio))}</strong>.</div>
+        <div>p95 activation strength: <strong>${escapeHtml(labels.target)} / ${escapeHtml(labels.baseline)}</strong> = <strong>${escapeHtml(formatMultiple(p95Ratio))}</strong>.</div>
+        <div>p99 activation strength: <strong>${escapeHtml(labels.target)} / ${escapeHtml(labels.baseline)}</strong> = <strong>${escapeHtml(formatMultiple(p99Ratio))}</strong>.</div>
+        <div>Strongest occupied activation bin: <strong>${escapeHtml(labels.target)}</strong> ${escapeHtml(formatScalar(r.target_max_nonzero_bin))}; <strong>${escapeHtml(labels.baseline)}</strong> ${escapeHtml(formatScalar(r.baseline_max_nonzero_bin))}; ratio <strong>${escapeHtml(formatMultiple(maxRatio))}</strong>.</div>
+      </div>
+    </div>`;
   }
 
   async function loadDetail(cantorId) {
@@ -627,6 +1868,7 @@
         const w = Math.min(100, ((d || 0) / maxDom) * 100);
         h += `<div class="bar-row"><span class="bar-label" title="${escapeHtml(k)}">${escapeHtml(k)}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><span>${pct} · ${fr}</span></div>`;
       }
+      h += graphFooter('Per-domain activation density is this feature\'s positive activation count in a domain divided by tokens_per_domain[domain]. The percent after the dot is domain_count / this feature\'s total activation_count.');
       h += '<h2>Regions</h2>';
       const rd = metaRow.region_density || {};
       const rk = Object.keys(rd);
@@ -635,12 +1877,37 @@
         const w = Math.min(100, ((rd[k] || 0) / maxR) * 100);
         h += `<div class="bar-row"><span class="bar-label">${escapeHtml(k)}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><span>${((rd[k] || 0) * 100).toFixed(4)}% density</span></div>`;
       }
-      h += '<h2>Thinking bins (within thinking tokens)</h2>';
+      h += graphFooter('Region density is this feature\'s positive activation count in a region divided by the number of collected tokens assigned to that region.');
       const td = metaRow.thinking_position_density || [];
-      const maxT = td.length ? Math.max(...td.map((x) => x || 0), 1e-30) : 1e-30;
-      for (let i = 0; i < td.length; i++) {
-        const w = Math.min(100, ((td[i] || 0) / maxT) * 100);
-        h += `<div class="bar-row"><span class="bar-label">${i / 10}–${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div></div>`;
+      const hasThinkingBins = td.some((x) => (x || 0) > 0);
+      if (hasThinkingBins) {
+        h += '<h2>Thinking bins (within thinking tokens)</h2>';
+        const maxT = Math.max(...td.map((x) => x || 0), 1e-30);
+        for (let i = 0; i < td.length; i++) {
+          const w = Math.min(100, ((td[i] || 0) / maxT) * 100);
+          h += `<div class="bar-row"><span class="bar-label">${i / 10}–${(i + 1) / 10}</span><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div></div>`;
+        }
+        h += graphFooter('Thinking-bin density is this feature\'s positive activation count in a normalized thinking-position bin divided by collected thinking tokens in that bin.');
+      }
+      if (metaRow.relative_domain_scores) {
+        const r = metaRow.relative_domain_scores;
+        const labels = relativeDomains();
+        h += `<h2>Relative domain score</h2>${renderRelativeDomainSummary(r)}
+          <h2>Relative score details</h2>
+          <div class="logit-box">
+            ${escapeHtml(labels.target)} density ${escapeHtml(formatScalar(r.target_density))}<br/>
+            ${escapeHtml(labels.baseline)} density ${escapeHtml(formatScalar(r.baseline_density))}<br/>
+            log2 frequency lift ${escapeHtml(formatScalar(r.log2_density_lift))}<br/>
+            ${escapeHtml(labels.target)} p95 ${escapeHtml(formatScalar(r.target_p95))}<br/>
+            ${escapeHtml(labels.baseline)} p95 ${escapeHtml(formatScalar(r.baseline_p95))}<br/>
+            p95 ratio ${escapeHtml(formatScalar(r.p95_ratio))}<br/>
+            ${escapeHtml(labels.target)} p99 ${escapeHtml(formatScalar(r.target_p99))}<br/>
+            ${escapeHtml(labels.baseline)} p99 ${escapeHtml(formatScalar(r.baseline_p99))}<br/>
+            p99 ratio ${escapeHtml(formatScalar(r.p99_ratio))}<br/>
+            ${escapeHtml(labels.target)} max bin ${escapeHtml(formatScalar(r.target_max_nonzero_bin))}<br/>
+            ${escapeHtml(labels.baseline)} max bin ${escapeHtml(formatScalar(r.baseline_max_nonzero_bin))}<br/>
+            max-bin ratio ${escapeHtml(formatScalar(r.max_nonzero_bin_ratio))}
+          </div>${graphFooter(`Relative scores compare the configured domains ${labels.target} and ${labels.baseline}. Frequency lift uses smoothed densities max(count/tokens, 1/tokens); p95, p99, and max-bin ratios are approximated from this feature's per-domain activation histograms.`)}`;
       }
     }
 
@@ -648,10 +1915,18 @@
     const bots = feat.bottom_logits || [];
     h += '<h2>Logit lens</h2><div class="logit-grid"><div class="logit-box"><strong>Top</strong><br/>' + tops.map(escapeHtml).join(' · ') + '</div><div class="logit-box"><strong>Bottom</strong><br/>' + bots.map(escapeHtml).join(' · ') + '</div></div>';
 
+    const hasHistogramSidecar = rawMeta && rawMeta.activation_histograms_file;
+    if (hasHistogramSidecar) {
+      h += '<h2>Activation histograms</h2><div id="feature-histograms" class="meta-mini">Loading histograms...</div>';
+    }
+
     const quants = feat.examples_quantiles || [];
     h += '<div class="quantile-tabs" id="qtabs"></div><div id="qbody"></div>';
 
     detail.innerHTML = h;
+    if (hasHistogramSidecar) {
+      loadFeatureHistogram(cantorId);
+    }
 
     el('ann-save').onclick = async () => {
       const tags = el('ann-tags').value.split(',').map((x) => x.trim()).filter(Boolean);
@@ -688,13 +1963,99 @@
       const lo = feat.act_min ?? 0;
       const hi = feat.act_max ?? 1;
       qbody.innerHTML = exs.map((ex, j) =>
-        `<div class="example-block"><div class="meta-mini">${escapeHtml(q.quantile_name)} · #${j + 1}</div>${renderExample(ex, lo, hi)}</div>`
+        `<div class="example-block" data-example-index="${j}">
+          <div class="example-head">
+            <div class="meta-mini">${escapeHtml(q.quantile_name)} · #${j + 1}</div>
+            <div class="example-actions">
+              ${ex.source_metadata ? `<button type="button" data-show-source-transcript="${j}">Show transcript</button>` : ''}
+              <button type="button" data-copy-transcript="${j}">Copy transcript</button>
+              <button type="button" data-save-prompt="${j}">Save prompt</button>
+            </div>
+          </div>
+          ${renderSourceMetadata(ex)}
+          ${renderExample(ex, lo, hi)}
+          <div class="source-transcript" hidden>
+            <div class="source-transcript-head"><span></span></div>
+            <div class="source-transcript-body"></div>
+          </div>
+          <div class="prompt-status meta-mini"></div>
+        </div>`
       ).join('');
+
+      qbody.querySelectorAll('.example-block').forEach((container) => {
+        bindHoverActivationMarkers(container, lo, hi);
+      });
+
+      qbody.querySelectorAll('[data-show-source-transcript]').forEach((button) => {
+        button.onclick = async () => {
+          const exampleIndex = Number(button.getAttribute('data-show-source-transcript'));
+          const container = button.closest('.example-block');
+          await showSourceTranscript(exs[exampleIndex] || {}, container, lo, hi);
+          const panel = container.querySelector('.source-transcript');
+          button.textContent = panel && !panel.hidden ? 'Hide transcript' : 'Show transcript';
+        };
+      });
+
+      qbody.querySelectorAll('[data-copy-transcript]').forEach((button) => {
+        button.onclick = async () => {
+          const exampleIndex = Number(button.getAttribute('data-copy-transcript'));
+          const container = button.closest('.example-block');
+          const example = exs[exampleIndex] || {};
+          try {
+            let transcript = exampleTranscript(example);
+            if (example.source_metadata) {
+              const payload = await loadSourceTranscriptPayload(example, true);
+              transcript = payload.transcript || transcript;
+            }
+            await copyText(transcript);
+            setPromptStatus(container, 'Copied transcript.', false);
+          } catch (e) {
+            setPromptStatus(container, `Copy failed: ${e.message}`, true);
+          }
+        };
+      });
+
+      qbody.querySelectorAll('[data-save-prompt]').forEach((button) => {
+        button.onclick = async () => {
+          const exampleIndex = Number(button.getAttribute('data-save-prompt'));
+          const container = button.closest('.example-block');
+          const example = exs[exampleIndex] || {};
+          setPromptStatus(container, 'Saving prompt…', false);
+          try {
+            const transcriptPayload = await loadSourceTranscriptPayload(example, true);
+            const transcript = transcriptPayload.transcript || '';
+            const res = await fetch('/api/save_prompt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                transcript,
+                cantor_id: cantorId,
+                layer: feat.layer,
+                feature: feat.feature,
+                quantile_name: q.quantile_name || ('Quantile ' + qi),
+                example_index: exampleIndex,
+              }),
+            });
+            const savePayload = await res.json();
+            if (!res.ok) throw new Error(savePayload.error || JSON.stringify(savePayload));
+            setPromptStatus(
+              container,
+              `Saved ${savePayload.display_path || savePayload.path} · prompt_format=${savePayload.prompt_format}`,
+              false
+            );
+          } catch (e) {
+            setPromptStatus(container, `Save failed: ${e.message}`, true);
+          }
+        };
+      });
     }
 
     quants.forEach((q, i) => {
       const b = document.createElement('button');
-      b.textContent = q.quantile_name || ('Quantile ' + i);
+      const quantileName = q.quantile_name || ('Quantile ' + i);
+      b.textContent = quantileName;
+      b.setAttribute('data-quantile-index', String(i));
+      b.setAttribute('data-quantile-name', quantileName);
       if (i === 0) b.classList.add('active');
       b.onclick = () => {
         qi = i;
@@ -726,17 +2087,31 @@
     rows = buildRows(rawMeta);
     renderOverview(rawMeta);
     renderTagFilter();
+    renderRelativePresets();
     thead();
 
-    el('sort-key').innerHTML = [
+    const labels = relativeDomains();
+    const sortOptions = [
       '<option value="freq">Activation freq</option>',
       '<option value="layer">Layer</option>',
+    ];
+    if (hasRelativeScores()) {
+      sortOptions.push(
+        `<option value="rel">${escapeHtml(labels.target)} / ${escapeHtml(labels.baseline)} frequency lift</option>`,
+        `<option value="p95_ratio">${escapeHtml(labels.target)} / ${escapeHtml(labels.baseline)} p95 strength</option>`,
+        `<option value="p99_ratio">${escapeHtml(labels.target)} / ${escapeHtml(labels.baseline)} p99 strength</option>`,
+        `<option value="max_ratio">${escapeHtml(labels.target)} / ${escapeHtml(labels.baseline)} max-bin strength</option>`
+      );
+    }
+    sortOptions.push(
       '<option value="skew">Domain skew (max−min fraction)</option>',
       '<option value="cantor">Cantor id</option>',
       ...domainKeys.map((k) => `<option value="d_${encodeURIComponent(k)}">Density · ${escapeHtml(k)}</option>`),
-    ].join('');
+    );
+    el('sort-key').innerHTML = sortOptions.join('');
 
     el('q').oninput = applyFilter;
+    el('logit-q').oninput = scheduleLogitSearch;
     el('tag-filter').onchange = applyFilter;
     el('layer-min').oninput = applyFilter;
     el('layer-max').oninput = applyFilter;
@@ -746,8 +2121,22 @@
     el('next').onclick = () => {
       if ((page + 1) * PAGE < filtered.length) { page++; renderTable(); }
     };
+    window.onpopstate = () => {
+      const cantorId = cantorIdFromPath();
+      if (cantorId == null) {
+        selectedCantor = null;
+        renderTable();
+        el('detail').innerHTML = '<div class="detail-empty">Select a feature from the table.</div>';
+        return;
+      }
+      selectCantor(cantorId, { updateUrl: false });
+    };
 
     applyFilter();
+    const initialCantor = cantorIdFromPath();
+    if (initialCantor != null) {
+      selectCantor(initialCantor, { updateUrl: false, scroll: true });
+    }
   }
 
   boot();

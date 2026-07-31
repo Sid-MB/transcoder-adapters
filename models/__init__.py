@@ -21,6 +21,9 @@ _KNOWN_ARCHITECTURES = ("qwen2", "gemma2", "gemma2-orig", "gemma4")
 _ARCHITECTURE_ALIASES = {
     "gemma4_text": "gemma4",
 }
+_GEMMA4_LANGUAGE_MODEL_KEY_MAPPING = {
+    r"^model\.language_model\.": "model.",
+}
 _REGISTRY: dict[str, ModelOutputTypes] = {}
 
 
@@ -91,6 +94,13 @@ def get_transcoder_classes_for_model_type(model_type: str) -> ModelOutputTypes:
         )
 
     return _load_architecture(canonical_arch)
+
+
+def checkpoint_load_kwargs_for_model_type(model_type: str) -> dict[str, Any]:
+    """Return compatibility kwargs for loading saved transcoder checkpoints."""
+    if canonical_architecture(model_type) == "gemma4":
+        return {"key_mapping": dict(_GEMMA4_LANGUAGE_MODEL_KEY_MAPPING)}
+    return {}
 
 
 def detect_architecture(model_name: str) -> str:

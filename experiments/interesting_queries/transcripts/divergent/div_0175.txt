@@ -1,0 +1,8 @@
+# div_0175  (#2 divergent)
+
+USER: tell me an inspiring story about a man who could give things the correct names
+
+INSTRUCT rollout (first tokens, argmax-KL target): Elias lived in a world of whispers.
+
+TARGET TOKEN: Elias  (index 23)
+WHY: argmax-KL response pos 0: base->'tell' vs instruct->'Elias'

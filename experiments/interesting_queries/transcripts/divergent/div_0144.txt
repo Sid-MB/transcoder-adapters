@@ -1,0 +1,8 @@
+# div_0144  (#2 divergent)
+
+USER: Introduce the players to the campaign: "Heist of NAME_1 villages treasure". In a japanese inspired world where the PCs will go on a heist mission to steal the treasure of this village. PCs are NAME_2 NAME_3, and NAME_4. You can choose where they meet/begin. To start of the campaign, I as the DM say "
+
+INSTRUCT rollout (first tokens, argmax-KL target): The air hangs heavy with the scent of
+
+TARGET TOKEN:  air  (index 83)
+WHY: argmax-KL response pos 1: base->' PCs' vs instruct->' air'

@@ -3,12 +3,12 @@ Pack per-feature JSON files into circuit-tracer binary format.
 
 Converts a directory of {cantor_id}.json files into layer_*.bin files
 with a compressed index, compatible with the circuit-tracer frontend.
-See /nlp/u/nathu/circuit-tracer/docs/packed_feature_spec.md for format details.
+See the circuit-tracer repo's docs/packed_feature_spec.md for format details.
 Relies on collect_feature_activations.py run beforehand to generate the JSON files.
 
 Usage:
     python -m analysis.features.pack_features \
-        --feature_dir /nlp/scr/nathu/sparse-adaptation/circuit_tracing/r1_distil_7b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_lr8e-04_bs1_2025-12-29_1408/features \
+        --feature_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/circuit_tracing/r1_distil_7b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_lr8e-04_bs1_2025-12-29_1408/features \
         --n_layers 28 \
         --n_features 8192
 

@@ -3,7 +3,13 @@
 import torch
 import torch.nn.functional as F
 
-from training.forward_utils import _language_backbone, _layer_type, _per_layer_inputs, _run_layer
+from training.forward_utils import (
+    _language_backbone,
+    _layer_type,
+    _per_layer_inputs,
+    _rotary_position_embeddings,
+    _run_layer,
+)
 
 
 def compute_kl_loss(
@@ -168,7 +174,7 @@ def compute_nmse_loss(
     # Create causal masks (full + sliding window if needed)
     mask_kwargs = {
         "config": backbone.config,
-        "inputs_embeds": h_adapt,
+        "input_embeds": h_adapt,
         "attention_mask": attention_mask,
         "cache_position": cache_position,
         "past_key_values": None,
@@ -181,15 +187,9 @@ def compute_nmse_loss(
         causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)  # type: ignore
 
     # Position embeddings
-    position_embeddings_adapt = {
-        layer_type: backbone.rotary_emb(h_adapt, position_ids, layer_type)
-        for layer_type in set(getattr(backbone.config, "layer_types", ["full_attention"]))
-    } if hasattr(backbone.config, "layer_types") else backbone.rotary_emb(h_adapt, position_ids)
+    position_embeddings_adapt = _rotary_position_embeddings(backbone, h_adapt, position_ids)
     with torch.no_grad():
-        position_embeddings_ref = {
-            layer_type: ref_backbone.rotary_emb(h_ref, position_ids, layer_type)
-            for layer_type in set(getattr(ref_backbone.config, "layer_types", ["full_attention"]))
-        } if hasattr(ref_backbone.config, "layer_types") else ref_backbone.rotary_emb(h_ref, position_ids)
+        position_embeddings_ref = _rotary_position_embeddings(ref_backbone, h_ref, position_ids)
 
     # NMSE on embeddings (layer 0)
     layer_nmse_0 = _layer_nmse(h_adapt, h_ref.detach(), mask=attention_mask)

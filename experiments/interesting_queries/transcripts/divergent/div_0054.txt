@@ -1,0 +1,8 @@
+# div_0054  (#2 divergent)
+
+USER: Write an introduction of NAME_1 GmbH with 2000-3000 words in chemical industry
+
+INSTRUCT rollout (first tokens, argmax-KL target): ## NAME_1 GmbH: A Driving
+
+TARGET TOKEN: ##  (index 31)
+WHY: argmax-KL response pos 0: base->'Write' vs instruct->'##'

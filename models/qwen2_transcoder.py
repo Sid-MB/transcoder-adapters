@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from transformers import Qwen2Config, Qwen2ForCausalLM
 from transformers.models.qwen2.modeling_qwen2 import Qwen2MLP
 
+from models.steering import FeatureSteeringMixin, apply_feature_steering
+
 
 class Qwen2ConfigWithTranscoder(Qwen2Config):
     """Qwen2 config with transcoder parameters."""
@@ -68,6 +70,8 @@ class Qwen2MLPWithTranscoder(Qwen2MLP):
         # Increments by batch_size each forward, resets to 0 for active features.
         self._dead_feature_counters = torch.zeros(self.n_features)
         self._attention_mask = None  # set by parent model to mask padding
+        self.feature_steering_targets = ()
+        self.feature_steering_mode = "min"
 
     def _init_transcoder_weights(self):
         """Initialize transcoder weights."""
@@ -90,6 +94,11 @@ class Qwen2MLPWithTranscoder(Qwen2MLP):
 
         # Transcoder computation: f = ReLU(W_enc * x + b_enc), y = W_dec * f
         features = F.relu(self.transcoder_enc(hidden_states))  # [batch, seq, n_features]
+        features = apply_feature_steering(
+            features,
+            self.feature_steering_targets,
+            self.feature_steering_mode,
+        )
         transcoder_output = self.transcoder_dec(features)      # [batch, seq, d_model]
 
         if self.cache_features:
@@ -128,7 +137,7 @@ class Qwen2MLPWithTranscoder(Qwen2MLP):
         return original_output + transcoder_output
 
 
-class Qwen2ForCausalLMWithTranscoder(Qwen2ForCausalLM):
+class Qwen2ForCausalLMWithTranscoder(FeatureSteeringMixin, Qwen2ForCausalLM):
     """Qwen2 causal LM with integrated transcoder adapters."""
 
     config_class = Qwen2ConfigWithTranscoder

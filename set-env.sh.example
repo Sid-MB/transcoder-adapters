@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Environment configuration template for transcoder-adapters.
+#
+# This is a tracked template. Copy it to set-env.sh (gitignored) and fill in your values:
+#   cp set-env.sh.example set-env.sh
+# Then either `source set-env.sh`, or copy the export lines into your ~/.bashrc
+# (recommended, so they persist across shells).
+#
+# Verify your setup at any time with: uv run python check-env.py
+
+# ── Required ──────────────────────────────────────────────────────────
+# Large, persistent volume for training results: metadata, logs, and large
+# artifacts (checkpoints, feature data, .json/.pt files). Experiment outputs are
+# written under $LARGE_ARTIFACTS_DIR/transcoder-adapters/<category>/<run>.
+# Choose a path on a big, durable filesystem (NOT scratch/tmp).
+export LARGE_ARTIFACTS_DIR="/path/to/large/persistent/volume"
+
+# Fast scratch for run intermediates we don't mind losing (temporary caches, etc.).
+# Most systems set this already; the fallback below keeps it defined if not.
+export TMPDIR="${TMPDIR:-/tmp}"
+
+# ── Authentication (log in once; credentials are NOT stored here) ─────
+# Hugging Face:      huggingface-cli login
+# Weights & Biases:  wandb login
+#
+# Optional API keys (e.g. OPENAI_API_KEY for auto-interp) belong in a .env file;
+# see .env.example.

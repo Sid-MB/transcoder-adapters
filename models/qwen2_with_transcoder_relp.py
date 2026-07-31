@@ -23,6 +23,7 @@ from models.relp_common import (
     load_checkpoint_state_dict,
     resolve_checkpoint_path,
 )
+from models.steering import apply_feature_steering
 
 
 
@@ -84,6 +85,8 @@ class Qwen2MLPWithTranscoderRelP(nn.Module):
 
         # Feature mask for ablation: [n_features], 1=keep, 0=suppress
         self.feature_mask: torch.Tensor | None = None
+        self.feature_steering_targets = ()
+        self.feature_steering_mode = "min"
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # === Base MLP ===
@@ -113,6 +116,11 @@ class Qwen2MLPWithTranscoderRelP(nn.Module):
 
         pre_act = self.transcoder_enc(hidden_states)
         features = F.relu(pre_act)
+        features = apply_feature_steering(
+            features,
+            self.feature_steering_targets,
+            self.feature_steering_mode,
+        )
 
         # Apply feature mask for ablation (if set)
         if self.feature_mask is not None:

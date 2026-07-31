@@ -1,0 +1,1 @@
+<｜begin▁of▁sentence｜><｜User｜>What is the capital of the country with the Colloseum?<｜Assistant｜>The Colloseum is located in **Rome

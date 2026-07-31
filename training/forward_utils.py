@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import random
+import inspect
 
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 if TYPE_CHECKING:
@@ -42,6 +43,21 @@ def _run_layer(layer, hidden_states, *, per_layer_input, **kwargs):
     if per_layer_input is None:
         return layer(hidden_states, **kwargs)
     return layer(hidden_states, per_layer_input=per_layer_input, **kwargs)
+
+
+def _rotary_position_embeddings(backbone, hidden_states: torch.Tensor, position_ids: torch.Tensor):
+    layer_types = getattr(backbone.config, "layer_types", None)
+    try:
+        accepts_layer_type = "layer_type" in inspect.signature(backbone.rotary_emb.forward).parameters
+    except (TypeError, ValueError, AttributeError):
+        accepts_layer_type = False
+
+    if layer_types and accepts_layer_type:
+        return {
+            layer_type: backbone.rotary_emb(hidden_states, position_ids, layer_type)
+            for layer_type in set(layer_types)
+        }
+    return backbone.rotary_emb(hidden_states, position_ids)
 
 
 def forward_mixed(
@@ -83,7 +99,7 @@ def forward_mixed(
     # Create causal mask (use model1's config, should be same arch)
     mask_kwargs = {
         "config": backbone1.config,
-        "inputs_embeds": h,
+        "input_embeds": h,
         "attention_mask": attention_mask,
         "cache_position": cache_position,
         "past_key_values": None,
@@ -96,10 +112,7 @@ def forward_mixed(
         causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs) # type: ignore
 
     # Position embeddings from model1
-    position_embeddings = {
-        layer_type: backbone1.rotary_emb(h, position_ids, layer_type)
-        for layer_type in set(getattr(backbone1.config, "layer_types", ["full_attention"]))
-    } if hasattr(backbone1.config, "layer_types") else backbone1.rotary_emb(h, position_ids)
+    position_embeddings = _rotary_position_embeddings(backbone1, h, position_ids)
 
     # Model1 layers: 0 to switch_layer-1
     shared_kv_states1 = {}
@@ -124,10 +137,7 @@ def forward_mixed(
     # Model2 layers: switch_layer to L
     # Need model2's position embeddings for its layers
     per_layer_inputs2 = _per_layer_inputs(backbone2, input_ids, h)
-    position_embeddings_2 = {
-        layer_type: backbone2.rotary_emb(h, position_ids, layer_type)
-        for layer_type in set(getattr(backbone2.config, "layer_types", ["full_attention"]))
-    } if hasattr(backbone2.config, "layer_types") else backbone2.rotary_emb(h, position_ids)
+    position_embeddings_2 = _rotary_position_embeddings(backbone2, h, position_ids)
     shared_kv_states2 = dict(shared_kv_states1)
     for i, layer in enumerate(backbone2.layers[switch_layer:], start=switch_layer):
         lt = _layer_type(backbone2, layer, i)

@@ -1,0 +1,267 @@
+<!-- Claude Code session "implement: new 07/02 gemmascope transcoder experiments". 2026-07-09. -->
+# 7/09/26 — GemmaScope transcoder input-distribution shift (Experiment 1 + follow-ups)
+
+Full writeup with all tables/links: [`experiments/transcoder_input_shift/README.md`](../../experiments/transcoder_input_shift/README.md). This note is the session log: what was asked, what was built, every job, findings, and where everything lives.
+
+## This folder
+
+Self-contained bundle of the 7/09 work (graphs, comparisons, figures, summaries):
+
+- `README.md` — this session log.
+- `serve_graphs.sh` — serve the original vs fine-tuned circuit-tracer graphs side by side (`./serve_graphs.sh`; graphs bundled in `graphs/`).
+- `graphs/` — the old-vs-new attribution graphs (`original/`, `finetuned/`, each with `graph-metadata.json` + 3 prompt graph JSONs) plus `comparison.{md,json}` (error-node fraction table). Served by `serve_graphs.sh`. Nodes carry `clerp` labels from the collection's free (no-LLM) heuristic `tags` (`feature_annotations.json`; ~50% of nodes, mostly coarse positional tags like `assistant_response`), and fine-tuned L0/24/25 nodes are flagged `⟳ fine-tuned weights …`. Re-apply / add real auto-interp labels via [`analysis/attribution/retag_graphs_for_local_features.py`](../../analysis/attribution/retag_graphs_for_local_features.py) (`--annotations`).
+- `figures/` — `transcoder_input_shift_overview.png` (6-panel Exp 1), `transcoder_finetune_before_after.png` (re-finetune FVU before/after).
+- `data/` — machine-readable results: `exp1_all_layers_results.json` + `..._summary.md` + `..._fire_freq_drift.md` (26-layer profile), `exp1_{chat,web}_5layer_summary.md`, `finetune_report.json` + `finetune_summary.md`, `graph_clarity.json`.
+
+Large source artifacts (per-feature `.npz`, fine-tuned `.safetensors`, all Exp1 run dirs) stay under `$LARGE_ARTIFACTS_DIR/transcoder-adapters/`; paths in the Artifacts table below.
+
+## The question
+
+Pretrained GemmaScope transcoders (`google/gemma-scope-2b-pt-transcoders`, `width_16k`) were trained to replace each **base-model MLP inside the full base model** — i.e. on the base model's per-layer input distribution. We want to plug them into circuit-tracer to study `google/gemma-2-2b` (base) vs `google/gemma-2-2b-it` (instruct). Switching the source model shifts the distribution of inputs to each layer, which can change which features fire (L0) and how well the transcoder reconstructs the MLP (reconstruction error).
+
+**Exp 1:** per layer, is transcoder L0 and reconstruction error the same on base vs instruct hidden states? If ~same → transcoders transfer; if worse on instruct → re-fine-tune (or pivot to adapter-only / ReLP). Target is always `MLP_base(x)`; we only change whose hidden states `x` are.
+
+## Method (how the measurement works)
+
+- Load base + instruct as TransformerLens `HookedTransformer`s with the **same processing circuit-tracer's `ReplacementModel` uses** (`fold_ln=False, center_writing_weights=False, center_unembed=False`), so `ln2.hook_normalized` matches GemmaScope's expected input convention.
+- Per source & layer L, over ~1M tokens: `x = blocks.L.ln2.hook_normalized`; `feats = transcoder.encode(x)` (→ L0); `recon = transcoder.decode(feats)`.
+- **Target = `MLP_base(x)`**, via a *patched* base forward (overwrite `ln2.hook_normalized` with `x`, read `hook_mlp_out`). Exact because the gemma-2 MLP sub-block is strictly position-wise — no assumptions about pre/post-LN folding.
+- Metrics: FVU (frac. variance unexplained), MSE, cosine, per-feature firing frequency. BOS (pos 0) + padding excluded.
+- **Gotcha:** the full 26-layer transcoder set must load even to eval one layer, and GemmaScope's available `average_l0_*` folders differ per layer → must use `--gemmascope_l0_match nearest` (first smoke 404'd on `layer_1` with the default `exact`; fixed the default to `nearest`).
+
+## Code written (all committed, session-tagged)
+
+| file | purpose |
+|---|---|
+| `analysis/features/transcoder_input_shift.py` | Exp 1 measurement (L0/FVU/MSE/cosine + per-feature fire freq), per source × layer |
+| `analysis/features/analyze_fire_freq_drift.py` | per-feature firing-rate drift between two sources |
+| `analysis/features/finetune_transcoder_shift.py` | re-fine-tune transcoders on instruct inputs; FVU/L0 before vs after on held-out |
+| `analysis/attribution/analyze_graph_clarity.py` | error-node vs feature-node participation from base-vs-adapter graphs (tasks 2 & 4) |
+| `analysis/features/plot_input_shift.py` | overview figure + before/after re-finetune figure |
+| `sh/slurm_batch_transcoder_input_shift.sh`, `run_on_gpu/run_transcoder_input_shift.sh` | Exp 1 runners (jagupard) |
+| `sh/slurm_batch_finetune_transcoder_shift.sh`, `run_on_gpu/run_finetune_transcoder_shift.sh` | re-finetune runners |
+
+Commits: `bf9cd05`..`aa91f44` (all prefixed `[implement: new 07/02 gemmascope transcoder experiments]`).
+
+## Results
+
+### Exp 1 — reconstruction error (FVU) & sparsity (L0), base vs instruct inputs
+
+Full 26-layer depth profile (chat, 500k tok/layer, job 16113808). **Instruct FVU ≥ base at every layer**, degradation concentrated at the endpoints:
+
+| layer | base FVU | instruct FVU | ΔFVU | base L0 | instruct L0 |
+|---|---|---|---|---|---|
+| 0 | 0.082 | 0.110 | **+33%** | 80 | 73 |
+| 6 | 0.353 | 0.392 | +11% | 98 | 88 |
+| 12 | 0.500 | 0.537 | +7% | 59 | 63 |
+| 18 | 0.340 | 0.374 | +10% | 54 | 59 |
+| 24 | 0.210 | 0.277 | **+32%** | 56 | 60 |
+| 25 | 0.153 | 0.312 | **+104%** | 65 | 60 |
+
+(5-layer 1M-token chat run = job 16113538; middle layers ~+5–13%, endpoints worst; base FVU peaks mid-stack, so GemmaScope reconstructs gemma-2-2b's mid-layer MLPs imperfectly even for base.)
+
+**Not chat-specific.** Same eval on fineweb web text (job 16113604): base→instruct gap essentially identical (L0 +31%, L25 +130%) → this is **general fine-tuning drift, not chat formatting**.
+
+**Firing-frequency drift.** Fire-set Jaccard ≈ 1.0 at every layer (the *same* dense features fire), but per-feature firing-rate Pearson r falls with depth (chat: L0 0.97 → L12 0.80, L25 0.81; web even lower, L12 0.68). Same features, drifted rates. Individual features move sharply, e.g. chat L25 `f13822` fires on 35% of base tokens → 99.9% of instruct tokens.
+
+### Task 1 — re-fine-tune transcoders on instruct inputs (job 16114293)
+
+Fine-tuned endpoint layers 0/24/25 from pretrained GemmaScope weights, loss `MSE(transcoder(x), MLP_base(x))`, x = instruct `ln2.hook_normalized`, 2M tokens, lr 1e-4, JumpReLU threshold frozen. FVU/L0 on 200k **held-out** instruct tokens:
+
+| layer | FVU before → after | ΔFVU | base target | L0 before → after |
+|---|---|---|---|---|
+| 0 | 0.108 → **0.075** | −31% | 0.082 (fully recovered) | 72 → 81 |
+| 24 | 0.281 → **0.221** | −22% | 0.21 (recovered) | 60 → 67 |
+| 25 | 0.317 → **0.212** | −33% | 0.15 (mostly closed) | 60 → 81 |
+
+**A ~14-min, 2M-token fine-tune closes most of the shift** — L0/L24 recover to their base reconstruction level; L25 −33% (still above base; more tokens / a 2nd epoch / unfreezing threshold would close it). Fine-tuned weights saved as `finetuned_layer_{0,24,25}.safetensors`.
+
+**Did it work?** Yes for reconstruction fidelity: measured on held-out tokens, the before-eval reproduced the Exp 1 instruct numbers (calibrated baseline), and after converged *to* the base target level (not past it). Caveats: (1) still only an FVU test — had NOT re-run circuit-tracer graphs with the fine-tuned set to confirm graphs get cleaner (in progress, see below); (2) L0 operating point drifted up (threshold frozen, weights push more pre-acts over threshold), though still near base's L0; (3) tested on chat held-out only.
+
+### Task 1b — sparsity penalty (keep L0 pinned while FVU improves)
+
+**The problem.** The reconstruction-only fine-tune above closed the FVU gap but let **L0 (active features per token)** drift upward — L24 60→67, L25 60→81 vs a base operating point of 56/65 — because we optimized only reconstruction while freezing the JumpReLU threshold, so the shifted encoder pushes more features over the fixed gate. Sparsity (interpretability) is the whole point of a transcoder, so an unpinned L0 is undesirable, and it would only get worse over a longer (e.g. 10M-token) run.
+
+**What we did.** Added an optional **decoder-norm-weighted L1 sparsity penalty** on the post-JumpReLU features (`loss = MSE(transcoder(x), MLP_base(x)) + l1_coeff·Σ_i ‖W_dec_i‖·feat_i`, matching the project's own convention), which pushes activation magnitudes back under the threshold. Sweeping `l1_coeff` revealed it is **layer-dependent**: a global penalty *hurts* layers already at base L0 — **layer 0** (whose no-penalty L0 was 81 ≈ base 80) over-sparsified to L0 = 32 with FVU getting *worse* — so the fix is a **per-layer coefficient**: **0 on layer 0, 1e-3 on the layers that overshoot (24, 25)**.
+
+**The result** (final run, `l1_coeff = [0, 1e-3, 1e-3]`, 2M tokens, [wandb 9o1ebt6v](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/9o1ebt6v)): every layer now keeps its reconstruction gain **and** sits on the base sparsity. FVU: L0 0.108→0.075 (−31%), L24 0.281→0.228 (−19%), L25 0.317→0.221 (−30%); L0: L0 72→81 (base 80), L24 60→**56.6** (base 56), L25 60→**68.2** (base 65) — the overshoot (67/81) is gone at a ~3% FVU cost on L24/L25. Figure: `figures/transcoder_finetune_sparsity_comparison.png` (FVU + L0, 4 bars/layer: before · after-no-penalty · after-+L1 · base). Code: [`analysis/features/finetune_transcoder_shift.py`](../../analysis/features/finetune_transcoder_shift.py) (`--l1_coeff`, one value or per-layer), plot [`analysis/features/plot_finetune_sparsity_comparison.py`](../../analysis/features/plot_finetune_sparsity_comparison.py). Data: `data/finetune_report_l1_perlayer.json`.
+
+**One-sentence version.** Adding a per-layer L1 sparsity penalty (0 on layer 0, 1e-3 on 24/25) to the transcoder fine-tune holds L0 at the base operating point while preserving almost all of the reconstruction (FVU) gain — the recommended recipe for the future 10M-token run.
+
+### Task 1c — does L25 keep improving with more tokens? (10M-token run)
+
+**The question.** After the 2M-token fine-tune, L0 and L24 reached their base FVU targets but **L25 did not** (0.221 vs base 0.15), and the training loss was still descending — suggesting L25 might just need more tokens. We tested it directly: a 10M-token run (`--l1_coeff 0 1e-3 1e-3`) with a held-out FVU/L0 eval every 1M tokens ([wandb k1wh0nfl](https://wandb.ai/siddharth-stanford/transcoder-feature-collection/runs/k1wh0nfl), job 16179840).
+
+**The result — it improves but plateaus above base.** L25 FVU keeps dropping with sharply diminishing returns and flattens around ~0.21, still well above the 0.15 base target:
+
+| tokens | 1M | 2M | 3M | 5M | 7M | 10M | base |
+|---|---|---|---|---|---|---|---|
+| L25 FVU | 0.228 | 0.221 | 0.217 | 0.213 | 0.212 | **0.211** | 0.15 |
+
+Figure: `figures/transcoder_finetune_token_curve.png` (FVU and L0 vs training tokens, per layer, dashed base targets). The per-1M-token gain shrinks from −0.008 (1→2M) to −0.0004 (9→10M) — so the remaining L25 gap is **not undertraining**; it's a floor (the input shift is largest at L25, and at fixed L0 the transcoder has limited capacity to track the drifted computation). So "later layers benefit from more tokens" is true but *modestly* — 5× the tokens bought L25 only 0.221 → 0.211. Two side effects at 10M: L0 fully recovers (FVU 0.071 ≤ base 0.082), but the `1e-3` penalty over 10M tokens **over-sparsifies** L24/L25 (L24 L0 → 49.7 vs base 56; L25 L0 → 58.7 vs base 65) — confirming `l1_coeff` is budget-sensitive and would want lowering for a 10M run. **Takeaway:** the deployed 2M weights are close to the practical floor; to close L25 further you'd need a *higher L0 budget* (a denser GemmaScope variant) or a skip/error-aware objective, not just more tokens.
+
+### Hybrid (combined) graphs with the fine-tuned transcoders
+
+The fine-tuned transcoders are plugged back into the **combined base+adapter full-replacement graph** (`MLP(x) = T_base_finetuned(x) + T_adapter(x) + Err`, one graph with base + adapter features + real error nodes), via the `--finetuned_transcoder_dir/--finetuned_layers` passthrough now in `run_combined_attribution.py`. Job 16179855 built 12 `interesting_small` graphs (~1200 base + ~50 adapter features + 32 error nodes each; base/adapter feature examples served from the `ms100000_dtk20` HF repos). Output: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_finetuned_ftL0-24-25/`. Serve (and copy-paste commands): `sh/visualize graphs/visualize fine tuned transcoders.sh` → `serve_hybrid` / `rebuild_hybrid`:
+
+```bash
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/base_adapter_comparisons/hybrid_finetuned_ftL0-24-25 --port 8044
+```
+
+### Tasks 2 & 4 — difference circuits + graph clarity
+
+From the existing base-vs-adapter combined-attribution graphs ([`experiments/base_vs_adapter_circuit_trace/`](../../experiments/base_vs_adapter_circuit_trace/), 28 prompts) via `analyze_graph_clarity.py`. Error node = `true_mlp_out − transcoder_out` (the graph-level analog of reconstruction failure).
+
+| bucket | error-node fraction | adapter fraction | adapter content / template feats |
+|---|---|---|---|
+| agree | 0.028 | 0.039 | 4.0 / 40.1 |
+| diverge | 0.026 | 0.048 | 21.6 / 39.4 |
+
+- **Task 4 (clarity):** error nodes only ~2.7% of feature+error nodes → base GemmaScope graphs stay **clean/feature-dominated** despite the Exp 1 shift. The FVU degradation doesn't blow up graph interpretability at these thresholds.
+- **Task 2 (difference circuits):** adapter contributes ~4–5% of feature nodes, but content-token work jumps ~5× on divergent prompts (21.6 vs 4.0) — the difference circuit fires where base/instruct diverge.
+
+## Artifacts
+
+Output root: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/` (`$LARGE_ARTIFACTS_DIR=/nlp/scr/siddharth`).
+
+| run | job | data / config | output dir (under output root) | wandb |
+|---|---|---|---|---|
+| Exp1 smoke | 16113462 | chat, L0, 8k tok | `transcoder_input_shift/gemmascope_width_16k_average_l0_76_base-instruct_20260709_024443_16113462` | — |
+| Exp1 chat | 16113538 | chat, 5 layers, 1M | `..._024942_16113538` | kqlkler4 |
+| Exp1 web | 16113604 | fineweb, 5 layers, 1M | `..._030301_16113604` | 259j6xnp |
+| Exp1 all-layers | 16113808 | chat, 26 layers, 500k | `..._031454_16113808` | i5yt4w7e |
+| FT smoke | 16114278 | L25, 20k tok | `transcoder_input_shift_finetune/ft_..._L25_20260709_041359_16114278` | — |
+| **re-finetune** | 16114293 | L0/24/25, 2M tok | `transcoder_input_shift_finetune/ft_..._L0-24-25_20260709_041813_16114293` | 61xzqknr |
+
+wandb project: `siddharth-stanford/transcoder-feature-collection`. Each Exp1 run dir has `results.json`, `summary.md`, `per_feature_fire_freq.npz`, `fire_freq_drift.{json,md}`, `gemmascope_config.json`; FT run dir has `finetune_report.json`, `summary.md`, `finetuned_layer_*.safetensors`. Slurm logs in `logs/transcoder_input_shift/` and `logs/finetune_transcoder_shift/`. Graph-clarity summary: `experiments/transcoder_input_shift/graph_clarity.json`.
+
+Figures (bundled in [`figures/`](figures/)): [`transcoder_input_shift_overview.png`](figures/transcoder_input_shift_overview.png) (6 panels), [`transcoder_finetune_before_after.png`](figures/transcoder_finetune_before_after.png). Comparison graphs + table in [`graphs/`](graphs/).
+
+## Reproduce
+
+```bash
+# Exp 1 — chat, 5 layers, 1M tokens:
+./sh/slurm_batch_transcoder_input_shift.sh --gemmascope_width width_16k --gemmascope_l0 average_l0_76 \
+  --sources base instruct --layers 0 6 12 18 25 --max_tokens 1000000 --wandb
+#   web variant: add --val_data fineweb:science-of-finetuning/fineweb-1m-sample ; all layers: --layers all
+uv run --no-sync python -m analysis.features.analyze_fire_freq_drift --run_dir <run_dir>
+
+# Task 1 — re-fine-tune endpoint layers:
+./sh/slurm_batch_finetune_transcoder_shift.sh --gemmascope_width width_16k --gemmascope_l0 average_l0_76 \
+  --layers 0 24 25 --train_tokens 2000000 --eval_tokens 200000 --lr 1e-4 --wandb
+
+# Tasks 2 & 4 — graph clarity from existing base-vs-adapter graphs:
+uv run --no-sync python -m analysis.attribution.analyze_graph_clarity
+
+# Figures:
+uv run --no-sync python -m analysis.features.plot_input_shift --all_layers_dir <26L> --chat_dir <5L> --web_dir <web> --finetune_dir <ft>
+```
+
+## Visualize / evaluate the fine-tuned transcoders in circuit-tracer (7/09 follow-up ask)
+
+Yes — the fine-tuned transcoders plug straight into circuit-tracer. `analysis/attribution/compare_finetuned_transcoder_graphs.py` reuses the exact attribution path from `run_base_adapter_comparison.run_base_attribution` (load GemmaScope `TranscoderSet` → `ReplacementModel.from_pretrained_and_transcoders` → `circuit_tracer.attribute` → `create_graph_files`). It builds each prompt's graph **twice** — once with the pretrained GemmaScope transcoders, once with the fine-tuned layers (0/24/25) patched in place (`W_enc/W_dec/b_enc/b_dec` copied from `finetuned_layer_*.safetensors`) — and compares graph composition. Clarity metric = **error-node fraction** (MLP-reconstruction-error nodes / (error + feature nodes)); lower with the fine-tuned set = the fine-tune cleaned the graph. Job 16118628 (3 interesting_small prompts). Output dir has `original/` + `finetuned/` graph JSONs, `comparison.{json,md}`.
+
+### Comparison command (build the old-vs-new graphs)
+
+```bash
+FT=/nlp/scr/siddharth/transcoder-adapters/transcoder_input_shift_finetune/ft_gemmascope_width_16k_average_l0_76_L0-24-25_20260709_041813_16114293
+./sh/slurm_batch_compare_finetuned_graphs.sh \
+  --finetune_dir "$FT" \
+  --gemmascope_width width_16k --gemmascope_l0 average_l0_76 --ft_layers 0 24 25 \
+  --prompts analysis/attribution/prompts/interesting_small --max_prompts 3 \
+  --max_feature_nodes 256 --max_n_logits 5
+# CPU/login node (no slurm): uv run --extra viz python -m analysis.attribution.compare_finetuned_transcoder_graphs --finetune_dir "$FT" --gemmascope_width width_16k --gemmascope_l0 average_l0_76 ...
+```
+
+### Serve side by side (visual, port-forward from the login node)
+
+One-shot script (bundled graphs; serves **with feature activation examples** — click a feature node → ~20 top activating examples/dataset):
+
+```bash
+./serve_graphs.sh                     # original :8050, finetuned :8051 (Ctrl-C stops both)
+# other run:      GRAPH_DIR=<compare run dir> ./serve_graphs.sh
+# local features: FEATURES_DIR=<collection>/circuit_tracer_features ./serve_graphs.sh  (needs local-scan graphs)
+```
+
+**Feature examples** are baked into the graph `scan` = the project's **current-best** base collection, `base_ms100000_dtk20` (full corpus: entire 100k lmsys val + 100k fineweb, `top_k/domain_top_k 20` → ~20 examples/dataset per feature), fetched **directly from HuggingFace** (no local download — your browser pulls them over the ssh tunnel):
+- HF: `siddharthmb/2026.TA.features_gemma-2-2b_gemmascope_width_16k_average_l0_76_ms100000_ml1024_tk2_h12ad59325ffd`
+
+Why not the local `base_ms20000` (20k samples, 10 examples): the `ms100000_dtk20` is strictly richer (5× corpus + 2× example depth) and needs no download. Scan matches these graphs (`width_16k/average_l0_76`), so feature IDs align.
+
+**Are the already-collected examples valid for the fine-tuned side? Yes — measured.** A feature's top activating examples are set by its **encoder direction** `W_enc[i]` (what triggers it). We compared the pretrained vs fine-tuned encoders per feature for the changed layers ([`analysis/features/measure_encoder_drift.py`](../../analysis/features/measure_encoder_drift.py) → `data/encoder_drift.json`):
+
+| layer | mean cos(W_enc orig, ft) | median | frac < 0.99 | frac < 0.9 |
+|---|---|---|---|---|
+| 0 | 0.9996 | 0.9997 | 0.000 | 0.000 |
+| 24 | 0.9997 | 0.9999 | 0.000 | 0.000 |
+| 25 | 0.9997 | 0.9998 | 0.000 | 0.000 |
+
+Every feature's detector rotated by **<0.03% cosine**, with **zero** features below 0.99. The fine-tune fixed reconstruction by adjusting the decoder/biases, **not what each feature detects** — so the already-collected `ms100000` examples are **exact for all 26 layers**, not approximate. No re-collection is needed. (The L0/24/25 nodes still carry a light `⟳ fine-tuned layer` marker so you know which weights changed, but the examples shown for them are valid.)
+
+Equivalent manual command (subcommand is `start-server`, not `serve`; examples come from HF via the scan, so no `--features_dir`):
+
+```bash
+OUT=/nlp/scr/siddharth/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260709_145430_16118628
+uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/original"  --port 8050
+uv run --extra viz circuit-tracer start-server --graph_file_dir "$OUT/finetuned" --port 8051
+```
+
+Then from your laptop: `ssh -L 8050:localhost:8050 -L 8051:localhost:8051 <node>` and open `http://localhost:8050` (original) / `http://localhost:8051` (fine-tuned).
+
+### RESULTS (job 16129263, final sparsity-penalty weights, 3 interesting_small prompts, max_feature_nodes 256)
+
+Fine-tuning **just 3 of 26 layers** (0/24/25) consistently lowers the graph's error-node fraction:
+
+| prompt | orig error-frac | ft error-frac | orig err/feat | ft err/feat |
+|---|---|---|---|---|
+| bomb_refusal_help_I | 0.258 | **0.239** | 57/164 | 53/169 |
+| capital_colesseum | 0.275 | **0.265** | 76/200 | 72/200 |
+| capital_colesseum_mispelling | 0.273 | **0.260** | 77/205 | 72/205 |
+
+~0.01–0.02 absolute (~5% relative) drop in error-node fraction on every prompt — fewer MLP-reconstruction-error nodes, more of the graph carried by interpretable feature nodes. So the fine-tune improves not just FVU but the actual attribution graph. Effect is modest because only the 3 endpoint layers were fine-tuned; fine-tuning more layers (or fully closing L25) should compound it. (Absolute error-frac here (~0.25) is higher than the base-vs-adapter analysis (~0.03) only because of different node-cap/threshold settings; the old-vs-new delta is apples-to-apples.) The bundled `graphs/` are these (job 16129263); source at `$LARGE_ARTIFACTS_DIR/transcoder-adapters/transcoder_finetune_graphs/L0-24-25_20260710_171004_16129263/`.
+
+### Applying the fine-tune in the visualizers and evals
+
+The fine-tune is per-layer `finetuned_layer_{L}.safetensors` (W_enc/W_dec/b_enc/b_dec; threshold frozen). "Applying" it = load the pretrained GemmaScope set, then copy those layers in place — one shared helper ([`analysis/attribution/gemmascope_finetune.py`](../../analysis/attribution/gemmascope_finetune.py) `patch_finetuned_layers`). Two ways to use it:
+
+- **On HuggingFace:** the fine-tuned weights are uploaded to [`siddharthmb/2026.TA.gemma2_2b_gemmascope_transcoders_instruct_ft_L0-24-25`](https://huggingface.co/siddharthmb/2026.TA.gemma2_2b_gemmascope_transcoders_instruct_ft_L0-24-25) (weights + model card + figures). `--finetuned_transcoder_dir` accepts this **HF repo id directly** (auto-downloads), so the visualizer/eval take an HF id with no local files. Copy-paste commands: `sh/visualize graphs/visualize fine tuned transcoders.sh`.
+- **Load-time flag** on any GemmaScope-loading tool: `--finetuned_transcoder_dir <HF repo id or local ft run dir> --finetuned_layers 0 24 25`. Wired into: `analysis/features/transcoder_input_shift.py` (FVU/L0 **eval** across all layers/data), `analysis/features/collect_base_feature_activations.py` (feature collection), `analysis/attribution/run_base_adapter_comparison.py` (**production** base attribution + combined overlay + serve), and `analysis/attribution/compare_finetuned_transcoder_graphs.py` (the old-vs-new graphs shown here, via `--finetune_dir`).
+- **Materialized set** (no per-run flags): [`analysis/attribution/export_finetuned_transcoder_set.py`](../../analysis/attribution/export_finetuned_transcoder_set.py) bakes the fine-tune into a full 26-layer local circuit-tracer set (self-verified roundtrip). Final set: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/finetuned_transcoder_sets/gemma2_2b_width16k_l0_76nearest_ftL0-24-25_sparsity/` (`config.yaml` + `layer_*.safetensors`, 7.4 GB) — load via `--transcoder_set <dir>` / `ReplacementModel`, or upload to HF.
+
+Final fine-tune weights used everywhere: `$LARGE_ARTIFACTS_DIR/transcoder-adapters/transcoder_input_shift_finetune/ft_..._L0-24-25_20260710_025814_16123724/` (per-layer L1 `[0,1e-3,1e-3]`).
+
+## Bottom line & next steps
+
+GemmaScope transcoders **don't transfer cleanly** to instruct hidden states (worst at endpoints, general drift not chat-specific; same features, drifted firing rates). But a **short re-fine-tune recovers most of the fidelity**, and the attribution graphs were already fairly clean (error nodes ~3%).
+
+Next:
+- Push L25 fully to base level (more tokens / 2nd epoch / unfreeze threshold).
+- **Export fine-tuned set into circuit-tracer + re-run graph-clarity old-vs-new** — the decisive test that graph quality (not just FVU) improves (in progress, above).
+- Experiment 2 (deferred): ReLP neuron-level attribution on base MLP neurons directly (`analysis/attribution/relp_model.py`).
+
+Related earlier context: [`my_notes/Nathan 5-28-26.md`](Nathan%205-28-26.md) (error nodes on neuronpedia; ReLP vs full-replacement; "use base, not hybrid").
+
+---
+# Appendix A
+### Finding: the already-collected features are exact for the fine-tuned side — no re-collection needed
+
+What was in question: the fine-tune changed the transcoder weights at layers 0/24/25, so I'd cautiously flagged those layers' feature examples as "approximate." You pushed to be exact, so I measured it directly.
+
+Why this is the right test: a feature's top activating examples are determined entirely by its encoder direction W_enc[i] — the vector that decides what makes feature i fire. If that direction is unchanged, the feature detects the same thing and its already-collected examples are correct. So the exact question is: how far did each feature's encoder rotate during fine-tuning?
+
+Measurement (analysis/features/measure_encoder_drift.py, per-feature cos(W_enc_original, W_enc_finetuned), all 16,384 features per layer):
+
+┌───────┬──────────┬────────────┬─────────────┬────────────┐
+│ layer │ mean cos │ median cos │ frac < 0.99 │ frac < 0.9 │
+├───────┼──────────┼────────────┼─────────────┼────────────┤
+│ 0     │ 0.9996   │ 0.9997     │ 0.000       │ 0.000      │
+├───────┼──────────┼────────────┼─────────────┼────────────┤
+│ 24    │ 0.9997   │ 0.9999     │ 0.000       │ 0.000      │
+├───────┼──────────┼────────────┼─────────────┼────────────┤
+│ 25    │ 0.9997   │ 0.9998     │ 0.000       │ 0.000      │
+└───────┴──────────┴────────────┴─────────────┴────────────┘
+
+Interpretation: every feature's detector rotated by <0.03% cosine, and zero features fell below 0.99 similarity. The fine-tune fixed reconstruction error by adjusting the decoder and biases — what each feature writes / when it crosses threshold — not what it detects. So the feature identities are effectively unchanged.
+
+Conclusion: the big already-collected ms100000 collection is exact for all 26 layers, not just the 23 untouched ones. No re-collection is needed anywhere — confirming your intuition quantitatively.

@@ -1,0 +1,4 @@
+# 20k-row Gemma2 2B overlay. Use after training/configs/gemma2_2b.yaml.
+run_name_prefix: "gemma2_2b_full_20k"
+
+total_rows: 20000

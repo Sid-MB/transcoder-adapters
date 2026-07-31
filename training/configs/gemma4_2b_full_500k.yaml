@@ -1,0 +1,12 @@
+# Day-plus full-feature Gemma4 E2B run that fits on a 48GB GPU.
+#
+# Use as:
+#   ./sh/slurm_batch_train.sh --config training/configs/gemma4_2b.yaml training/configs/gemma4_2b_full_500k.yaml
+
+run_name_prefix: "gemma4_2b_full_500k"
+
+total_rows: 500000
+
+val_frequency: 10000
+layerwise_val_frequency: 20000
+token_metrics_final_n_samples: 2000

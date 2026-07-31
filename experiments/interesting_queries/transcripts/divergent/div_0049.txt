@@ -1,0 +1,8 @@
+# div_0049  (#2 divergent)
+
+USER: As a very smart and pedantic scientist write a research paper in detail about the calculation: 2+2*2
+
+INSTRUCT rollout (first tokens, argmax-KL target): ## A Rigorous Examination of the Calculation
+
+TARGET TOKEN: ##  (index 32)
+WHY: argmax-KL response pos 0: base->'As' vs instruct->'##'

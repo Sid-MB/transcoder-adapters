@@ -1,0 +1,249 @@
+{
+  "aligned": 4,
+  "total": 9,
+  "samples": [
+    {
+      "layer": 0,
+      "feature": 100,
+      "overlap": 0.75,
+      "aligned": true,
+      "ours_logit_lens": [
+        " Efq",
+        " Shakspeare",
+        " it\u017felf",
+        " rai\u017f",
+        " Monfieur",
+        " hou\u017fe",
+        " plea\u017fure",
+        " Shaksp"
+      ],
+      "neuronpedia_pos_str": [
+        "\u2581Efq",
+        "\u2581it\u017felf",
+        "\u2581Shakspeare",
+        "\u2581rai\u017f",
+        "\u2581photolibrary",
+        "\u2581Shaksp",
+        "\u2581hou\u017fe",
+        "\u2581\u017fche"
+      ],
+      "neuronpedia_description": "the word \"carrier\" and sometimes the words \"from\""
+    },
+    {
+      "layer": 0,
+      "feature": 500,
+      "overlap": 0.5,
+      "aligned": true,
+      "ours_logit_lens": [
+        "<bos>",
+        "alanx",
+        "Investig",
+        " investigating",
+        " avoidance",
+        "Recorded",
+        "Driving",
+        "Dete"
+      ],
+      "neuronpedia_pos_str": [
+        "alanx",
+        "celotti",
+        "}],\r",
+        "Investig",
+        "Recorded",
+        "sedown",
+        "<?>>",
+        "\u2581avoidance"
+      ],
+      "neuronpedia_description": "action verbs in general"
+    },
+    {
+      "layer": 0,
+      "feature": 3000,
+      "overlap": 0.625,
+      "aligned": true,
+      "ours_logit_lens": [
+        " [",
+        "<eos>",
+        " ri",
+        " de",
+        " I",
+        " K",
+        " V",
+        " m"
+      ],
+      "neuronpedia_pos_str": [
+        "\u2581[",
+        "<eos>",
+        "n",
+        "m",
+        "\u2581I",
+        "\u2581",
+        "\u2581(",
+        "\u2581de"
+      ],
+      "neuronpedia_description": "the word \"line\" or words containing the substring \"lin\""
+    },
+    {
+      "layer": 24,
+      "feature": 100,
+      "overlap": 0.375,
+      "aligned": false,
+      "ours_logit_lens": [
+        "GraphicsUnit",
+        " reb",
+        " Thebes",
+        " The\u017fe",
+        " my\u017felf",
+        " Re\u017f",
+        " hare",
+        " photolibrary"
+      ],
+      "neuronpedia_pos_str": [
+        "\u2581reb",
+        "\u2581flushing",
+        "\u2581apertures",
+        "\u2581flushed",
+        "\u2581hare",
+        "\u2581Thebes",
+        "\u2581hob",
+        "\u2581cavities"
+      ],
+      "neuronpedia_description": "the word \"of\" when listing/describing properties or part of items"
+    },
+    {
+      "layer": 24,
+      "feature": 500,
+      "overlap": 0.125,
+      "aligned": false,
+      "ours_logit_lens": [
+        "uluk",
+        "V\u00ed",
+        " vertes",
+        " descal",
+        "\u0434\u0443\u0435\u0442",
+        "ostom",
+        "\u5143",
+        "r\u00e5n"
+      ],
+      "neuronpedia_pos_str": [
+        "More",
+        "\u2581des",
+        "\u5143",
+        "\u2581More",
+        "\u2581Des",
+        "\u2581ann",
+        "All",
+        "\u2581di"
+      ],
+      "neuronpedia_description": "code syntax and semantics related to functions"
+    },
+    {
+      "layer": 24,
+      "feature": 3000,
+      "overlap": 0.25,
+      "aligned": false,
+      "ours_logit_lens": [
+        " wants",
+        " des",
+        " y",
+        " Des",
+        " needs",
+        "&",
+        "des",
+        " pa"
+      ],
+      "neuronpedia_pos_str": [
+        "\u2581des",
+        "Barre",
+        "\u2581comme",
+        "\u2581wants",
+        "\u00e4chlich",
+        "akteur",
+        "\u2581file",
+        "ritter"
+      ],
+      "neuronpedia_description": "words related to personal preferences and customization"
+    },
+    {
+      "layer": 25,
+      "feature": 100,
+      "overlap": 0.5,
+      "aligned": true,
+      "ours_logit_lens": [
+        "sizeCache",
+        "findpost",
+        "RegressionTest",
+        "<bos>",
+        "IVEREF",
+        " utafitiHapana",
+        "ValueGenerated",
+        "ClientSize"
+      ],
+      "neuronpedia_pos_str": [
+        "findpost",
+        "ClientSize",
+        "ValueGenerated",
+        "sizeCache",
+        "MigrationBuilder",
+        "\u05e7\u05d9\u05e9\u05d5\u05e8\u05d9\u05dd",
+        "InSection",
+        "ModelBuilder"
+      ],
+      "neuronpedia_description": "words and phrases related to popular opinions, votes, or support"
+    },
+    {
+      "layer": 25,
+      "feature": 500,
+      "overlap": 0.0,
+      "aligned": false,
+      "ours_logit_lens": [
+        "GraphicsUnit",
+        " onAnimation",
+        "ItemBackground",
+        "TagMode",
+        " defaultstate",
+        "RenderAtEndOf",
+        "itemBuilder",
+        "urlencoded"
+      ],
+      "neuronpedia_pos_str": [
+        "Xna",
+        "BeginInit",
+        "AttributeSet",
+        "NameInMap",
+        "\u2581resourceCulture",
+        "\u2581Italijani",
+        "BindView",
+        "\ufeff/**"
+      ],
+      "neuronpedia_description": "java annotations and overrides"
+    },
+    {
+      "layer": 25,
+      "feature": 3000,
+      "overlap": 0.0,
+      "aligned": false,
+      "ours_logit_lens": [
+        " kaarangay",
+        "OGND",
+        "principalColumn",
+        " \u0645\u062a\u0639\u0644\u0642\u0647",
+        "Portale",
+        "MessageTagHelper",
+        "<bos>",
+        " OFDb"
+      ],
+      "neuronpedia_pos_str": [
+        "\u2581Gro",
+        "queryInterface",
+        "cheibe",
+        "\u2581hydrat",
+        "\u03ac\u03bd\u03b9",
+        "TableAdapter",
+        "\u2581Barat",
+        "atche"
+      ],
+      "neuronpedia_description": "words related to air conditioning, humidifiers, and pumping liquids"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ Local browser UI for outputs of [`collect_feature_activations`](../collect_featu
 Run `collect_feature_activations` first, pointing `--output_dir` at a directory that will contain:
 
 - `feature_metadata.json` — global token counts and per-feature stats (including per-domain density/fraction when multiple `val_data` sources are used)
+- `activation_histograms.npz` — exact all-nonzero activation magnitude histograms for new runs
 - `features/{cantor_id}.json` — circuit-tracer-style feature records (examples, logit lens, etc.)
 
 <!-- Example:
@@ -29,7 +30,7 @@ A browser tab should open to `http://127.0.0.1:8765/` by default.
 
 Example:
 ```sh
-uv run python -m analysis.features.visualize.feature_dashboard --data_dir /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl147_20260416_151353_15175430
+uv run python -m analysis.features.visualize.feature_dashboard --data_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl147_20260416_151353_15175430
 ```
 
 ### Options
@@ -40,6 +41,7 @@ uv run python -m analysis.features.visualize.feature_dashboard --data_dir /nlp/s
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `8765` | Port |
 | `--annotations_file` | `<data_dir>/feature_annotations.json` | Persistent feature tags and notes |
+| `--prompt_output_dir` | `analysis/attribution/prompts` | Root directory for saved raw attribution prompts |
 | `--no-open` | off | Do not open a browser automatically |
 
 Stop the server with **Ctrl+C**.
@@ -63,8 +65,9 @@ pane. Manual edits are saved back to the same JSON file.
 ## What you’ll see
 
 - **Overview:** validation mix by domain, regions, and (when applicable) thinking-position bins.
+- **Histograms and activation-range examples:** new collection runs show global and per-domain activation magnitude distributions, `feature_frequency_summary` firing-frequency distributions across all features, normalized per-domain activation densities, conditional per-feature magnitude distributions, run-level nonzero token-feature density by domain, and a joint target-vs-baseline feature-density scatter. Feature detail pages also expose bounded `Activation range ...` example tabs for configured bands such as `2.5:3.0`. Older runs without `activation_histograms.npz` still load, but histogram sections are hidden.
 - **Table:** browse features with frequency, annotation tags, domain skew, and per-domain activation density; sort and filter by layer or tag.
-- **Detail:** click a row to load that feature’s JSON — editable annotations, per-domain bars, regions, thinking bins, logit lens, and example tabs (global top, per-domain top quantiles, random samples). Each example includes a **scale bar**: `act_min` and `act_max` (from the feature JSON) at the ends, **peak** (highlighted token) as a dot with its numeric value; per-token activations still appear in hover tooltips. Re-run collection to get an explicit `peak_activation` field in each example; older runs still derive the peak from `tokens_acts_list`.
+- **Detail:** click a row to load that feature’s JSON — editable annotations, per-domain bars, regions, thinking bins, logit lens, and example tabs (global top, per-domain top quantiles, random samples). Each example includes a **scale bar**: `act_min` and `act_max` (from the feature JSON) at the ends, **peak** (highlighted token) as a dot with its numeric value; per-token activations still appear in hover tooltips. Re-run collection to get an explicit `peak_activation` field in each example; older runs still derive the peak from `tokens_acts_list`. Example controls can show, copy, and save the full model-native decoded token transcript when `feature_metadata.json` includes tokenization settings, including tokenizer/chat-template special tokens, with the collected window boxed and activation-highlighted. Saved dashboard prompts go under `analysis/attribution/prompts/<run-name>/`, preserve the model-native transcript, and should be used with `--prompt_format raw`.
 
 ## Troubleshooting
 

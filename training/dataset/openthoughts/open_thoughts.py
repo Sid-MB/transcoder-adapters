@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset
 from typing import Any
 import json
+import os
 
 from training.dataset.types import DatasetItem
 from training.dataset.openthoughts.types import DataFormat
@@ -88,7 +89,8 @@ class OpenThoughtsDataset(Dataset):
             filepath = parts[2]
             local_path = hf_hub_download(repo_id=repo_id, filename=filepath, repo_type="dataset")
         else:
-            local_path = self.data_path
+            # Expand env vars (e.g. ${LARGE_ARTIFACTS_DIR}) and ~ so datapaths stay portable across machines.
+            local_path = os.path.expanduser(os.path.expandvars(self.data_path))
 
         with open(local_path, 'r') as f:
             for line in f:

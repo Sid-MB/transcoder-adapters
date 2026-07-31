@@ -1,0 +1,8 @@
+# div_0169  (#2 divergent)
+
+USER: Write an article about the Production Process of B-[2-Chloro-6-(1-methylethyl)-3-pyridinyl]boronic acid 2000 words in chemical industry
+
+INSTRUCT rollout (first tokens, argmax-KL target): ## The Industrial Production of B-[2
+
+TARGET TOKEN: ##  (index 47)
+WHY: argmax-KL response pos 0: base->'Write' vs instruct->'##'

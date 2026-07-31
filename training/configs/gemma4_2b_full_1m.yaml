@@ -1,0 +1,8 @@
+# Day-plus full-feature Gemma4 E2B run that fits on a 48GB GPU.
+#
+# Use as:
+#   ./sh/slurm_batch_train.sh --config training/configs/gemma4_2b.yaml training/configs/gemma4_2b_full_500k.yaml training/configs/gemma4_2b_full_1m.yaml
+
+run_name_prefix: "gemma4_2b_full_1m"
+
+total_rows: 1000000
