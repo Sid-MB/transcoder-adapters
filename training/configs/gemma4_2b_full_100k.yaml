@@ -5,19 +5,9 @@
 
 run_name_prefix: "gemma4_2b_full_100k"
 
-transcoder:
-  n_features: 8192
-  dec_bias: true
-  l1_weight: 0.001
-
 total_rows: 100000
-
-batch_size: 1
 
 val_frequency: 10000
 layerwise_val_frequency: 20000
-token_metrics_final_n_samples: 0
+token_metrics_final_n_samples: 500
 
-use_wandb: true
-save_checkpoints: true
-push_to_hub: false

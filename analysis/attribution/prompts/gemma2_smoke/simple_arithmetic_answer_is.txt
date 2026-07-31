@@ -1,0 +1,2 @@
+<｜begin▁of▁sentence｜><｜User｜>Problem: Compute 17 + 28. Show one short step.
+Answer:<｜Assistant｜>17 + 28 = 45, so the answer is

@@ -512,9 +512,9 @@ def main():
     parser.add_argument("--n_random", type=int, default=10,
                         help="Number of random samples per neuron")
     parser.add_argument("--context_before", type=int, default=50,
-                        help="Context tokens before activating token")
+                        help="Number of tokens to save before each retained activation example. This only affects saved JSON snippet size, CPU transfer/serialization, and dashboard/auto-interp context; it does not change model forward tensor sizes or GPU activation tensor shapes.")
     parser.add_argument("--context_after", type=int, default=20,
-                        help="Context tokens after activating token")
+                        help="Number of tokens to save after each retained activation example. This only affects saved JSON snippet size, CPU transfer/serialization, and dashboard/auto-interp context; it does not change model forward tensor sizes or GPU activation tensor shapes.")
     parser.add_argument("--max_length", type=int, default=10000,
                         help="Max sequence length")
 

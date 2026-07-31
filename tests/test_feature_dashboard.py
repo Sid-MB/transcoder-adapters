@@ -1,0 +1,368 @@
+import tempfile
+import json
+import threading
+import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+from analysis.features.visualize.feature_dashboard import (
+    _SourceDatasetCache,
+    _build_top_logit_index,
+    _load_source_transcript,
+    _search_top_logits,
+    _save_prompt_example,
+    _safe_path_component,
+    make_handler_class,
+)
+
+
+class FeatureDashboardPromptExportTests(unittest.TestCase):
+    def test_save_prompt_example_preserves_raw_transcript_in_run_folder(self):
+        transcript = (
+            "<bos><start_of_turn>user\n"
+            "What is 2 + 2?<end_of_turn>\n"
+            "<start_of_turn>model\n"
+            "The answer is 4"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "prompts"
+            data_dir = Path(tmpdir) / "2026.TA.gemma2 2b tc:8192"
+            data_dir.mkdir()
+
+            result = _save_prompt_example(
+                prompt_output_dir=root,
+                data_dir=data_dir,
+                payload={
+                    "transcript": transcript,
+                    "cantor_id": 123,
+                    "layer": 1,
+                    "feature": 2,
+                    "quantile_name": "Top activations (chat)",
+                    "example_index": 0,
+                },
+            )
+
+            saved_path = Path(result["path"])
+            self.assertEqual(
+                saved_path.parent,
+                root / "2026.TA.gemma2_2b_tc_8192",
+            )
+            self.assertEqual(
+                saved_path.name,
+                "L1_F2_123_top_activations_chat_01.txt",
+            )
+            self.assertEqual(saved_path.read_text(), transcript)
+            self.assertEqual(result["prompt_format"], "raw")
+
+    def test_save_prompt_example_uses_suffix_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "prompts"
+            data_dir = Path(tmpdir) / "run"
+            data_dir.mkdir()
+            payload = {
+                "transcript": "first",
+                "cantor_id": 123,
+                "layer": 1,
+                "feature": 2,
+                "quantile_name": "Top",
+                "example_index": 0,
+            }
+
+            first = _save_prompt_example(root, data_dir, payload)
+            second = _save_prompt_example(
+                root,
+                data_dir,
+                {**payload, "transcript": "second"},
+            )
+
+            self.assertEqual(Path(first["path"]).name, "L1_F2_123_top_01.txt")
+            self.assertEqual(Path(second["path"]).name, "L1_F2_123_top_01_2.txt")
+            self.assertEqual(Path(first["path"]).read_text(), "first")
+            self.assertEqual(Path(second["path"]).read_text(), "second")
+
+    def test_save_prompt_example_strips_terminal_newline(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "prompts"
+            data_dir = Path(tmpdir) / "run"
+            data_dir.mkdir()
+
+            result = _save_prompt_example(
+                root,
+                data_dir,
+                {
+                    "transcript": "<bos><start_of_turn>model\nAnswer<end_of_turn>\n",
+                    "cantor_id": 123,
+                    "layer": 1,
+                    "feature": 2,
+                    "quantile_name": "Top",
+                    "example_index": 0,
+                },
+            )
+
+            self.assertEqual(
+                Path(result["path"]).read_text(),
+                "<bos><start_of_turn>model\nAnswer<end_of_turn>",
+            )
+
+    def test_safe_path_component_rejects_empty_after_sanitizing(self):
+        self.assertEqual(_safe_path_component("<<<>>>", fallback="prompt"), "prompt")
+
+    def test_save_prompt_endpoint_writes_raw_prompt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "prompts"
+            data_dir = Path(tmpdir) / "run"
+            data_dir.mkdir()
+            handler = make_handler_class(data_dir, prompt_output_dir=root)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            try:
+                body = json.dumps({
+                    "transcript": "raw transcript",
+                    "cantor_id": 7,
+                    "layer": 1,
+                    "feature": 2,
+                    "quantile_name": "Top",
+                    "example_index": 0,
+                }).encode()
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/save_prompt",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request) as response:
+                    payload = json.loads(response.read())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            saved_path = Path(payload["path"])
+            self.assertEqual(saved_path.read_text(), "raw transcript")
+            self.assertEqual(payload["prompt_format"], "raw")
+
+    def test_load_source_transcript_reads_local_jsonl_conversation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = Path(tmpdir) / "data.jsonl"
+            rows = [
+                {"conversation_id": "conv-1", "conversation": [{"role": "user", "content": "Hi"}]},
+                {
+                    "conversation_id": "conv-2",
+                    "conversation": [
+                        {"role": "user", "content": "What is 2 + 2?"},
+                        {"role": "assistant", "content": "4"},
+                    ],
+                },
+            ]
+            jsonl_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+            payload = _load_source_transcript({
+                "source_path": str(jsonl_path),
+                "dataset_row_idx": 1,
+            })
+
+            self.assertEqual(payload["ids"]["conversation_id"], "conv-2")
+            self.assertIn("user:\nWhat is 2 + 2?", payload["transcript"])
+            self.assertIn("assistant:\n4", payload["transcript"])
+
+    def test_load_source_transcript_reconstructs_model_native_tokens(self):
+        from analysis.features.load_val_data import FeatureDataSourceSettings
+
+        class TinyTokenizer:
+            bos_token_id = 2
+
+            def encode(self, text, add_special_tokens=False):
+                ids = [1000 + ord(char) for char in text]
+                if add_special_tokens:
+                    ids = [self.bos_token_id] + ids
+                return ids
+
+            def decode(self, token_ids):
+                pieces = []
+                for token_id in token_ids:
+                    if token_id == self.bos_token_id:
+                        pieces.append("<bos>")
+                    elif token_id >= 1000:
+                        pieces.append(chr(token_id - 1000))
+                return "".join(pieces)
+
+            def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+                text = "<bos>"
+                for message in messages:
+                    text += f"<start_of_turn>{message['role']}\n{message['content']}<end_of_turn>"
+                if add_generation_prompt:
+                    text += "<start_of_turn>assistant\n"
+                if tokenize:
+                    return self.encode(text, add_special_tokens=False)
+                return text
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = Path(tmpdir) / "data.jsonl"
+            jsonl_path.write_text(json.dumps({
+                "conversation_id": "conv-7",
+                "conversations": [
+                    {"from": "user", "value": "Hi"},
+                    {"from": "assistant", "value": "Hello"},
+                ],
+            }) + "\n")
+            settings = FeatureDataSourceSettings(
+                source_path=str(jsonl_path),
+                max_length=128,
+                model_type="gemma2",
+                domain="chat",
+            )
+
+            payload = _load_source_transcript(
+                {
+                    "source_idx": 0,
+                    "source_path": str(jsonl_path),
+                    "dataset_row_idx": 0,
+                    "prepared_item_idx": 7,
+                    "conversation_id": "conv-7",
+                },
+                tokenization_settings={
+                    "model_path": "unused",
+                    "tokenizer_path": None,
+                    "data_sources": [settings.to_json()],
+                },
+                tokenizer=TinyTokenizer(),
+            )
+
+            self.assertEqual(payload["source_kind"], "model_native_token_transcript")
+            self.assertIn("<bos><start_of_turn>user\nHi<end_of_turn>", payload["transcript"])
+            self.assertIn("<start_of_turn>assistant\nHello<end_of_turn>", payload["transcript"])
+            self.assertEqual(payload["ids"]["conversation_id"], "conv-7")
+
+    def test_source_dataset_cache_reuses_loaded_dataset(self):
+        from analysis.features.load_val_data import FeatureDataSourceSettings
+        import analysis.features.visualize.feature_dashboard as feature_dashboard
+
+        settings = FeatureDataSourceSettings(
+            source_path="mock-dataset",
+            max_length=128,
+            model_type="gemma2",
+            domain="chat",
+        )
+        calls = []
+        original_loader = feature_dashboard.load_val_data_from_settings
+
+        def fake_loader(loader_settings, tokenizer):
+            calls.append((loader_settings, tokenizer))
+            return [{"input_ids": [1, 2, 3]}], None
+
+        try:
+            feature_dashboard.load_val_data_from_settings = fake_loader
+            cache = _SourceDatasetCache()
+
+            first = cache.tokenize_row(settings, tokenizer=object(), row_idx=0)
+            second = cache.tokenize_row(settings, tokenizer=object(), row_idx=0)
+        finally:
+            feature_dashboard.load_val_data_from_settings = original_loader
+
+        self.assertEqual(first, [1, 2, 3])
+        self.assertEqual(second, [1, 2, 3])
+        self.assertEqual(len(calls), 1)
+
+    def test_source_transcript_endpoint_returns_original_row_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "run"
+            data_dir.mkdir()
+            jsonl_path = Path(tmpdir) / "fineweb.jsonl"
+            jsonl_path.write_text(json.dumps({"id": "doc-1", "text": "full document text"}) + "\n")
+            handler = make_handler_class(data_dir)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            try:
+                body = json.dumps({
+                    "source_metadata": {
+                        "source_path": str(jsonl_path),
+                        "dataset_row_idx": 0,
+                    }
+                }).encode()
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/source_transcript",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request) as response:
+                    payload = json.loads(response.read())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(payload["ids"]["id"], "doc-1")
+            self.assertEqual(payload["transcript"], "full document text")
+
+    def test_top_logit_search_finds_matching_feature_tokens(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "run"
+            features_dir = data_dir / "features"
+            features_dir.mkdir(parents=True)
+            (features_dir / "10.json").write_text(json.dumps({
+                "layer": 1,
+                "feature": 2,
+                "top_logits": [" hello", "world"],
+            }))
+            (features_dir / "11.json").write_text(json.dumps({
+                "layer": 1,
+                "feature": 3,
+                "top_logits": ["other"],
+            }))
+
+            index = _build_top_logit_index(data_dir)
+            payload = _search_top_logits(index, "HELLO")
+
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["matches"][0]["cantor_id"], 10)
+            self.assertEqual(payload["matches"][0]["matched_top_logits"], [" hello"])
+
+    def test_logit_search_endpoint_returns_matches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "run"
+            features_dir = data_dir / "features"
+            features_dir.mkdir(parents=True)
+            (features_dir / "20.json").write_text(json.dumps({
+                "layer": 2,
+                "feature": 5,
+                "top_logits": ["Answer", " final"],
+            }))
+            handler = make_handler_class(data_dir)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            try:
+                body = json.dumps({"query": "answer"}).encode()
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/logit_search",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request) as response:
+                    post_payload = json.loads(response.read())
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_port}/api/logit_search?q=answer"
+                ) as response:
+                    get_payload = json.loads(response.read())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(post_payload["count"], 1)
+            self.assertEqual(post_payload["matches"][0]["cantor_id"], 20)
+            self.assertEqual(get_payload["count"], 1)
+            self.assertEqual(get_payload["matches"][0]["cantor_id"], 20)
+
+
+if __name__ == "__main__":
+    unittest.main()

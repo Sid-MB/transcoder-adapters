@@ -23,12 +23,9 @@ from training.config import CHECKPOINT_CONFIG_FILENAME, load_config, ExperimentC
 from training.dataset.PredefinedDataset import PredefinedDataset
 from training.forward_utils import forward_mixed, sample_cutoffs
 from training.losses import compute_kl_loss, compute_lm_loss, compute_nmse_loss
-from models import get_transcoder_classes
+from models import checkpoint_load_kwargs_for_model_type, get_transcoder_classes
 
 DEBUG_MODE_EARLY_EXIT_STEPS = 50
-GEMMA4_LANGUAGE_MODEL_KEY_MAPPING = {
-    r"^model\.language_model\.": "model.",
-}
 FRESH_TRANSCODER_MISSING_KEY_PATTERNS = [
     r"\.transcoder_enc\.(weight|bias)$",
     r"\.transcoder_dec\.(weight|bias)$",
@@ -78,8 +75,8 @@ def _transcoder_model_load_kwargs(config: ExperimentConfig, hf_config) -> dict[s
     kwargs: dict[str, Any] = {
         "generation_config": _generation_config_from_model_config(hf_config),
     }
-    if config.model_arch == "gemma4":
-        kwargs["key_mapping"] = GEMMA4_LANGUAGE_MODEL_KEY_MAPPING
+    if config.model_arch is not None:
+        kwargs.update(checkpoint_load_kwargs_for_model_type(config.model_arch))
     return kwargs
 
 
@@ -164,7 +161,28 @@ def setup_models_bridging(config: ExperimentConfig):
     # Load transcoder model. from_pretrained loads standard weights from the
     # checkpoint; transcoder_enc/dec are not in the checkpoint and stay at __init__
     # values (dec=zeros → zero initial contribution).
-    if backbone == "target":
+    if config.warm_start_from:
+        # Warm-start: load the FULL saved model (reference attn/embed + base MLP + already-
+        # TRAINED transcoders) from a prior checkpoint. Skips the base-MLP swap and the
+        # transcoder re-init below -- both are already baked into this checkpoint.
+        logger.info(f"WARM START: loading full model (incl. trained transcoders) from {config.warm_start_from}")
+        ws_hf_config = ConfigWithTranscoder.from_pretrained(
+            config.warm_start_from,
+            transcoder_n_features=tc_config.n_features,
+            transcoder_dec_bias=tc_config.dec_bias,
+        )
+        _align_config_token_ids_with_tokenizer(ws_hf_config, tokenizer)
+        model = _load_fresh_transcoder_model(
+            ModelWithTranscoder,
+            config.warm_start_from,
+            config=ws_hf_config,
+            dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+            **_transcoder_model_load_kwargs(config, ws_hf_config),
+        )
+        _copy_generation_config_from(config.warm_start_from, model)
+    elif backbone == "target":
         # Target backbone: load reference model (attn/embed/layernorm from reference),
         # then swap in base model's MLP weights. Result: reference attn + base MLP + fresh transcoder.
         logger.info(f"Loading reference model as backbone: {bridging_config.reference_model_path}")
@@ -211,9 +229,11 @@ def setup_models_bridging(config: ExperimentConfig):
     # Re-initialize transcoder weights. from_pretrained with device_map="auto" creates
     # meta tensors first, so our __init__ zero-initialization of dec is overwritten by
     # HF's default _init_weights (normal distribution). This restores dec=zeros for
-    # zero initial transcoder contribution.
-    for mlp in model._transcoder_mlps(): # pyright: ignore[reportCallIssue]
-        mlp._init_transcoder_weights()
+    # zero initial transcoder contribution. Skipped on warm-start: the checkpoint's
+    # trained transcoder weights were just loaded and must NOT be wiped back to zero.
+    if not config.warm_start_from:
+        for mlp in model._transcoder_mlps(): # pyright: ignore[reportCallIssue]
+            mlp._init_transcoder_weights()
 
     # Freeze everything except transcoder parameters
     for name, param in model.named_parameters():
@@ -380,10 +400,27 @@ def setup_training(config: ExperimentConfig, model, dataset_loader: PredefinedDa
     return optimizer, scheduler, total_steps, warmup_steps, train_size
 
 
+def scheduled_l1_weight(config: ExperimentConfig, global_step: int, total_steps: int) -> float:
+    """Current L1 sparsity weight, optionally linearly warmed up from 0 -> target.
+
+    When ``transcoder.schedule_l1_weight`` is set, the L1 coefficient ramps linearly from 0 to
+    ``transcoder.l1_weight`` over the first ``warmup_ratio`` fraction of training, then holds at
+    the target. Letting features learn to reconstruct before the sparsity penalty bites reduces
+    dead features (standard SAE/transcoder practice). Otherwise returns the constant target.
+    """
+    target = config.transcoder.l1_weight or 0.0
+    if target == 0.0 or not getattr(config.transcoder, "schedule_l1_weight", False):
+        return target
+    warmup_steps = max(1, int(total_steps * config.warmup_ratio))
+    return target * min(1.0, global_step / warmup_steps)
+
+
 def train_step_direct(
     model,
     batch: dict,
     config: ExperimentConfig,
+    global_step: int,
+    total_steps: int,
     gradient_accumulation_steps: int,
 ) -> dict[str, float]:
     """Single training step for direct fine-tuning (LM loss + sparsity only)."""
@@ -391,7 +428,7 @@ def train_step_direct(
     input_ids = batch["input_ids"]
     attention_mask = batch["attention_mask"]
     labels = batch["labels"]
-    l1_weight = config.transcoder.l1_weight or 0.0
+    l1_weight = scheduled_l1_weight(config, global_step, total_steps)
 
     # Forward pass with feature caching (for L1 loss + stats)
     model.set_cache_features(True)
@@ -410,6 +447,7 @@ def train_step_direct(
     metrics = {
         "train/lm_loss": lm_loss.item(),
         "train/sparsity": raw_sparsity.item(),
+        "train/l1_weight": l1_weight,
         "train/total_loss": lm_loss.item() + weighted_sparsity.item(),
     }
     return metrics
@@ -439,7 +477,7 @@ def train_step_bridging(
     assert bridging_config is not None
     assert config.transcoder is not None
     n_layers = len(model.model.layers)
-    l1_weight = config.transcoder.l1_weight or 0.0
+    l1_weight = scheduled_l1_weight(config, global_step, total_steps)
 
     # 1. Main forward pass with feature caching (for L1 loss + stats)
     model.set_cache_features(True)
@@ -487,6 +525,7 @@ def train_step_bridging(
         scaled_first.backward()
 
     metrics["train/sparsity"] = raw_sparsity.item()
+    metrics["train/l1_weight"] = l1_weight
 
     # Free logits_adapt to save memory
     del logits_adapt
@@ -604,7 +643,9 @@ def train_epoch(
         # Forward + backward (handled inside train_step for memory efficiency)
         if config.direct:
             step_metrics = train_step_direct(
-                model, batch, config, gradient_accumulation_steps
+                model, batch, config,
+                global_step, total_steps,
+                gradient_accumulation_steps
             )
         else:
             step_metrics = train_step_bridging(
@@ -718,6 +759,13 @@ def train_epoch(
             # Debug mode early exit
             if config.debug_mode and global_step >= DEBUG_MODE_EARLY_EXIT_STEPS:
                 logger.info(f"Debug mode: Breaking after {global_step} steps")
+                break
+
+            # Stop exactly at the scheduled total_steps. Matters for warm-start, which begins
+            # partway through (so a full epoch would overshoot); harmless for fresh runs, which
+            # only reach total_steps at the natural end of the final epoch.
+            if global_step >= total_steps:
+                logger.info(f"Reached total_steps ({total_steps}); ending training loop.")
                 break
 
         del batch
@@ -1056,6 +1104,8 @@ Sweep examples:
     parser.add_argument("--n_features", type=int, help="Override ExperimentConfig.transcoder.n_features after YAML configs are loaded.")
     parser.add_argument("--batch_size", type=int, help="Override ExperimentConfig.batch_size after YAML configs are loaded.")
     parser.add_argument("--num_epochs", type=int, help="Override ExperimentConfig.num_epochs after YAML configs are loaded.")
+    parser.add_argument("--warm_start_from", type=str, help="Override ExperimentConfig.warm_start_from: a checkpoint dir to resume weights from (loads trained transcoders; skips re-init and base-MLP swap). Use to continue a preempted run.")
+    parser.add_argument("--warm_start_samples_seen", type=int, help="Override ExperimentConfig.warm_start_samples_seen: training samples the checkpoint already saw (its step * its batch_size). Resumes the L1/LR schedule at the right fraction regardless of the new batch_size.")
     parser.add_argument("--run_name_prefix", type=str, help="Override ExperimentConfig.run_name_prefix; used for WandB run names and output directories.")
     parser.add_argument(
         "--debug_mode",
@@ -1258,6 +1308,19 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
     # Training loop
     current_step = 0
     total_samples_seen = 0
+    if config.warm_start_samples_seen:
+        # Warm-start: resume the schedule at the fraction of training already completed.
+        # Tracked in SAMPLES so the L1/LR schedule stays correct even if batch_size changed
+        # since the checkpoint. Fast-forward the LR scheduler to the resumed step.
+        total_samples_seen = config.warm_start_samples_seen
+        current_step = config.warm_start_samples_seen // max(1, config.batch_size)
+        for _ in range(current_step):
+            scheduler.step()
+        logger.info(
+            f"WARM START: resuming at step {current_step}/{total_steps} "
+            f"({total_samples_seen:,} samples already seen; batch_size={config.batch_size}); "
+            f"LR scheduler fast-forwarded to the resume point."
+        )
 
     for epoch in range(config.num_epochs):
         with Timer(f"get_epoch_dataloaders(epoch={epoch})"):
@@ -1281,11 +1344,40 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
     logger.info("Training complete!")
 
     # Final post-training token metrics eval
+    final_evaluation_stats: dict[str, Any] = {}
     if final_token_examples is not None and ref_model is not None:
         logger.info("Running final post-training token metrics eval...")
         final_results = _run_and_log_token_metrics(
             model, ref_model, tokenizer, final_token_examples, config, current_step,
         )
+        if final_results is not None:
+            final_evaluation_stats = {
+                "token_metrics_final": {
+                    # EvalResults (base TokenMetrics) has no n_samples -- only per-benchmark
+                    # BenchmarkMetrics do -- so sum them for the run total. (Accessing
+                    # final_results.n_samples AttributeError'd here after training completed,
+                    # crashing the post-eval stats before push_to_hub.)
+                    "n_samples": sum(bm.n_samples for bm in final_results.per_benchmark.values()),
+                    "n_tokens": final_results.n_tokens,
+                    "kl_mean": float(final_results.kl_mean),
+                    "top1_agreement": float(final_results.top1_agreement),
+                    "n_interesting": final_results.n_interesting,
+                    "kl_mean_interesting": float(final_results.kl_mean_interesting),
+                    "top1_agreement_interesting": float(final_results.top1_agreement_interesting),
+                    "per_benchmark": {
+                        bm: {
+                            "n_samples": bm_metrics.n_samples,
+                            "n_tokens": bm_metrics.n_tokens,
+                            "kl_mean": float(bm_metrics.kl_mean),
+                            "top1_agreement": float(bm_metrics.top1_agreement),
+                            "n_interesting": bm_metrics.n_interesting,
+                            "kl_mean_interesting": float(bm_metrics.kl_mean_interesting),
+                            "top1_agreement_interesting": float(bm_metrics.top1_agreement_interesting),
+                        }
+                        for bm, bm_metrics in final_results.per_benchmark.items()
+                    },
+                }
+            }
         if final_results is not None and config.use_wandb and wandb.run is not None:
             wandb.run.summary["token_metrics_final/kl_mean"] = final_results.kl_mean
             wandb.run.summary["token_metrics_final/top1_agreement"] = final_results.top1_agreement
@@ -1307,7 +1399,14 @@ def _run_training(args, parser: argparse.ArgumentParser | None = None, sweep_mod
         logger.info(f"Pushing model to Hub: {hub_repo_id}")
         wandb_url = wandb.run.url if (config.use_wandb and wandb.run is not None) else None
         try:
-            push_to_hub(model, tokenizer, config, hub_repo_id, wandb_url=wandb_url)
+            push_to_hub(
+                model,
+                tokenizer,
+                config,
+                hub_repo_id,
+                wandb_url=wandb_url,
+                evaluation_stats=final_evaluation_stats,
+            )
         except Exception as e:
             logger.exception(f"Failed to push model to Hub: {e}", exc_info=True, stack_info=True)
 

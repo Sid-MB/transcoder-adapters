@@ -1,0 +1,8 @@
+# div_0189  (#2 divergent)
+
+USER: Give me an introduction over 200 words for NaturalEssentialOilsPrivateLimited, a chemical company in 74/2B, Manandavadi Road, Srirampura, Mysore- 570008. India.
+
+INSTRUCT rollout (first tokens, argmax-KL target): ##  NaturalEssentialOilsPrivateLimited
+
+TARGET TOKEN: ##  (index 59)
+WHY: argmax-KL response pos 0: base->'Give' vs instruct->'##'

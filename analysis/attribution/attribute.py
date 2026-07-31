@@ -6,12 +6,13 @@ create_graph_files by padding the adjacency matrix with zero error nodes.
 """
 
 import logging
+import inspect
 import time
 
 import torch
 from tqdm import tqdm
 
-from circuit_tracer.graph import Graph
+from circuit_tracer.graph import Graph, LogitTarget
 
 
 @torch.no_grad()
@@ -337,19 +338,33 @@ def _run_relp_attribution(
     cfg = model.hf_config
     if not hasattr(cfg, 'head_dim') or cfg.head_dim is None:
         cfg.head_dim = cfg.hidden_size // cfg.num_attention_heads
+    tokenizer_name = getattr(model.tokenizer, "name_or_path", None)
+    if tokenizer_name:
+        cfg.tokenizer_name = tokenizer_name
+        cfg.model_name = tokenizer_name
 
-    graph = Graph(
-        input_string=model.tokenizer.decode(input_ids),
-        input_tokens=input_ids,
-        logit_tokens=logit_idx,
-        logit_probabilities=logit_p,
-        active_features=activation_matrix.indices().T,
-        activation_values=activation_matrix.values(),
-        selected_features=selected_features,
-        adjacency_matrix=full_edge_matrix,
-        cfg=cfg,
-        scan=model.scan,
-    )
+    graph_kwargs = {
+        "input_string": model.tokenizer.decode(input_ids),
+        "input_tokens": input_ids,
+        "logit_targets": [
+            LogitTarget(model.tokenizer.decode([idx.item()]), idx.item())
+            for idx in logit_idx
+        ],
+        "logit_probabilities": logit_p,
+        "active_features": activation_matrix.indices().T,
+        "activation_values": activation_matrix.values(),
+        "selected_features": selected_features,
+        "adjacency_matrix": full_edge_matrix,
+        "cfg": cfg,
+        "vocab_size": getattr(cfg, "vocab_size", None),
+    }
+    graph_signature = inspect.signature(Graph)
+    if "scan" in graph_signature.parameters:
+        graph_kwargs["scan"] = model.scan
+    else:
+        graph_kwargs["scan_name"] = model.scan
+
+    graph = Graph(**graph_kwargs)
 
     total_time = time.time() - start_time
     logger.info(f"RelP attribution completed in {total_time:.2f}s")

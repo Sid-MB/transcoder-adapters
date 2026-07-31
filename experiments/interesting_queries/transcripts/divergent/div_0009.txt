@@ -1,0 +1,9 @@
+# div_0009  (#2 divergent)
+
+USER: Write a single dot
+
+INSTRUCT rollout (first tokens, argmax-KL target): . 
+<end_of_turn>
+
+TARGET TOKEN: <end_of_turn>  (index 15)
+WHY: argmax-KL response pos 3: base->'.' vs instruct->'<end_of_turn>'

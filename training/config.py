@@ -71,6 +71,7 @@ class TranscoderConfig:
     n_features: int = 8192
     dec_bias: bool = True  # Whether to include bias in decoder
     l1_weight: float | None = 0.001  # Weight for L1 regularization on features
+    # Todo: Note: the following properties are not implemented yet
     normalize_by_layer: bool = False  # Whether to normalize L1 weights by layer output norm
     schedule_l1_weight: bool = False  # Whether to linearly ramp L1 weight from 0 to target weight
     pre_activation_loss_weight: float = 0.0  # Weight for pre-activation loss (prevents dead features)
@@ -125,11 +126,11 @@ class ExperimentConfig:
     datasets: list[DatasetEntryConfig] = field(default_factory=lambda: [
         DatasetEntryConfig(
             type="open_thoughts",
-            datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
+            datapath="${LARGE_ARTIFACTS_DIR}/transcoder-adapters/data/openthoughts/stratified_n55000_t10000_s42_train.jsonl",
             num_rows=10000,
             data_format="deepseek",
             max_seq_length=10000,
-            val_datapath="/nlp/scr/nathu/sparse-adaptation/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl",
+            val_datapath="${LARGE_ARTIFACTS_DIR}/transcoder-adapters/data/openthoughts/stratified_n55000_t10000_s42_val.jsonl",
         )
     ])
     total_rows: int | None = None
@@ -142,6 +143,17 @@ class ExperimentConfig:
     "rows" or "tokens". If "tokens", weights represent desired token proportions (adjusts for avg sequence length).
     """
     loss_on_prompt: bool = True
+
+    # Warm-start: resume from a saved checkpoint that already contains TRAINED transcoder
+    # weights (e.g. a run that was preempted/requeued). No optimizer state is restored.
+    warm_start_from: str | None = None
+    """Path/HF id of a checkpoint dir to warm-start from. Loads the FULL model (incl. trained
+    transcoders) instead of base+fresh-init; skips the transcoder re-init and base-MLP swap.
+    Only Adam moments are lost (not checkpointed), so expect a brief re-stabilization."""
+    warm_start_samples_seen: int | None = None
+    """Training samples the warm-start checkpoint already saw (= its step * its batch_size).
+    Resumes the L1/LR schedule at samples_seen/total so it stays correct even if the new
+    batch_size differs; starting step = warm_start_samples_seen // batch_size."""
 
     val_frequency: int = 1000  # Run validation every N steps
     layerwise_val_frequency: int = 2000  # Run layerwise validation every N steps
@@ -301,7 +313,6 @@ def load_config(config_path: str | list[str], overrides: dict[str, Any] | None =
 
 def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
     """Finalize config by computing run names and output directories."""
-    import os
     from helpers.paths import SLURM_JOB_ID
     slurm_job_id = SLURM_JOB_ID
 
@@ -367,11 +378,9 @@ def _finalize_config(config: ExperimentConfig) -> ExperimentConfig:
     # Build output directory
     if config.output_dir is None:
         from datetime import datetime
-        user = os.environ.get("USER")
-        if not user:
-            raise RuntimeError("$USER environment variable is not set. Provide an output_dir in your config or set the USER environment variable so we know where to save checkpoints.")
+        from helpers.paths import PRODUCTS_DIR
         date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
-        config.output_dir = f"/nlp/scr/{user}/sparse-adaptation/checkpoints/{config.wandb_run_name}_{date_str}_{slurm_job_id}"
+        config.output_dir = str(PRODUCTS_DIR / "checkpoints" / f"{config.wandb_run_name}_{date_str}_{slurm_job_id}")
         logger.info(f"Checkpoints save directory: {config.output_dir}")
 
     return config

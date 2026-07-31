@@ -4,7 +4,7 @@ import re
 import tempfile
 from typing import TYPE_CHECKING
 
-from huggingface_hub import HfApi, ModelCard, ModelCardData
+from huggingface_hub import HfApi, ModelCard, ModelCardData, login
 from helpers.log import logger, log_group
 from ..config import CHECKPOINT_CONFIG_FILENAME
 if TYPE_CHECKING:
@@ -22,6 +22,7 @@ def push_to_hub(
     config: "ExperimentConfig",
     repo_id: str,
     wandb_url: str | None = None,
+    evaluation_stats: dict[str, object] | None = None,
 ):
     """Push trained model and tokenizer to Hugging Face Hub with metadata.
 
@@ -31,6 +32,7 @@ def push_to_hub(
         config: ExperimentConfig used for training.
         repo_id: Full repo ID (e.g., "nathu0/2026.TA.gemma2_2b_...").
         wandb_url: Optional W&B run URL to include in the model card.
+        evaluation_stats: Optional evaluation metrics to include in the model card.
     """
     api = HfApi()
 
@@ -46,7 +48,13 @@ def push_to_hub(
 
     logger.info("Building model card...")
     full_name = f"{HUB_NAME_PREFIX}.{config.wandb_run_name}" if config.wandb_run_name else None
-    card = _build_model_card(config, repo_id, full_name=full_name, wandb_url=wandb_url)
+    card = _build_model_card(
+        config,
+        repo_id,
+        full_name=full_name,
+        wandb_url=wandb_url,
+        evaluation_stats=evaluation_stats,
+    )
 
     logger.info("Pushing model card...")
     card.push_to_hub(repo_id)
@@ -70,16 +78,22 @@ def _upload_training_config(api: HfApi, config: "ExperimentConfig", repo_id: str
     )
 
 
-def verify_hub_access(repo_id: str):
+def verify_hub_access(repo_id: str, try_login: bool = True):
     """Verify the user has write access to the target Hub namespace.
 
     Call this before training starts so we fail fast rather than after
     hours of GPU time.
     """
     api = HfApi()
+
     try:
         user_info = api.whoami()
     except Exception as e:
+        if try_login:
+            logger.warning("Hugging Face authentication failed. Attempting to log in...")
+            login(skip_if_logged_in=True)
+            verify_hub_access(repo_id, try_login=False)
+            return
         raise RuntimeError(
             "No valid Hugging Face token found. "
             "Run `huggingface-cli login` or set the HF_TOKEN environment variable."
@@ -90,10 +104,15 @@ def verify_hub_access(repo_id: str):
     access_token = auth.get("accessToken", {})
     role = access_token.get("role", None)
     if role == "read":
-        raise RuntimeError(
-            "Your Hugging Face token has read-only access. "
-            "Use a token with write permissions."
+        logger.warning(
+            "Your Hugging Face token has read-only access. Use a token with write permissions.", access_token
         )
+        if try_login:
+            login(skip_if_logged_in=False)
+            verify_hub_access(repo_id, try_login=False)
+            return
+        raise RuntimeError("Token does not have write access to Hugging Face Hub.")
+        
 
     # Check namespace access: either user's own namespace or an org they belong to
     target_namespace = repo_id.split("/")[0]
@@ -107,7 +126,7 @@ def verify_hub_access(repo_id: str):
             f"Set hub_org to your username or one of your orgs."
         )
 
-    logger.info(f"Hub access verified: pushing to {repo_id}")
+    logger.info(f"Hub access verified for writing to {repo_id}")
 
 
 def truncate_repo_name(name: str, max_len: int = MAX_REPO_NAME_LEN) -> str:
@@ -175,6 +194,7 @@ def _build_model_card(
     repo_id: str,
     full_name: str | None = None,
     wandb_url: str | None = None,
+    evaluation_stats: dict[str, object] | None = None,
 ) -> ModelCard:
     """Build a ModelCard with training metadata.
 
@@ -183,6 +203,7 @@ def _build_model_card(
         repo_id: The HF repo ID (may be truncated).
         full_name: The full untruncated model name, if it was truncated.
         wandb_url: Optional W&B run URL.
+        evaluation_stats: Optional evaluation metrics to include in the card.
     """
     github_repo = "https://github.com/Sid-MB/transcoder-adapters"
 
@@ -281,6 +302,15 @@ def _build_model_card(
             f"- **backbone**: {config.bridging.backbone}",
         ])
 
+    if evaluation_stats:
+        lines.extend([
+            "",
+            "## Evaluation",
+            "",
+        ])
+        for key, value in _flatten_evaluation_stats(evaluation_stats):
+            lines.append(f"- **{key}**: {_format_metric_value(value)}")
+
     # Datasets
     if datasets:
         lines.extend([
@@ -294,6 +324,28 @@ def _build_model_card(
     content = "\n".join(lines) + "\n"
 
     return ModelCard(content=f"---\n{card_data.to_yaml()}\n---\n{content}")
+
+
+def _flatten_evaluation_stats(
+    stats: dict[str, object],
+    prefix: str = "",
+) -> list[tuple[str, object]]:
+    """Flatten nested evaluation metrics into model-card rows."""
+    rows: list[tuple[str, object]] = []
+    for key in sorted(stats):
+        value = stats[key]
+        row_key = f"{prefix}/{key}" if prefix else key
+        if isinstance(value, dict):
+            rows.extend(_flatten_evaluation_stats(value, row_key))
+        elif value is not None:
+            rows.append((row_key, value))
+    return rows
+
+
+def _format_metric_value(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
 
 
 def _collect_dataset_ids(config) -> list[str]:

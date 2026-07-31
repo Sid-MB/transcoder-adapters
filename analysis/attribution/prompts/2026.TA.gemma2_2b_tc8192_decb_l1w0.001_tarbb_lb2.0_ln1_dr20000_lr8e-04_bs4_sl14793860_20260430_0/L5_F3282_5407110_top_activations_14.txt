@@ -1,0 +1,11 @@
+<bos><start_of_turn>user
+Find the the sentence that has the same intent as the input if exist.
+[input]: Please provide a brief description of your professional background and relevant experience.
+
+[sentence1]: I love spending time with my family and friends.
+[sentence2]: I have a passion for traveling and exploring new cultures.
+[sentence3]: I am a software engineer with five years of experience in developing mobile applications.
+[sentence4]: I enjoy playing basketball and staying active.
+[sentence5]: I am a chef with ten years of experience in the restaurant industry.
+[sentence6]: I love reading books and learning new things.
+[sentence7]: I have a degree

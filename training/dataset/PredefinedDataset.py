@@ -280,7 +280,7 @@ class PredefinedDataset:
                 shuffle=False,
                 collate_fn=collate_with_tokenizer,
                 num_workers=4,
-                pin_memory=False,  # note: this being true was causing errors, see logs here for example: https://wandb.ai/siddharth-stanford/sparse-adaptation/runs/0aozn1r1/logs?nw=nwusersidmb
+                pin_memory=False,  # note: setting this True caused dataloader errors in our runs
                 persistent_workers=True,
             )
 

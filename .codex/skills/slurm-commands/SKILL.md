@@ -28,14 +28,20 @@ ssh sc.stanford.edu 'cd /nlp/u/siddharth/transcoder-adapters/ && SBATCH_WAIT=1 .
 
 ## Submit Jobs
 
-Use the repo's existing scripts in `sh/` to submit most jobs.
+Use the repo's existing scripts in `sh/` to submit most jobs. If you're on a `jagupard` GPU node already and you want to run code synchronously, you can also directly use `uv run python` or the `./run_on_gpu/` scripts.
 
 Remember the Slurm job ID from the submission output, (`15292344` in "Submitted batch job 123456"), so you can find associated logs after.
 
 Tips:
-- If you initiate your Slurm jobs with the env variable `SBATCH_WAIT=1`, the submission command will block until the job finishes, which is useful for iterative development.
+- If you initiate your Slurm jobs with `./sh/sbatch` and you use the env variable `SBATCH_WAIT=1`, the submission command will block until the job finishes, which is useful for iterative development.
 - For iterative development, if you're already on a GPU node you don't need to submit a slurm job or use `SBATCH_WAIT`: you can just call `uv run python <script>` or the `./run_on_gpu/` scripts directly. You can tell if you're on a GPU node if `nvidia-smi` works.
 - Use `scancel <job-id>` to stop a job early.
+- If you want to run a specific command on compute and wait for it to finish, you can use `srun` like so:
+```sh
+env -i PATH="$PATH" srun --account=nlp --gres=gpu:1 --constraint=48G --mem=128G --partition=jag-standard /bin/bash -c 'echo $(hostname)'
+```
+Also feel free to use `sbatch` and check in on it periodically by reading the logs or using `squeue`/`sacct`. 
+The `env` part is only needed for `srun`, not `sbatch`. Change the `--partition`, `--gres`, `--constraint`, and `--mem` flags as needed: use `john` for CPU jobs, `jag-standard` for GPU jobs.
 
 ## Read Logs
 

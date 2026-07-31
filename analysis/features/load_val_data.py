@@ -9,9 +9,32 @@ Supports:
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from helpers.log import logger
+
+
+@dataclass(frozen=True)
+class FeatureDataSourceSettings:
+    """Settings needed to reproduce feature-collection tokenization for one source."""
+
+    source_path: str
+    max_length: int
+    model_type: str | None = None
+    domain: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "FeatureDataSourceSettings":
+        return cls(
+            source_path=str(payload["source_path"]),
+            max_length=int(payload["max_length"]),
+            model_type=payload.get("model_type"),
+            domain=payload.get("domain"),
+        )
 
 
 def load_val_data(
@@ -35,18 +58,55 @@ def load_val_data(
         (dataset, examples_meta) where examples_meta is a list of dicts with
         metadata (e.g. 'domain') or None if not available.
     """
+    settings = FeatureDataSourceSettings(
+        source_path=val_data,
+        max_length=max_length,
+        model_type=model_type,
+        domain=domain,
+    )
+    return load_val_data_from_settings(settings, tokenizer)
+
+
+def load_val_data_from_settings(
+    settings: FeatureDataSourceSettings,
+    tokenizer: Any,
+) -> tuple[Any, list[dict] | None]:
+    """Load validation data from a reproducible source settings object."""
     # Case 1: JSONL file (local path or hf:// URI)
-    if val_data.endswith(".jsonl") or val_data.startswith("hf://"):
-        dataset, examples_meta = _load_jsonl(val_data, tokenizer, max_length, model_type=model_type)
+    if settings.source_path.endswith(".jsonl") or settings.source_path.startswith("hf://"):
+        dataset, examples_meta = _load_jsonl(
+            settings.source_path,
+            tokenizer,
+            settings.max_length,
+            model_type=settings.model_type,
+        )
     else:
         # Case 2: HF dataset ID
-        dataset, examples_meta = _load_hf_dataset(val_data, tokenizer, max_length)
+        dataset, examples_meta = _load_hf_dataset(
+            settings.source_path,
+            tokenizer,
+            settings.max_length,
+        )
 
     # If a domain override is given and no per-example metadata exists, synthesize it
-    if domain is not None and examples_meta is None:
-        examples_meta = [{"domain": domain} for _ in range(len(dataset))]
+    if settings.domain is not None and examples_meta is None:
+        examples_meta = [{"domain": settings.domain} for _ in range(len(dataset))]
 
     return dataset, examples_meta
+
+
+def tokenize_source_row(
+    settings: FeatureDataSourceSettings,
+    tokenizer: Any,
+    row_idx: int,
+) -> list[int]:
+    """Tokenize one source row with the exact feature-collection data path."""
+    dataset, _ = load_val_data_from_settings(settings, tokenizer)
+    item = dataset[row_idx]
+    tokens = item["input_ids"]
+    if hasattr(tokens, "tolist"):
+        tokens = tokens.tolist()
+    return list(tokens)
 
 
 def _load_jsonl(
@@ -102,10 +162,11 @@ def _load_hf_dataset(
 
     logger.info(f"Using split '{split_name}' with {len(split)} examples")
     cols = split.column_names
+    examples_meta = _build_source_id_metadata(split)
 
     # Already tokenized
     if "input_ids" in cols:
-        return split, None
+        return split, examples_meta
 
     # Chat conversation column (LMSYS "conversation" or OpenThoughts "conversations")
     conv_col = None
@@ -144,7 +205,24 @@ def _load_hf_dataset(
 
     split = split.map(tokenize_fn, batched=True, remove_columns=cols)
     split.set_format("torch")
-    return split, None
+    return split, examples_meta
+
+
+def _build_source_id_metadata(split: Any) -> list[dict] | None:
+    """Keep stable source IDs before tokenization drops raw dataset columns."""
+    id_columns = [col for col in ("conversation_id", "id") if col in split.column_names]
+    if not id_columns:
+        return None
+    column_values = {col: split[col] for col in id_columns}
+    metadata: list[dict] = []
+    for row_idx in range(len(split)):
+        row_meta = {}
+        for col, values in column_values.items():
+            value = values[row_idx]
+            if value is not None:
+                row_meta[col] = value
+        metadata.append(row_meta)
+    return metadata
 
 
 def _load_chat_dataset(

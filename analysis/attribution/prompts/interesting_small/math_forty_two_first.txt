@@ -1,0 +1,1 @@
+<｜begin▁of▁sentence｜><｜User｜>Answer with one number. What is 6 times 7?<｜Assistant｜>4

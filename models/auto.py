@@ -25,6 +25,24 @@ def _base_tokenizer_for(model_type: str) -> str | None:
     return _BASE_TOKENIZER.get(model_type) or _BASE_TOKENIZER.get(canonical_architecture(model_type))
 
 
+def ensure_fast_tokenizer(tokenizer: "PreTrainedTokenizerBase", source: str) -> "PreTrainedTokenizerBase":
+    """Return ``tokenizer`` if it is a fast (Rust) tokenizer, else raise.
+
+    We require the fast tokenizer everywhere. The slow (pure-Python, sentencepiece-backed)
+    tokenizer is only ever reached as a silent fallback when the fast ``tokenizer.json`` is
+    missing/unbuildable — which masks real problems (e.g. a checkpoint uploaded without
+    tokenizer files). Fail loudly instead of degrading to it.
+    """
+    if not getattr(tokenizer, "is_fast", False):
+        raise RuntimeError(
+            f"Loaded a SLOW (non-fast) tokenizer from {source!r}: {type(tokenizer).__name__}. "
+            "Refusing to use the slow tokenizer. Ensure a fast tokenizer.json is available "
+            "(e.g. re-upload the checkpoint's tokenizer files), or pass an explicit tokenizer "
+            "path to a repo that has one."
+        )
+    return tokenizer
+
+
 def load_tokenizer(
     model_path: str,
     tokenizer_path: str | None = None,
@@ -41,16 +59,21 @@ def load_tokenizer(
     """
     from transformers import AutoConfig, AutoTokenizer
 
+    # use_fast=True asks for the Rust tokenizer; ensure_fast_tokenizer then errors if a slow
+    # tokenizer was returned anyway (e.g. when only sentencepiece files are present).
     if tokenizer_path is not None:
         logger.info(f"Loading tokenizer from explicit path: {tokenizer_path}")
-        return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+        return ensure_fast_tokenizer(
+            AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, use_fast=True),
+            tokenizer_path,
+        )
 
     config = None
     try:
         logger.info(f"Loading tokenizer from checkpoint: {model_path}")
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, use_fast=True)
         if getattr(tokenizer, "chat_template", None) is not None:
-            return tokenizer
+            return ensure_fast_tokenizer(tokenizer, model_path)
 
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         model_type: str = getattr(config, "model_type", "")
@@ -60,14 +83,16 @@ def load_tokenizer(
                 f"Tokenizer from checkpoint has no chat_template; "
                 f"falling back to base model tokenizer: {source}"
             )
-            return AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+            return ensure_fast_tokenizer(
+                AutoTokenizer.from_pretrained(source, trust_remote_code=True, use_fast=True), source
+            )
 
         logger.warning(
             "Tokenizer from checkpoint has no chat_template and model_type "
             f"{model_type!r} has no known base tokenizer. Use --tokenizer for chat data."
         )
-        return tokenizer
-    except (OSError, AttributeError, KeyError, TypeError) as exc:
+        return ensure_fast_tokenizer(tokenizer, model_path)
+    except (OSError, AttributeError, KeyError, TypeError, ValueError, ImportError) as exc:
         logger.warning(f"Could not load tokenizer from checkpoint ({exc}); trying base tokenizer fallback")
 
     if config is None:
@@ -83,7 +108,9 @@ def load_tokenizer(
         )
 
     logger.info(f"No tokenizer in checkpoint, falling back to base model: {source}")
-    return AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+    return ensure_fast_tokenizer(
+        AutoTokenizer.from_pretrained(source, trust_remote_code=True, use_fast=True), source
+    )
 
 
 class AutoModelForCausalLMWithTranscoder:
@@ -102,7 +129,7 @@ class AutoModelForCausalLMWithTranscoder:
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "PreTrainedModel":
         from transformers import AutoConfig
-        from models import get_transcoder_classes_for_model_type
+        from models import checkpoint_load_kwargs_for_model_type, get_transcoder_classes_for_model_type
 
         hf_config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
         arch = hf_config.model_type  # e.g. "qwen2", "gemma2"
@@ -114,6 +141,8 @@ class AutoModelForCausalLMWithTranscoder:
                 f"Unsupported model_type '{arch}' for transcoder model at "
                 f"'{pretrained_model_name_or_path}': {exc}"
             ) from exc
+        for key, value in checkpoint_load_kwargs_for_model_type(arch).items():
+            kwargs.setdefault(key, value)
         return model_cls.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
     @staticmethod

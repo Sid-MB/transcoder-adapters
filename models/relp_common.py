@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.steering import FeatureSteeringMixin, apply_feature_steering
+
 
 def resolve_checkpoint_path(path: str) -> str:
     """Resolve a local path or HuggingFace repo ID to a local checkpoint path."""
@@ -95,6 +97,8 @@ class RelPMLPWithTranscoder(nn.Module):
         self.disable_transcoder = False
         self.cached_features: torch.Tensor | None = None
         self.feature_mask: torch.Tensor | None = None
+        self.feature_steering_targets = ()
+        self.feature_steering_mode = "min"
 
     def _relp_gate_activation(self, gate: torch.Tensor) -> torch.Tensor:
         """Preserve activation value while detaching the nonlinear gate factor."""
@@ -123,6 +127,11 @@ class RelPMLPWithTranscoder(nn.Module):
             return base_output
 
         features = F.relu(self.transcoder_enc(hidden_states))
+        features = apply_feature_steering(
+            features,
+            self.feature_steering_targets,
+            self.feature_steering_mode,
+        )
         if self.feature_mask is not None:
             features = features * self.feature_mask
 
@@ -139,7 +148,7 @@ class RelPMLPWithTranscoder(nn.Module):
         return base_output + transcoder_output
 
 
-class RelPCausalLMWithTranscoderMixin:
+class RelPCausalLMWithTranscoderMixin(FeatureSteeringMixin):
     """Shared control and feature-cache API for RelP causal LM classes."""
 
     relp_decoder_layer_cls: type
@@ -155,6 +164,10 @@ class RelPCausalLMWithTranscoderMixin:
     def _decoder_layers(self) -> Iterator:
         for layer in self.model.layers:
             yield layer
+
+    def _transcoder_mlps(self) -> Iterator:
+        for layer in self._decoder_layers():
+            yield layer.mlp
 
     def _propagate_relp_settings(self):
         for layer in self._decoder_layers():
