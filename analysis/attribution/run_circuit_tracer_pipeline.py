@@ -53,7 +53,7 @@ Required inputs:
 Optional input:
     --feature_data_path:
         Either a local collected feature-data run directory, such as
-        ``/nlp/scr/.../feature_data/<run>/``.  The directory must contain
+        ``$LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/<run>/``.  The directory must contain
         ``features/*.json`` and should contain ``feature_metadata.json`` so the
         exporter can infer the layer and feature counts.  If the directory also
         contains a complete ``circuit_tracer_features/`` packed cache produced
@@ -82,7 +82,7 @@ Example without feature examples:
     uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --port 8042
 
 Example with local feature examples and serving:
-    uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --serve --port 8042
+    uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --serve --port 8042
 
 Example with Hugging Face feature examples:
     uv run --extra viz python -m analysis.attribution.run_circuit_tracer_pipeline --transcoder_model_path siddharthmb/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860 --base_model google/gemma-2-2b --feature_data_path siddharthmb/2026.TA.features.gemma2_2b_h123456789abc --prompts analysis/attribution/prompts/interesting_small --run_name interesting_small --prompt_format chat --max_feature_nodes 256 --batch_size 4 --max_n_logits 5 --serve --port 8042

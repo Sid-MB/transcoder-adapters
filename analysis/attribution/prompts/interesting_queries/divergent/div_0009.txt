@@ -1,0 +1,2 @@
+<｜begin▁of▁sentence｜><｜User｜>Write a single dot<｜Assistant｜>. 
+<end_of_turn>

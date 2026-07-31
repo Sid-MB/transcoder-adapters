@@ -76,6 +76,14 @@ def feature_collection_config_from_args(args: Any) -> dict[str, Any]:
             "hub_org",
             "hf_feature_repo_id",
             "upload_circuit_tracer_features_to_hub",
+            # Sharding/merge flags are orchestration-only: a collection produced as N
+            # shards + a merge is identical to a single-process run, so it must get the
+            # SAME deterministic repo name and match the same reserved repo. Excluding
+            # (rather than normalizing) these also makes configs reserved before the
+            # sharding CLI existed -- which had no such keys at all -- compare equal.
+            "num_shards",
+            "shard_index",
+            "merge_shards",
         }
     }
     payload["val_data"] = sorted(payload.get("val_data") or [])

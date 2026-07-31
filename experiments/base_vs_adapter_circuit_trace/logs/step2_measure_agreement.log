@@ -1,0 +1,48 @@
+[11:23:40] Loading instruct tokenizer + model: google/gemma-2-2b-it
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  8.64it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 15.69it/s]
+[11:23:45] Loading base model: google/gemma-2-2b
+Loading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s]Loading checkpoint shards:  33%|███▎      | 1/3 [00:00<00:01,  1.06it/s]Loading checkpoint shards:  67%|██████▋   | 2/3 [00:01<00:00,  1.32it/s]Loading checkpoint shards: 100%|██████████| 3/3 [00:01<00:00,  1.84it/s]
+[11:23:50]   cap_france               [factual ] KL=  1.268 top1_match=True overlap=0.30 base->'The' instruct->'The'
+[11:23:50]   cap_japan                [factual ] KL=  1.210 top1_match=True overlap=0.30 base->'The' instruct->'The'
+[11:23:51]   cap_italy                [factual ] KL=  1.151 top1_match=True overlap=0.40 base->'The' instruct->'The'
+[11:23:51]   cap_egypt                [factual ] KL=  1.160 top1_match=True overlap=0.30 base->'The' instruct->'The'
+[11:23:51]   water_boils              [factual ] KL=  2.084 top1_match=True overlap=0.40 base->'At' instruct->'At'
+[11:23:51]   math_2plus2              [factual ] KL=  1.484 top1_match=True overlap=0.40 base->'2' instruct->'2'
+[11:23:51]   math_7times8             [factual ] KL=  1.678 top1_match=True overlap=0.60 base->'7' instruct->'7'
+[11:23:51]   math_sqrt                [factual ] KL=  1.209 top1_match=True overlap=0.40 base->'The' instruct->'The'
+[11:23:51]   sky_color                [factual ] KL=  2.108 top1_match=False overlap=0.70 base->'The' instruct->'On'
+[11:23:51]   speed_light              [factual ] KL=  1.144 top1_match=True overlap=0.50 base->'The' instruct->'The'
+[11:23:51]   opposite_hot             [factual ] KL=  1.259 top1_match=True overlap=0.30 base->'The' instruct->'The'
+[11:23:51]   opposite_up              [factual ] KL=  0.948 top1_match=True overlap=0.20 base->'The' instruct->'The'
+[11:23:51]   idiom_raining            [factual ] KL=  3.995 top1_match=True overlap=0.30 base->'It' instruct->'It'
+[11:23:51]   idiom_apple              [factual ] KL=  5.169 top1_match=False overlap=0.40 base->'An' instruct->'That'
+[11:23:51]   days_week                [factual ] KL=  1.719 top1_match=True overlap=0.40 base->'There' instruct->'There'
+[11:23:51]   planet_red               [factual ] KL=  1.110 top1_match=True overlap=0.40 base->'The' instruct->'The'
+[11:23:51]   largest_ocean            [factual ] KL=  0.834 top1_match=True overlap=0.40 base->'The' instruct->'The'
+[11:23:51]   freezing_point           [factual ] KL=  6.536 top1_match=False overlap=0.20 base->'Water' instruct->'That'
+[11:23:51]   continent_egypt          [factual ] KL=  1.277 top1_match=True overlap=0.50 base->'Egypt' instruct->'Egypt'
+[11:23:51]   first_president          [factual ] KL=  1.029 top1_match=True overlap=0.40 base->'The' instruct->'The'
+[11:23:51]   eli5_sky                 [instruct] KL=  7.409 top1_match=False overlap=0.20 base->'Explain' instruct->'Imagine'
+[11:23:51]   haiku_autumn             [instruct] KL= 12.895 top1_match=False overlap=0.00 base->'Write' instruct->'Crimson'
+[11:23:52]   study_tips               [instruct] KL=  5.762 top1_match=False overlap=0.10 base->'Give' instruct->'Here'
+[11:23:52]   lockpick_refuse          [instruct] KL=  2.502 top1_match=False overlap=0.40 base->'How' instruct->'I'
+[11:23:52]   translate_hello          [instruct] KL=  5.121 top1_match=False overlap=0.00 base->'Translate' instruct->'The'
+[11:23:52]   json_only                [instruct] KL=  9.037 top1_match=False overlap=0.10 base->'Respond' instruct->'```'
+[11:23:52]   roleplay_pirate          [instruct] KL=  4.826 top1_match=False overlap=0.00 base->'I' instruct->'A'
+[11:23:52]   summarize_req            [instruct] KL=  8.039 top1_match=False overlap=0.00 base->'Summar' instruct->'Two'
+[11:23:52]   list_colors              [instruct] KL=  7.969 top1_match=False overlap=0.10 base->'List' instruct->'Here'
+[11:23:52]   poem_ocean               [instruct] KL=  4.754 top1_match=False overlap=0.20 base->'Write' instruct->'The'
+[11:23:52]   recipe_req               [instruct] KL= 13.837 top1_match=False overlap=0.10 base->'Give' instruct->'##'
+[11:23:52]   bomb_refuse              [instruct] KL=  2.694 top1_match=False overlap=0.20 base->'Give' instruct->'I'
+[11:23:52]   polite_email             [instruct] KL= 12.440 top1_match=False overlap=0.00 base->'Write' instruct->'Subject'
+[11:23:52]   explain_photosynthesis   [instruct] KL=  7.613 top1_match=False overlap=0.00 base->'Explain' instruct->'Imagine'
+[11:23:52]   count_to_five            [instruct] KL=  5.938 top1_match=False overlap=0.10 base->'Count' instruct->'1'
+[11:23:52]   joke_req                 [instruct] KL=  4.742 top1_match=False overlap=0.20 base->'Tell' instruct->'Why'
+[11:23:52]   advice_req               [instruct] KL=  6.563 top1_match=False overlap=0.00 base->'What' instruct->'Here'
+[11:23:52]   persona_shakespeare      [instruct] KL=  8.087 top1_match=False overlap=0.00 base->'Respond' instruct->'H'
+[11:23:52]   format_uppercase         [instruct] KL= 10.099 top1_match=False overlap=0.00 base->'Reply' instruct->'YES'
+[11:23:52]   steps_change_tire        [instruct] KL= 12.949 top1_match=False overlap=0.00 base->'Give' instruct->'##'
+[11:23:52] Wrote agreement metrics: /juice2/u/siddharth/transcoder-adapters/experiments/base_vs_adapter_circuit_trace/agreement_metrics.json
+[11:23:52] AGREE selected (10): ['largest_ocean', 'opposite_up', 'first_president', 'planet_red', 'speed_light', 'cap_italy', 'cap_egypt', 'math_sqrt', 'cap_japan', 'opposite_hot']
+[11:23:52] DIVERGE selected (10): ['recipe_req', 'steps_change_tire', 'haiku_autumn', 'polite_email', 'format_uppercase', 'json_only', 'persona_shakespeare', 'summarize_req', 'list_colors', 'explain_photosynthesis']
+[11:23:53] Freed models and emptied CUDA cache.

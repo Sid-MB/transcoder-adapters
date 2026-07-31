@@ -57,7 +57,9 @@ OUTPUT_DIR = PRODUCTS_DIR / "token_recon_evals"
 # CONFIG
 # ============================================================================
 
-EVALCHEMY_DIR = Path("/nlp/scr/nathu/sparse-adaptation/evalchemy_v5")
+# Directory of evalchemy rollout outputs; only needed for --data_source evalchemy_qwen.
+# Point the EVALCHEMY_DIR env var at your evalchemy_v5 output directory to use that source.
+EVALCHEMY_DIR = Path(os.environ["EVALCHEMY_DIR"]) if os.environ.get("EVALCHEMY_DIR") else None
 LMSYS_DATASET = "siddharthmb/2026.transcoder-adapters.lmsys-chat-1m-splits"
 
 # Data source configurations
@@ -96,8 +98,13 @@ logger.info(f"Using device: {DEVICE}")
 # DATA LOADING (no filtering)
 # ============================================================================
 def load_livecode_is_stdin_map():
-    """Load pre-computed task_id -> is_stdin mapping."""
-    mapping_path = "/juice2/u/nathu/sparse_adaptation/data/livecode_is_stdin_map.json"
+    """Load pre-computed task_id -> is_stdin mapping (only needed for evalchemy LiveCodeBench)."""
+    mapping_path = os.environ.get("LIVECODE_IS_STDIN_MAP")
+    if not mapping_path:
+        raise RuntimeError(
+            "LIVECODE_IS_STDIN_MAP env var is not set; point it at the precomputed "
+            "livecode_is_stdin_map.json to load evalchemy LiveCodeBench rollouts."
+        )
     with open(mapping_path) as f:
         return json.load(f)
 
@@ -795,6 +802,11 @@ def main():
 
     # Load examples from chosen data source
     if args.data_source == "evalchemy_qwen":
+        if EVALCHEMY_DIR is None:
+            raise RuntimeError(
+                "EVALCHEMY_DIR env var is not set; point it at your evalchemy rollout outputs "
+                "to use --data_source evalchemy_qwen (or pass --data_source lmsys_chat)."
+            )
         eval_dir = EVALCHEMY_DIR / "deepseek-ai__DeepSeek-R1-Distill-Qwen-7B"
         all_examples = load_all_rollouts(str(eval_dir))
     elif args.data_source == "lmsys_chat":

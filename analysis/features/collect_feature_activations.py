@@ -79,6 +79,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from helpers.paths.output_path import generate_output_path
+from analysis.features.batching import compute_max_batch_tokens, form_length_packed_batches
+from analysis.features.collection_wandb import CollectionWandbLogger, add_collection_wandb_args
 from models.auto import AutoModelForCausalLMWithTranscoder, load_tokenizer
 from models.tokens import detect_special_tokens, find_token_positions, precompute_regions
 from analysis.features.activation_histograms import (
@@ -156,6 +158,11 @@ class FeatureStats:
     activation_range_examples: dict = field(default_factory=lambda: defaultdict(list))
     activation_range_seen_counts: dict = field(default_factory=lambda: defaultdict(int))
 
+    # Bounded top-token counts: token_id -> count of activations on that token, kept to a
+    # fixed cap via Space-Saving. Powers the graph-viz "% of this feature's activations that
+    # land on this token" (token-conditional specificity) stat.
+    token_counts: dict = field(default_factory=dict)
+
 
 # =============================================================================
 # Feature Collector
@@ -187,6 +194,10 @@ def _run_backbone_for_hooks(
 class FeatureCollector:
     """Collects feature activation statistics across sequences."""
 
+    # Combined-key base for the vectorized token-counts accumulator: key = feature*BOUND + token.
+    # Must exceed any token id (gemma-2 vocab ~256k << 2**21). Guarded at use.
+    _TOKEN_KEY_BOUND = 1 << 21
+
     def __init__(
         self,
         n_layers: int,
@@ -200,6 +211,8 @@ class FeatureCollector:
         hist_bin_lower_bounds: np.ndarray | None = None,
         activation_example_ranges: list[tuple[float, float]] | None = None,
         activation_range_examples_per_domain: int = 1,
+        track_token_counts: bool = True,
+        token_count_cap: int = 32,
     ):
         self.n_layers = n_layers
         self.n_features = n_features
@@ -208,6 +221,10 @@ class FeatureCollector:
         self.domain_top_k = domain_top_k
         self.context_before = context_before
         self.context_after = context_after
+        # Token-conditional specificity tracking (graph-viz "% of this feature's activations
+        # on this token"). Bounded per feature to token_count_cap entries via Space-Saving.
+        self.track_token_counts = track_token_counts
+        self.token_count_cap = max(0, token_count_cap)
 
         # Per-feature stats
         self.stats = [
@@ -254,6 +271,32 @@ class FeatureCollector:
         self._hooks: list = []
         self._layer_activations: dict[int, torch.Tensor] = {}
 
+        # Vectorized (fast-path) count accumulators. The dense base/GemmaScope case
+        # (n_random == 0, no activation ranges) replaces the per-nonzero Python loop over
+        # activation_count / domain_counts / region_counts / thinking_position_counts with
+        # per-layer bincounts into these arrays, then materializes them into FeatureStats in
+        # finalize(). Created lazily on first fast-path batch; None means legacy path / unused.
+        self._vec_activation: list | None = None       # per layer: int64[n_features]
+        self._vec_domain: list | None = None           # per layer: {domain -> int64[n_features]}
+        self._vec_region: list | None = None           # per layer: {region -> int64[n_features]}
+        self._vec_thinking: list | None = None          # per layer: int64[10, n_features]
+        self._region_to_index: dict[str, int] = {}
+        self._region_index_to_str: list[str] = []
+        # Running per-(layer, feature) heap thresholds for the vectorized candidate pre-filter:
+        # the activation of the min element currently in each full top-k / domain-top-k heap, or
+        # -inf when the heap is not yet full. Refreshed after every heap change so the candidate
+        # mask is a pure gather+compare (no per-unique-feature Python loop).
+        self._global_thr: list | None = None             # per layer: float64[n_features]
+        self._domain_thr: list | None = None             # per layer: {domain -> float64[n_features]}
+        # Vectorized token-counts accumulator (fast path only): per layer, growing lists of
+        # combined (feature*BOUND + token) keys with batch counts; coalesced periodically and at
+        # finalize, where each feature's exact top-`token_count_cap` tokens are materialized.
+        # This is EXACT top-cap, unlike the legacy per-event Space-Saving (a strict improvement).
+        self._tc_keys: list | None = None
+        self._tc_counts: list | None = None
+        self._force_legacy = False                       # test hook: force the per-event path
+        self._finalized = False
+
     def _make_hook(self, layer_idx: int):
         """Create a forward hook that captures transcoder activations.
 
@@ -282,6 +325,74 @@ class FeatureCollector:
         for hook in self._hooks:
             hook.remove()
         self._hooks = []
+
+    def merge_from(self, other: "FeatureCollector") -> None:
+        """Merge another collector's state into this one (for sharded collection).
+
+        Each shard runs an independent collection over a disjoint subset of sequences; this
+        recombines them into the exact same result a single run would produce, EXCEPT for the
+        reservoir-sampled fields (``random_examples`` and ``activation_range_examples``), which
+        cannot be merged without bias. Sharding therefore requires those disabled
+        (``--n_random 0`` and no activation ranges) -- the base/GemmaScope collector's config --
+        and we assert it here. Top-k / domain-top-k example heaps merge by union-then-keep-k;
+        histograms and all counts add.
+        """
+        assert (self.n_layers, self.n_features, self.top_k, self.domain_top_k) == (
+            other.n_layers, other.n_features, other.top_k, other.domain_top_k
+        ), "merge_from: shard collectors have mismatched shape/top-k settings"
+        assert self.n_random == 0 and other.n_random == 0, "sharded merge requires --n_random 0"
+        assert (
+            self.activation_range_examples_per_domain == 0
+            and other.activation_range_examples_per_domain == 0
+        ), "sharded merge requires activation ranges disabled (--activation_range_examples_per_domain 0)"
+
+        self.total_tokens += other.total_tokens
+        for d, c in other.tokens_per_domain.items():
+            self.tokens_per_domain[d] += c
+        for r, c in other.tokens_per_region.items():
+            self.tokens_per_region[r] += c
+        for i in range(len(self.tokens_per_thinking_bin)):
+            self.tokens_per_thinking_bin[i] += other.tokens_per_thinking_bin[i]
+
+        self.run_hist_total += other.run_hist_total
+        self.run_hist_by_domain += other.run_hist_by_domain
+        for layer in range(self.n_layers):
+            self.feature_hist_total_by_layer[layer] += other.feature_hist_total_by_layer[layer]
+            self.feature_hist_by_domain_by_layer[layer] += other.feature_hist_by_domain_by_layer[layer]
+
+        def _merge_heap(a: list, b: list, k: int) -> list:
+            merged = a + b
+            if len(merged) > k:
+                merged = heapq.nlargest(k, merged)  # ActivatingExample.__lt__ ranks by activation
+            heapq.heapify(merged)  # restore min-heap invariant
+            return merged
+
+        for layer in range(self.n_layers):
+            s_layer, o_layer = self.stats[layer], other.stats[layer]
+            for f in range(self.n_features):
+                o = o_layer[f]
+                if o.activation_count == 0:
+                    continue
+                s = s_layer[f]
+                s.activation_count += o.activation_count
+                s.top_k_examples = _merge_heap(s.top_k_examples, o.top_k_examples, self.top_k)
+                for dom, oheap in o.domain_top_k_examples.items():
+                    s.domain_top_k_examples[dom] = _merge_heap(
+                        s.domain_top_k_examples[dom], oheap, self.domain_top_k
+                    )
+                for dom, c in o.domain_counts.items():
+                    s.domain_counts[dom] += c
+                for reg, c in o.region_counts.items():
+                    s.region_counts[reg] += c
+                for i in range(len(s.thinking_position_counts)):
+                    s.thinking_position_counts[i] += o.thinking_position_counts[i]
+                if o.token_counts:
+                    for tid, c in o.token_counts.items():
+                        s.token_counts[tid] = s.token_counts.get(tid, 0) + c
+                    if self.token_count_cap and len(s.token_counts) > self.token_count_cap:
+                        s.token_counts = dict(
+                            heapq.nlargest(self.token_count_cap, s.token_counts.items(), key=lambda kv: kv[1])
+                        )
 
     def _get_context(self, tokens: list[int], position: int) -> tuple[list[int], int]:
         """Extract context window around a position."""
@@ -317,17 +428,19 @@ class FeatureCollector:
             and activation <= domain_heap[0].activation
         )
 
-        # Reservoir sampling decision for random
-        stats.random_seen_count += 1
+        # Reservoir sampling decision for random (skip entirely when disabled: random.randint
+        # per nonzero dominates dense collections, and n_random=0 wants no random samples).
         add_to_random = False
         random_replace_idx = None
-        if len(stats.random_examples) < self.n_random:
-            add_to_random = True
-        else:
-            j = random.randint(0, stats.random_seen_count - 1)
-            if j < self.n_random:
+        if self.n_random > 0:
+            stats.random_seen_count += 1
+            if len(stats.random_examples) < self.n_random:
                 add_to_random = True
-                random_replace_idx = j
+            else:
+                j = random.randint(0, stats.random_seen_count - 1)
+                if j < self.n_random:
+                    add_to_random = True
+                    random_replace_idx = j
 
         # Skip if not going into any buffer
         if dominated_by_heap and dominated_by_domain_heap and not add_to_random:
@@ -389,19 +502,21 @@ class FeatureCollector:
                 f"Unknown activation domain {domain!r}; known domains={self.domain_names}"
             )
 
+        # Vectorized scatter-add via bincount (byte-identical to np.add.at but ~3x faster: the
+        # 2D np.add.at is unbuffered/Python-level and was a top fixed cost in the dense path).
         bin_indices = histogram_bin_indices(active_values, self.hist_bin_lower_bounds)
-        np.add.at(self.run_hist_total, bin_indices, 1)
-        np.add.at(self.run_hist_by_domain[domain_idx], bin_indices, 1)
-        np.add.at(
-            self.feature_hist_total_by_layer[layer_idx],
-            (active_features, bin_indices),
-            1,
+        n_bins = self.run_hist_total.shape[0]
+        bin_counts = np.bincount(bin_indices, minlength=n_bins).astype(self.run_hist_total.dtype)
+        self.run_hist_total += bin_counts
+        self.run_hist_by_domain[domain_idx] += bin_counts
+        flat = active_features.astype(np.int64) * n_bins + bin_indices
+        feat_bin_counts = (
+            np.bincount(flat, minlength=self.n_features * n_bins)
+            .reshape(self.n_features, n_bins)
+            .astype(self.feature_hist_total_by_layer[layer_idx].dtype)
         )
-        np.add.at(
-            self.feature_hist_by_domain_by_layer[layer_idx][domain_idx],
-            (active_features, bin_indices),
-            1,
-        )
+        self.feature_hist_total_by_layer[layer_idx] += feat_bin_counts
+        self.feature_hist_by_domain_by_layer[layer_idx][domain_idx] += feat_bin_counts
 
     def _maybe_add_activation_range_example(
         self,
@@ -495,8 +610,332 @@ class FeatureCollector:
         with torch.inference_mode():
             _run_backbone_for_hooks(model, padded, attention_mask)
 
+        self.accumulate_batch(
+            batch_tokens=batch_tokens,
+            batch_domains=batch_domains,
+            batch_markers=batch_markers,
+            batch_seq_idxs=batch_seq_idxs,
+            batch_source_metadata=batch_source_metadata,
+            layer_activations=self._layer_activations,
+        )
+
+        self._layer_activations = {}
+
+    def accumulate_batch(
+        self,
+        *,
+        batch_tokens: list[list[int]],
+        batch_domains: list[str],
+        batch_markers: list[dict],
+        batch_seq_idxs: list[int],
+        batch_source_metadata: list[dict[str, Any]],
+        layer_activations: dict[int, torch.Tensor],
+    ) -> None:
+        """Accumulate feature stats from precomputed per-layer activations.
+
+        ``layer_activations`` maps ``layer_idx -> tensor[B, >=seq_len, n_features]``
+        of post-activation feature values (ReLU/JumpReLU already applied). This is
+        the model-agnostic half of ``process_batch``: any front-end that can produce
+        per-token feature activations can feed them here and reuse all top-k,
+        histogram, and reservoir-sampling logic. ``process_batch`` supplies them via
+        transcoder-adapter forward hooks; the base/GemmaScope collector supplies them
+        from circuit-tracer ``ReplacementModel.get_activations``.
+
+        Dispatches to a vectorized fast path for the dense base/GemmaScope case
+        (``n_random == 0`` and no activation ranges), where the per-nonzero Python loop is
+        the bottleneck. Otherwise (e.g. the adapter collector's reservoir sampling) uses the
+        exact per-event legacy path. Both produce identical FeatureStats; the fast path just
+        needs finalize() afterward to materialize its count arrays.
+        """
+        use_fast = (
+            not self._force_legacy
+            and self.n_random <= 0
+            and not (self.activation_range_examples_per_domain > 0 and self.activation_example_ranges)
+        )
+        if use_fast:
+            self._accumulate_batch_fast(
+                batch_tokens=batch_tokens,
+                batch_domains=batch_domains,
+                batch_markers=batch_markers,
+                batch_seq_idxs=batch_seq_idxs,
+                batch_source_metadata=batch_source_metadata,
+                layer_activations=layer_activations,
+            )
+        else:
+            self._accumulate_batch_legacy(
+                batch_tokens=batch_tokens,
+                batch_domains=batch_domains,
+                batch_markers=batch_markers,
+                batch_seq_idxs=batch_seq_idxs,
+                batch_source_metadata=batch_source_metadata,
+                layer_activations=layer_activations,
+            )
+
+    def _ensure_vec_arrays(self) -> None:
+        if self._vec_activation is not None:
+            return
+        self._vec_activation = [np.zeros(self.n_features, dtype=np.int64) for _ in range(self.n_layers)]
+        self._vec_domain = [dict() for _ in range(self.n_layers)]
+        self._vec_region = [dict() for _ in range(self.n_layers)]
+        self._vec_thinking = [np.zeros((10, self.n_features), dtype=np.int64) for _ in range(self.n_layers)]
+        self._global_thr = [np.full(self.n_features, -np.inf, dtype=np.float64) for _ in range(self.n_layers)]
+        self._domain_thr = [dict() for _ in range(self.n_layers)]
+        self._tc_keys = [[] for _ in range(self.n_layers)]
+        self._tc_counts = [[] for _ in range(self.n_layers)]
+
+    def _coalesce_token_counts(self, layer: int):
+        """Sum duplicate (feature,token) keys for a layer's accumulated counts (vectorized).
+
+        Returns coalesced ``(keys, counts)`` and compacts the layer's buffers in place so memory
+        stays bounded by the number of *distinct* (feature, token) pairs seen so far.
+        """
+        keys_list = self._tc_keys[layer]
+        if not keys_list:
+            empty = np.empty(0, dtype=np.int64)
+            return empty, empty
+        keys = np.concatenate(keys_list)
+        counts = np.concatenate(self._tc_counts[layer])
+        order = np.argsort(keys, kind="stable")
+        keys = keys[order]
+        counts = counts[order]
+        uniq, starts = np.unique(keys, return_index=True)
+        summed = np.add.reduceat(counts, starts)
+        self._tc_keys[layer] = [uniq]
+        self._tc_counts[layer] = [summed]
+        return uniq, summed
+
+    def finalize(self) -> None:
+        """Materialize fast-path count arrays into FeatureStats so export is unchanged.
+
+        Idempotent and safe to call once after the batch loop, before any pickle/export. A
+        no-op when the legacy path was used (arrays were never created). Frees the arrays.
+        """
+        if self._finalized:
+            return
+        self._finalized = True
+        if self._vec_activation is None:
+            return
+        for layer in range(self.n_layers):
+            act = self._vec_activation[layer]
+            layer_stats = self.stats[layer]
+            dom_items = list(self._vec_domain[layer].items())
+            reg_items = list(self._vec_region[layer].items())
+            think = self._vec_thinking[layer]
+            for f in np.nonzero(act)[0].tolist():
+                s = layer_stats[f]
+                s.activation_count = int(act[f])
+                for domain, arr in dom_items:
+                    c = int(arr[f])
+                    if c:
+                        s.domain_counts[domain] = c
+                for region, arr in reg_items:
+                    c = int(arr[f])
+                    if c:
+                        s.region_counts[region] = c
+                col = think[:, f]
+                if col.any():
+                    s.thinking_position_counts = [int(x) for x in col]
+
+        # token_counts: coalesce the accumulator and keep each feature's EXACT top-cap tokens.
+        if self._tc_keys is not None and self.track_token_counts and self.token_count_cap > 0:
+            bound = self._TOKEN_KEY_BOUND
+            cap = self.token_count_cap
+            for layer in range(self.n_layers):
+                uniq, summed = self._coalesce_token_counts(layer)
+                if uniq.size == 0:
+                    continue
+                feats = uniq // bound
+                toks = uniq % bound
+                # Per feature, rank tokens by count desc (ties broken by token id asc for
+                # determinism) and keep the top `cap`.
+                order = np.lexsort((toks, -summed, feats))
+                feats, toks, summed = feats[order], toks[order], summed[order]
+                ufeats, starts = np.unique(feats, return_index=True)
+                ends = np.append(starts[1:], feats.size)
+                layer_stats = self.stats[layer]
+                for k in range(ufeats.size):
+                    a = int(starts[k])
+                    e = min(a + cap, int(ends[k]))
+                    layer_stats[int(ufeats[k])].token_counts = {
+                        int(toks[j]): int(summed[j]) for j in range(a, e)
+                    }
+
+        self._vec_activation = None
+        self._vec_domain = None
+        self._vec_region = None
+        self._vec_thinking = None
+        self._global_thr = None
+        self._domain_thr = None
+        self._tc_keys = None
+        self._tc_counts = None
+
+    def _accumulate_batch_fast(
+        self,
+        *,
+        batch_tokens: list[list[int]],
+        batch_domains: list[str],
+        batch_markers: list[dict],
+        batch_seq_idxs: list[int],
+        batch_source_metadata: list[dict[str, Any]],
+        layer_activations: dict[int, torch.Tensor],
+    ) -> None:
+        """Vectorized accumulation for the dense base case (n_random == 0, no ranges).
+
+        Per-feature counts (activation / domain / region / thinking) are accumulated with
+        bincounts into per-layer arrays instead of a per-nonzero Python loop; histograms are
+        updated exactly as the legacy path. token_counts keeps the exact per-event
+        Space-Saving update (order-dependent), and top-k uses the same candidate pre-filter,
+        both in a single slim loop over nonzeros. finalize() then copies the arrays into
+        FeatureStats so downstream export/merge are unchanged.
+        """
+        self._ensure_vec_arrays()
+        track_tc = self.track_token_counts and self.token_count_cap > 0
+        seq_lens = [len(t) for t in batch_tokens]
+
+        for b in range(len(batch_tokens)):
+            tokens = batch_tokens[b]
+            seq_len = seq_lens[b]
+            domain = batch_domains[b]
+            markers = batch_markers[b]
+            sequence_idx = batch_seq_idxs[b]
+            source_metadata = batch_source_metadata[b]
+
+            regions, thinking_positions = precompute_regions(tokens, markers)
+
+            self.total_tokens += seq_len
+            self.tokens_per_domain[domain] += seq_len
+            # Build per-position region ids / thinking bins alongside the global per-position counts.
+            region_ids = np.empty(seq_len, dtype=np.int64)
+            think_bins = np.full(seq_len, -1, dtype=np.int64)
+            for pos in range(seq_len):
+                r = regions[pos]
+                self.tokens_per_region[r] += 1
+                rid = self._region_to_index.get(r)
+                if rid is None:
+                    rid = len(self._region_index_to_str)
+                    self._region_to_index[r] = rid
+                    self._region_index_to_str.append(r)
+                region_ids[pos] = rid
+                tpv = thinking_positions[pos]
+                if tpv is not None:
+                    bi = min(9, int(tpv * 10))
+                    self.tokens_per_thinking_bin[bi] += 1
+                    think_bins[pos] = bi
+
+            for layer_idx in range(self.n_layers):
+                features_gpu = layer_activations[layer_idx][b, :seq_len]  # [seq_len, n_features]
+
+                nonzero = torch.nonzero(features_gpu > 0)  # [N, 2]
+                if len(nonzero) == 0:
+                    continue
+
+                active_positions = nonzero[:, 0].cpu().numpy()
+                active_features = nonzero[:, 1].cpu().numpy()
+                active_values = features_gpu[nonzero[:, 0], nonzero[:, 1]].float().cpu().numpy()
+
+                self._update_activation_histograms(
+                    layer_idx=layer_idx,
+                    domain=domain,
+                    active_features=active_features,
+                    active_values=active_values,
+                )
+
+                # --- Vectorized per-feature counts (replaces the per-nonzero count loop) ---
+                base_counts = np.bincount(active_features, minlength=self.n_features)
+                self._vec_activation[layer_idx] += base_counts
+                dom_arr = self._vec_domain[layer_idx].get(domain)
+                if dom_arr is None:
+                    dom_arr = np.zeros(self.n_features, dtype=np.int64)
+                    self._vec_domain[layer_idx][domain] = dom_arr
+                dom_arr += base_counts  # one domain per item, so all nonzeros share it
+
+                region_per_nz = region_ids[active_positions]
+                for rid in np.unique(region_per_nz).tolist():
+                    m = region_per_nz == rid
+                    rstr = self._region_index_to_str[rid]
+                    rarr = self._vec_region[layer_idx].get(rstr)
+                    if rarr is None:
+                        rarr = np.zeros(self.n_features, dtype=np.int64)
+                        self._vec_region[layer_idx][rstr] = rarr
+                    rarr += np.bincount(active_features[m], minlength=self.n_features)
+
+                think_per_nz = think_bins[active_positions]
+                valid = think_per_nz >= 0
+                if valid.any():
+                    tb = think_per_nz[valid]
+                    tf = active_features[valid]
+                    for bi in np.unique(tb).tolist():
+                        self._vec_thinking[layer_idx][bi] += np.bincount(
+                            tf[tb == bi], minlength=self.n_features
+                        )
+
+                layer_stats = self.stats[layer_idx]
+
+                # --- token_counts: vectorized exact-top-cap accumulation (no per-event loop).
+                # Sum exact (feature, token) counts for this slice as combined keys and stash them;
+                # finalize() coalesces across the run and keeps each feature's top-cap tokens. This
+                # is EXACT top-cap, replacing the legacy order-dependent Space-Saving approximation.
+                if track_tc:
+                    tokens_np = np.asarray(tokens, dtype=np.int64)
+                    tok_per_nz = tokens_np[active_positions]
+                    if tok_per_nz.size and int(tok_per_nz.max()) >= self._TOKEN_KEY_BOUND:
+                        raise ValueError(
+                            f"token id {int(tok_per_nz.max())} >= _TOKEN_KEY_BOUND "
+                            f"{self._TOKEN_KEY_BOUND}; raise FeatureCollector._TOKEN_KEY_BOUND."
+                        )
+                    keys = active_features.astype(np.int64) * self._TOKEN_KEY_BOUND + tok_per_nz
+                    uk, uc = np.unique(keys, return_counts=True)
+                    self._tc_keys[layer_idx].append(uk)
+                    self._tc_counts[layer_idx].append(uc.astype(np.int64))
+                    if len(self._tc_keys[layer_idx]) >= 64:
+                        self._coalesce_token_counts(layer_idx)
+
+                # --- Vectorized candidate pre-filter: gather running heap thresholds (no Python
+                # loop). threshold[f] = min(global_top_k_min[f], domain_top_k_min[f]); a non-full
+                # heap contributes -inf, matching the legacy per-feature computation exactly.
+                gthr = self._global_thr[layer_idx]
+                dthr = self._domain_thr[layer_idx].get(domain)
+                if dthr is None:
+                    dthr = np.full(self.n_features, -np.inf, dtype=np.float64)
+                    self._domain_thr[layer_idx][domain] = dthr
+                combined = np.minimum(gthr, dthr)
+                candidate_mask = active_values > combined[active_features]
+
+                # --- Survivor-only top-k: iterate just the candidates, in torch.nonzero order so
+                # heap insertions/replacements are byte-identical to legacy. _maybe_add_example does
+                # the exact re-check; refresh this feature's running thresholds after each call.
+                for i in np.nonzero(candidate_mask)[0].tolist():
+                    feature_idx = int(active_features[i])
+                    stats = layer_stats[feature_idx]
+                    pos = int(active_positions[i])
+                    self._maybe_add_example(
+                        stats, float(active_values[i]), tokens, pos, features_gpu, feature_idx,
+                        domain, regions[pos], thinking_positions[pos], sequence_idx, source_metadata,
+                    )
+                    gthr[feature_idx] = (
+                        stats.top_k_examples[0].activation
+                        if len(stats.top_k_examples) >= self.top_k else -np.inf
+                    )
+                    dh = stats.domain_top_k_examples.get(domain)
+                    dthr[feature_idx] = (
+                        dh[0].activation if dh is not None and len(dh) >= self.domain_top_k else -np.inf
+                    )
+
+    def _accumulate_batch_legacy(
+        self,
+        *,
+        batch_tokens: list[list[int]],
+        batch_domains: list[str],
+        batch_markers: list[dict],
+        batch_seq_idxs: list[int],
+        batch_source_metadata: list[dict[str, Any]],
+        layer_activations: dict[int, torch.Tensor],
+    ) -> None:
+        """Exact per-event accumulation (reservoir / activation-range path; unchanged)."""
+        seq_lens = [len(t) for t in batch_tokens]
+
         # Process each item in the batch
-        for b in range(B):
+        for b in range(len(batch_tokens)):
             tokens = batch_tokens[b]
             seq_len = seq_lens[b]
             domain = batch_domains[b]
@@ -517,7 +956,7 @@ class FeatureCollector:
 
             for layer_idx in range(self.n_layers):
                 # Slice out this item's real tokens (right-padded, so [:seq_len] is correct)
-                features_gpu = self._layer_activations[layer_idx][b, :seq_len]  # [seq_len, n_features]
+                features_gpu = layer_activations[layer_idx][b, :seq_len]  # [seq_len, n_features]
 
                 nonzero = torch.nonzero(features_gpu > 0)  # [N, 2]
                 if len(nonzero) == 0:
@@ -534,41 +973,76 @@ class FeatureCollector:
                     active_values=active_values,
                 )
 
+                layer_stats = self.stats[layer_idx]
+
+                # Pre-filter top-k example candidates. When n_random == 0 a nonzero can only be
+                # kept if it beats its feature's current top-k / domain-top-k heap minimum (which
+                # only rises within a layer), so we vectorize that check once and skip
+                # _maybe_add_example for the dominated majority — the dominant cost in dense
+                # (GemmaScope-style) collections. With n_random > 0 (e.g. the adapter collector)
+                # every nonzero is a reservoir candidate, so candidate_mask stays None and behavior
+                # is byte-for-byte unchanged.
+                candidate_mask = None
+                if self.n_random <= 0:
+                    thresholds = np.full(self.n_features, -np.inf, dtype=np.float64)
+                    for uf in np.unique(active_features).tolist():
+                        s = layer_stats[uf]
+                        global_thr = (
+                            s.top_k_examples[0].activation
+                            if len(s.top_k_examples) >= self.top_k
+                            else -np.inf
+                        )
+                        domain_heap = s.domain_top_k_examples.get(domain)
+                        domain_thr = (
+                            domain_heap[0].activation
+                            if domain_heap is not None and len(domain_heap) >= self.domain_top_k
+                            else -np.inf
+                        )
+                        thresholds[uf] = min(global_thr, domain_thr)
+                    candidate_mask = active_values > thresholds[active_features]
+
+                track_ranges = (
+                    self.activation_range_examples_per_domain > 0
+                    and bool(self.activation_example_ranges)
+                )
+
                 for i in range(len(active_positions)):
                     pos = int(active_positions[i])
                     feature_idx = int(active_features[i])
                     act = float(active_values[i])
 
-                    stats = self.stats[layer_idx][feature_idx]
+                    stats = layer_stats[feature_idx]
                     region = regions[pos]
                     think_pos = thinking_positions[pos]
 
                     stats.activation_count += 1
                     stats.domain_counts[domain] += 1
                     stats.region_counts[region] += 1
+                    if self.track_token_counts and self.token_count_cap > 0:
+                        token_id = tokens[pos]
+                        token_counts = stats.token_counts
+                        if token_id in token_counts:
+                            token_counts[token_id] += 1
+                        elif len(token_counts) < self.token_count_cap:
+                            token_counts[token_id] = 1
+                        else:
+                            # Space-Saving: evict the lowest-count token, inherit its count + 1.
+                            min_token = min(token_counts, key=token_counts.get)
+                            token_counts[token_id] = token_counts.pop(min_token) + 1
                     if think_pos is not None:
                         bin_idx = min(9, int(think_pos * 10))
                         stats.thinking_position_counts[bin_idx] += 1
 
-                    self._maybe_add_activation_range_example(
-                        stats,
-                        act,
-                        tokens,
-                        pos,
-                        features_gpu,
-                        feature_idx,
-                        domain,
-                        region,
-                        think_pos,
-                        sequence_idx,
-                        source_metadata,
-                    )
-                    self._maybe_add_example(
-                        stats, act, tokens, pos, features_gpu, feature_idx,
-                        domain, region, think_pos, sequence_idx, source_metadata
-                    )
-
-        self._layer_activations = {}
+                    if track_ranges:
+                        self._maybe_add_activation_range_example(
+                            stats, act, tokens, pos, features_gpu, feature_idx,
+                            domain, region, think_pos, sequence_idx, source_metadata,
+                        )
+                    if candidate_mask is None or candidate_mask[i]:
+                        self._maybe_add_example(
+                            stats, act, tokens, pos, features_gpu, feature_idx,
+                            domain, region, think_pos, sequence_idx, source_metadata,
+                        )
 
 
 # =============================================================================
@@ -622,9 +1096,29 @@ def cantor_pair(x: int, y: int) -> int:
     return (x + y) * (x + y + 1) // 2 + y
 
 
+# Per-token-id decode cache. Export decodes the same handful of token ids (\n, common words,
+# punctuation) tens of millions of times across hundreds of thousands of dense base features;
+# tokenizer.decode is ~10-50us/call, so caching cuts packing time by ~10-50x. Output is identical
+# (decode is deterministic). Keyed by token id; reset_decode_cache() is called at export start so
+# a process that runs multiple collections never mixes tokenizers.
+_DECODE_CACHE: dict[int, str] = {}
+
+
+def reset_decode_cache() -> None:
+    _DECODE_CACHE.clear()
+
+
+def decode_token(tokenizer, token_id: int) -> str:
+    cached = _DECODE_CACHE.get(token_id)
+    if cached is None:
+        cached = tokenizer.decode([token_id])
+        _DECODE_CACHE[token_id] = cached
+    return cached
+
+
 def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
     """Format an ActivatingExample for circuit tracer JSON."""
-    tokens = [tokenizer.decode([tok_id]) for tok_id in ex.context_tokens]
+    tokens = [decode_token(tokenizer, tok_id) for tok_id in ex.context_tokens]
     formatted: dict[str, Any] = {
         "tokens": tokens,
         "tokens_acts_list": ex.context_activations,
@@ -635,6 +1129,29 @@ def format_example_for_circuit_tracer(ex: ActivatingExample, tokenizer) -> dict:
     if ex.source_metadata:
         formatted["source_metadata"] = dict(ex.source_metadata)
     return formatted
+
+
+def format_top_tokens(stats: FeatureStats, tokenizer, *, k: int = 10) -> list[dict]:
+    """Top tokens this feature activates on, with token-conditional fractions.
+
+    Powers the graph-viz "of this feature's activations, what % land on this token"
+    (token-conditional specificity) stat. Counts are bounded (Space-Saving, capped per
+    feature), so fractions for the most frequent tokens are accurate while rare tokens may
+    be undercounted or absent.
+    """
+    if not stats.token_counts:
+        return []
+    total = max(1, stats.activation_count)
+    ranked = sorted(stats.token_counts.items(), key=lambda kv: -kv[1])[:k]
+    return [
+        {
+            "token": decode_token(tokenizer, token_id),
+            "token_id": int(token_id),
+            "count": int(count),
+            "fraction": count / total,
+        }
+        for token_id, count in ranked
+    ]
 
 
 def _build_examples_quantiles(
@@ -735,6 +1252,7 @@ def _release_feature_examples(stats: FeatureStats) -> None:
     stats.domain_top_k_examples.clear()
     stats.activation_range_examples.clear()
     stats.activation_range_seen_counts.clear()
+    stats.token_counts.clear()
 
 
 def _count_nonempty_features(collector: FeatureCollector) -> int:
@@ -854,12 +1372,24 @@ def export_circuit_tracer_json(
     output_dir: Path,
     n_workers: int = 16,
     export_circuit_tracer_features: bool = True,
+    write_per_feature_json: bool = True,
 ):
-    """Export feature data to circuit tracer JSON format."""
-    features_dir = output_dir / "features"
-    features_dir.mkdir(parents=True, exist_ok=True)
+    """Export feature data to circuit tracer JSON format.
 
-    logger.info(f"Exporting features to {features_dir}...")
+    ``write_per_feature_json`` controls the per-feature ``features/{cantor_id}.json``
+    files used by the dashboard. Set it False to write only the packed
+    ``circuit_tracer_features/`` cache (which the attribution overlay/circuit-tracer
+    frontend use). This matters for dense base/GemmaScope collections where nearly all
+    of the hundreds of thousands of features fire, so writing one JSON per feature
+    dominates wall-clock and inode count.
+    """
+    reset_decode_cache()
+    features_dir = output_dir / "features"
+    if write_per_feature_json:
+        features_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Exporting features to {features_dir}...")
+    else:
+        logger.info("Skipping per-feature JSON files (packed circuit-tracer cache only).")
     packed_features_dir = output_dir / "circuit_tracer_features"
     packed_index: dict[str, Any] | None = None
     if export_circuit_tracer_features:
@@ -910,11 +1440,11 @@ def export_circuit_tracer_json(
 
                         # Get logit lens tokens
                         top_logits = [
-                            tokenizer.decode([tok_id])
+                            decode_token(tokenizer, tok_id)
                             for tok_id in layer_logit_lens['top_ids'][feature_idx]
                         ]
                         bottom_logits = [
-                            tokenizer.decode([tok_id])
+                            decode_token(tokenizer, tok_id)
                             for tok_id in layer_logit_lens['bot_ids'][feature_idx]
                         ]
 
@@ -925,7 +1455,10 @@ def export_circuit_tracer_json(
                             "act_min": act_min,
                             "act_max": act_max,
                             "examples_quantiles": examples_quantiles,
+                            # activation_frequency = "% of tokens this feature fires on" (metric 1).
                             "activation_frequency": stats.activation_count / max(1, collector.total_tokens),
+                            # token_specificity = "% of this feature's activations on each token" (metric 2).
+                            "token_specificity": format_top_tokens(stats, tokenizer),
                             "layer": layer_idx,
                             "feature": feature_idx,
                         }
@@ -935,10 +1468,11 @@ def export_circuit_tracer_json(
                             packed_offsets.append(packed_bin_f.tell())
                             packed_count += 1
 
-                        cantor_id = cantor_pair(layer_idx, feature_idx)
-                        filepath = features_dir / f"{cantor_id}.json"
-                        pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
-                        write_count += 1
+                        if write_per_feature_json:
+                            cantor_id = cantor_pair(layer_idx, feature_idx)
+                            filepath = features_dir / f"{cantor_id}.json"
+                            pending_writes.add(executor.submit(_write_feature_json, (filepath, feature_json)))
+                            write_count += 1
                         _release_feature_examples(stats)
 
                         if len(pending_writes) >= max_pending_writes:
@@ -1417,6 +1951,69 @@ def export_run_arguments(
     logger.info(f"Saved pasteable replay command to {command_path}")
 
 
+def _finalize_collection(
+    collector: "FeatureCollector",
+    *,
+    model,
+    tokenizer,
+    output_dir: Path,
+    args,
+    hf_feature_repo_id,
+    hf_feature_config,
+    data_source_settings,
+) -> None:
+    """Export (and optionally upload) a completed collector.
+
+    Shared by the normal single-process path and the --merge_shards path so both produce the
+    same outputs (logit lens + packed cache + histograms + metadata + annotations + upload).
+    """
+    logit_lens_data = compute_logit_lens(model, tokenizer)
+
+    export_circuit_tracer_json(
+        collector,
+        logit_lens_data,
+        tokenizer,
+        output_dir,
+        export_circuit_tracer_features=args.export_circuit_tracer_features,
+        write_per_feature_json=not args.no_per_feature_json,
+    )
+    export_activation_histograms(collector, output_dir)
+    export_metadata(
+        collector,
+        output_dir,
+        target_domain=args.relative_target_domain,
+        baseline_domain=args.relative_baseline_domain,
+        model_path=args.model_path,
+        tokenizer_path=args.tokenizer,
+        data_sources=data_source_settings,
+    )
+    # Annotations are derived from feature_metadata.json (always written), not the
+    # per-feature features/{id}.json files, so they run even with --no_per_feature_json.
+    # They are also a required sidecar for the Hub upload below.
+    annotate_collected_features(output_dir)
+
+    if hf_feature_repo_id and hf_feature_config:
+        from analysis.features.hub_upload import upload_circuit_tracer_features_to_hub
+
+        upload_circuit_tracer_features_to_hub(
+            repo_id=hf_feature_repo_id,
+            output_dir=output_dir,
+            config=hf_feature_config,
+        )
+
+    logger.info(f"Done! Output written to {output_dir}")
+    logger.info("  features/: Circuit tracer JSON files")
+    if args.export_circuit_tracer_features:
+        logger.info("  circuit_tracer_features/: Packed circuit-tracer feature cache")
+    logger.info("  activation_histograms.npz: Exact activation histogram sidecar")
+    logger.info("  feature_metadata.json: Rich metadata for analysis")
+    logger.info("  feature_annotations.json: Automatic feature annotations")
+    logger.info("  collect_feature_activations_args.json: Full parsed CLI settings")
+    logger.info("  collect_feature_activations_command.sh: Pasteable replay command")
+    if hf_feature_repo_id:
+        logger.info(f"  Hugging Face feature repo: https://huggingface.co/{hf_feature_repo_id}")
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(
@@ -1568,6 +2165,29 @@ def main():
                         help="""Explicit tokenizer path (default: resolved from model_type)""")
     parser.add_argument("--max_length", type=int, default=4096,
                         help="""Max sequence length (longer sequences truncated)""")
+    parser.add_argument(
+        "--no_per_feature_json",
+        action="store_true",
+        help=(
+            "Skip writing per-feature features/{cantor_id}.json files (and the dashboard "
+            "annotation pass); write only the packed circuit_tracer_features/ cache used by "
+            "the attribution overlay. Use this for large runs where per-feature JSON writing "
+            "dominates wall-clock and fills scratch disk (hundreds of thousands of tiny files)."
+        ),
+    )
+
+    # ── Sharding (data-parallel multi-GPU collection) ──────────────────────────
+    # Feature collection is pure inference, so the right way to use many GPUs is NOT DDP
+    # (which only syncs gradients): run N independent shard processes over disjoint slices of
+    # the data, each on its own GPU, then losslessly merge their collector states. This scales
+    # near-linearly, runs across heterogeneous/preemptible nodes (e.g. sc-loprio), and a dead
+    # shard is just re-run. Requires --n_random 0 and --activation_range_examples_per_domain 0
+    # so partial states merge exactly (reservoir-sampled fields cannot be merged without bias).
+    parser.add_argument("--num_shards", type=int, default=1, help="Split the work across N independent shard processes (one GPU each) to parallelize collection. Each shard processes items where prepared_item_idx %% num_shards == shard_index, then pickles its collector state to <output_dir>/shard_<i>.pkl and skips export. Merge afterwards with --merge_shards. Requires --n_random 0 and --activation_range_examples_per_domain 0 (so partial states merge exactly). Default 1 = single-process (no sharding).")
+    parser.add_argument("--shard_index", type=int, default=0, help="This shard's index in [0, num_shards). Ignored when --num_shards 1. Under Slurm array jobs set this to $SLURM_ARRAY_TASK_ID. If <output_dir>/shard_<i>.pkl already exists the shard exits immediately (idempotent re-runs make recovering preempted shards cheap).")
+    parser.add_argument("--merge_shards", type=str, default=None, help="Glob of shard pickles (e.g. '<dir>/shard_*.pkl') to merge into one collection and export/upload. In this mode no data is re-read; the model is loaded only for the logit lens and the normal export path runs on the merged collector. Use after all shards (--num_shards/--shard_index) have completed.")
+
+    add_collection_wandb_args(parser)
 
     args = parser.parse_args()
     if args.upload_circuit_tracer_features_to_hub is None:
@@ -1586,9 +2206,14 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
 
+    # Shard workers (--num_shards > 1 without --merge_shards) only pickle partial state -- they
+    # must NOT reserve or upload the HF repo (the merge step does that). The merge step itself
+    # runs with --no-upload + a separate salvage upload, so it also skips this reserve block.
+    is_shard_worker = args.num_shards > 1 and not args.merge_shards
+
     hf_feature_repo_id = None
     hf_feature_config = None
-    if args.upload_circuit_tracer_features_to_hub:
+    if args.upload_circuit_tracer_features_to_hub and not is_shard_worker:
         from analysis.features.hub_upload import (
             build_feature_collection_repo_id,
             check_feature_collection_exists,
@@ -1624,6 +2249,16 @@ def main():
     logger.info(f"Output directory: {output_dir}")
     export_run_arguments(parser, args, output_dir)
 
+    # Skip-if-done: a shard whose pickle already exists is complete. Exit before loading the
+    # model/data so re-running the array after preemptions only recomputes the missing shards.
+    shard_pkl_path = output_dir / f"shard_{args.shard_index:03d}.pkl"
+    if is_shard_worker and shard_pkl_path.exists():
+        logger.info(
+            f"Shard {args.shard_index}/{args.num_shards} already done ({shard_pkl_path} exists); "
+            "skipping. Delete it to force a recompute."
+        )
+        return
+
     tokenizer = load_tokenizer(args.model_path, tokenizer_path=args.tokenizer)
 
     # Load model
@@ -1647,6 +2282,36 @@ def main():
     logger.info(f"Detected special tokens: {special_tokens}")
     if not has_thinking:
         logger.info("Note: No <think> tags detected — thinking region analysis will be skipped")
+
+    # Merge mode: recombine completed shard pickles into one collection and export/upload.
+    # No data is re-read; the model (loaded above) is used only for the logit lens.
+    if args.merge_shards:
+        import glob
+        import pickle
+
+        shard_paths = sorted(glob.glob(args.merge_shards))
+        if not shard_paths:
+            parser.error(f"--merge_shards matched no files: {args.merge_shards}")
+        logger.info(f"Merging {len(shard_paths)} shard collectors from {args.merge_shards}")
+        with open(shard_paths[0], "rb") as fh:
+            payload = pickle.load(fh)
+        collector = payload["collector"]
+        merged_data_sources = payload["data_source_settings"]
+        for shard_path in shard_paths[1:]:
+            with open(shard_path, "rb") as fh:
+                collector.merge_from(pickle.load(fh)["collector"])
+            logger.info(f"  merged {shard_path} -> {collector.total_tokens:,} tokens total")
+        _finalize_collection(
+            collector,
+            model=model,
+            tokenizer=tokenizer,
+            output_dir=output_dir,
+            args=args,
+            hf_feature_repo_id=hf_feature_repo_id,
+            hf_feature_config=hf_feature_config,
+            data_source_settings=merged_data_sources,
+        )
+        return
 
     # Parse and load all val_data sources
     val_data_sources: list[tuple[str | None, str]] = [
@@ -1751,6 +2416,16 @@ def main():
         )
         return
 
+    # Sharding: keep only this shard's disjoint slice of the prepared items. The modulo on the
+    # globally-unique prepared_item_idx gives every shard a deterministic, non-overlapping subset
+    # whose merged collector state equals a single unsharded run.
+    if args.num_shards > 1:
+        items = [it for it in items if int(it[3]["prepared_item_idx"]) % args.num_shards == args.shard_index]
+        logger.info(f"Shard {args.shard_index}/{args.num_shards}: processing {len(items)} of the prepared items")
+        if not items:
+            logger.error("No items fall in this shard. Exiting.")
+            return
+
     domain_names = sorted({domain for _, domain, _, _ in items})
     logger.info(f"Activation histogram domains: {domain_names}")
     log_startup_output_size_estimate(
@@ -1782,68 +2457,37 @@ def main():
         activation_range_examples_per_domain=args.activation_range_examples_per_domain,
     )
 
-    # Sort by length so similarly-sized sequences are batched together (less padding waste)
-    items.sort(key=lambda x: len(x[0]))
-    logger.info(f"Sorted {len(items)} sequences by length "
-                f"(shortest={len(items[0][0])}, longest={len(items[-1][0])})")
-
-    # Token budget from GPU memory.  Collection uses the transformer backbone only
-    # (no lm_head logits), so the dominant term is hook tensors: each layer keeps a
-    # bf16 [batch, seq, n_features] activation until the forward finishes.
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-    bytes_per_element = 2  # bf16
-    hook_bytes_per_token = n_layers * n_features * bytes_per_element
-    hidden = int(getattr(model.config, "hidden_size", 0) or 0)
-    # Small slack for attention / scratch (far smaller than full vocab logits).
-    scratch_bytes_per_token = max(4096, hidden * 16)
-    slack = 1.35
-    total_bytes_per_token = int(hook_bytes_per_token * slack) + scratch_bytes_per_token
-    free_bytes = torch.cuda.mem_get_info(model.device)[0]
-    safety_margin = 0.55
-    max_batch_tokens = int(free_bytes * safety_margin / total_bytes_per_token)
-    logger.info(f"GPU free memory: {free_bytes / 1e9:.1f} GB, "
-                f"per-token budget: {total_bytes_per_token / 1e6:.1f} MB "
-                f"(hooks {hook_bytes_per_token / 1e6:.1f} × {slack:.2f} + scratch {scratch_bytes_per_token / 1e6:.1f}), "
-                f"token budget: {max_batch_tokens:,}")
-    batches: list[list[tuple[list[int], str, dict, dict[str, Any]]]] = []
-    current_batch: list[tuple[list[int], str, dict, dict[str, Any]]] = []
-    current_max_len = 0
-    for item in items:
-        item_len = len(item[0])
-        new_max_len = max(current_max_len, item_len)
-        padded_tokens = (len(current_batch) + 1) * new_max_len
-        if current_batch and (len(current_batch) >= args.batch_size or padded_tokens > max_batch_tokens):
-            batches.append(current_batch)
-            current_batch = [item]
-            current_max_len = item_len
-        else:
-            current_batch.append(item)
-            current_max_len = new_max_len
-    if current_batch:
-        batches.append(current_batch)
+    # Token budget from GPU memory. Collection uses the transformer backbone only (no lm_head
+    # logits, see _run_backbone_for_hooks), so the dominant term is the per-layer hook tensors.
+    max_batch_tokens = compute_max_batch_tokens(
+        device=model.device,
+        n_layers=n_layers,
+        n_features=n_features,
+        hidden=int(getattr(model.config, "hidden_size", 0) or 0),
+    )
+    batches = form_length_packed_batches(
+        items,
+        batch_size=args.batch_size,
+        max_batch_tokens=max_batch_tokens,
+        shuffle=args.shuffle_batches,
+        shuffle_seed=args.shuffle_batches_seed,
+    )
 
-    batch_sizes = [len(b) for b in batches]
-    logger.info(f"Formed {len(batches)} batches (sizes {min(batch_sizes)}-{max(batch_sizes)}, "
-                f"token budget={max_batch_tokens:,})")
-
-    if args.shuffle_batches:
-        g = torch.Generator()
-        g.manual_seed(int(args.shuffle_batches_seed))
-        order = torch.randperm(len(batches), generator=g).tolist()
-        batches = [batches[i] for i in order]
-        logger.info(
-            "Shuffling batch execution order: %s batches permuted with torch.randperm "
-            "(seed=%s). Batch membership is unchanged; only run order differs so step times are "
-            "mixed. Disable with --no-shuffle_batches for shortest-batches-first order.",
-            len(batches),
-            args.shuffle_batches_seed,
-        )
-    else:
-        logger.info(
-            "Batch execution order: sequential after length-aware packing (shortest batches "
-            "first; progress may look fast early then slow). Enable default --shuffle_batches to "
-            "interleave cheap and expensive steps."
-        )
+    wandb_logger = CollectionWandbLogger.from_args(
+        args,
+        run_name=output_dir.name,
+        config={
+            **{k: v for k, v in vars(args).items() if not k.startswith("_")},
+            "collector": "adapter",
+            "n_layers": n_layers,
+            "n_features": n_features,
+            "n_sequences": len(items),
+            "n_batches": len(batches),
+        },
+        total_sequences=len(items),
+    )
+    wandb_logger.reset_timer()
 
     # Process batches
     collector.register_hooks(model)
@@ -1859,6 +2503,7 @@ def main():
 
         collector.process_batch(model, batch_tokens, batch_domains, batch_markers,
                                 batch_seq_idxs, batch_source_metadata, pad_token_id)
+        wandb_logger.log_batch(n_seqs=len(batch_tokens), n_tokens=sum(len(t) for t in batch_tokens))
 
     collector.remove_hooks()
 
@@ -1867,50 +2512,45 @@ def main():
     logger.info(f"  Total tokens: {collector.total_tokens:,}")
     logger.info(f"  Domains: {dict(collector.tokens_per_domain)}")
     logger.info(f"  Regions: {dict(collector.tokens_per_region)}")
-
-    # Compute logit lens
-    logit_lens_data = compute_logit_lens(model, tokenizer)
-
-    # Export
-    export_circuit_tracer_json(
-        collector,
-        logit_lens_data,
-        tokenizer,
-        output_dir,
-        export_circuit_tracer_features=args.export_circuit_tracer_features,
+    wandb_logger.finish(
+        summary={
+            "final/total_tokens": collector.total_tokens,
+            "final/n_sequences": len(items),
+            "final/tokens_per_domain": dict(collector.tokens_per_domain),
+        }
     )
-    export_activation_histograms(collector, output_dir)
-    export_metadata(
-        collector,
-        output_dir,
-        target_domain=args.relative_target_domain,
-        baseline_domain=args.relative_baseline_domain,
-        model_path=args.model_path,
-        tokenizer_path=args.tokenizer,
-        data_sources=data_source_settings,
-    )
-    annotate_collected_features(output_dir)
 
-    if hf_feature_repo_id and hf_feature_config:
-        from analysis.features.hub_upload import upload_circuit_tracer_features_to_hub
+    # Materialize any vectorized fast-path counts into FeatureStats before pickle/export (no-op
+    # for the adapter's reservoir/legacy path, which writes FeatureStats directly).
+    collector.finalize()
 
-        upload_circuit_tracer_features_to_hub(
-            repo_id=hf_feature_repo_id,
-            output_dir=output_dir,
-            config=hf_feature_config,
+    # Shard worker: persist partial collector state and stop; the --merge_shards step
+    # recombines all shards and runs export/upload once.
+    if args.num_shards > 1:
+        import pickle
+
+        with open(shard_pkl_path, "wb") as fh:
+            pickle.dump(
+                {"collector": collector, "data_source_settings": data_source_settings},
+                fh,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        logger.info(
+            f"Wrote shard {args.shard_index}/{args.num_shards} state to {shard_pkl_path} "
+            f"({collector.total_tokens:,} tokens); skipping export. Merge with --merge_shards."
         )
+        return
 
-    logger.info(f"Done! Output written to {output_dir}")
-    logger.info("  features/: Circuit tracer JSON files")
-    if args.export_circuit_tracer_features:
-        logger.info("  circuit_tracer_features/: Packed circuit-tracer feature cache")
-    logger.info("  activation_histograms.npz: Exact activation histogram sidecar")
-    logger.info("  feature_metadata.json: Rich metadata for analysis")
-    logger.info("  feature_annotations.json: Automatic feature annotations")
-    logger.info("  collect_feature_activations_args.json: Full parsed CLI settings")
-    logger.info("  collect_feature_activations_command.sh: Pasteable replay command")
-    if hf_feature_repo_id:
-        logger.info(f"  Hugging Face feature repo: https://huggingface.co/{hf_feature_repo_id}")
+    _finalize_collection(
+        collector,
+        model=model,
+        tokenizer=tokenizer,
+        output_dir=output_dir,
+        args=args,
+        hf_feature_repo_id=hf_feature_repo_id,
+        hf_feature_config=hf_feature_config,
+        data_source_settings=data_source_settings,
+    )
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """Delete local checkpoints that are already uploaded to Hugging Face.
 
 By default this scans:
-    /nlp/scr/$USER/sparse-adaptation/checkpoints/
+    $LARGE_ARTIFACTS_DIR/transcoder-adapters/checkpoints/
 
 For each checkpoint directory, the script derives the Hugging Face repo ID using
 the same code path as train.py when a saved training config is available. Older
@@ -12,7 +12,6 @@ folder naming logic.
 # uv run python -m training.upload_models.prune_checkpoints_uploaded_to_hf
 
 import argparse
-import os
 import shutil
 import sys
 from dataclasses import replace
@@ -20,16 +19,13 @@ from pathlib import Path
 
 from helpers.log import logger
 
-DEFAULT_HUB_ORG = "siddharthmb"
+# None => fall back to the logged-in Hugging Face user's namespace (via whoami).
+DEFAULT_HUB_ORG = None
 
 
 def _default_checkpoint_root() -> Path:
-    user = os.environ.get("USER")
-    if not user:
-        raise RuntimeError(
-            "$USER environment variable is not set. Provide a checkpoint path explicitly."
-        )
-    return Path(f"/nlp/scr/{user}/sparse-adaptation/checkpoints")
+    from helpers.paths import PRODUCTS_DIR
+    return PRODUCTS_DIR / "checkpoints"
 
 
 def _repo_id_for_checkpoint(checkpoint_dir: str, hub_org: str) -> str:
@@ -92,7 +88,7 @@ def main() -> None:
 
     setup_logging()
 
-    default_path = f"/nlp/scr/{os.environ.get('USER', '$USER')}/sparse-adaptation/checkpoints"
+    default_path = "$LARGE_ARTIFACTS_DIR/transcoder-adapters/checkpoints"
     parser = argparse.ArgumentParser(
         description="Delete local checkpoint directories that already exist on Hugging Face.",
     )
@@ -108,7 +104,7 @@ def main() -> None:
     parser.add_argument(
         "--hub_org",
         default=DEFAULT_HUB_ORG,
-        help=f"HF org/user namespace to check. Default: {DEFAULT_HUB_ORG}",
+        help="HF org/user namespace to check. Default: your logged-in Hugging Face user.",
     )
     parser.add_argument(
         "--dry_run",

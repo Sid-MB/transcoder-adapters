@@ -37,17 +37,17 @@ And visualize with:
     
 uv run --extra viz circuit-tracer attribute \
         --model google/gemma-2-2b \
-        --transcoder_set /nlp/scr/siddharth/sparse-adaptation/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755 \
+        --transcoder_set $LARGE_ARTIFACTS_DIR/transcoder-adapters/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755 \
         --prompt "The capital of France is" \
-        --graph_output_path /nlp/scr/siddharth/sparse-adaptation/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755/france_capital.pt \
+        --graph_output_path $LARGE_ARTIFACTS_DIR/transcoder-adapters/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755/france_capital.pt \
         --dtype bfloat16
 
         uv run --extra viz circuit-tracer attribute \
         --model google/gemma-2-2b \
-        --transcoder_set /nlp/scr/siddharth/sparse-adaptation/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755 \
+        --transcoder_set $LARGE_ARTIFACTS_DIR/transcoder-adapters/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755 \
         --prompt "The capital of France is" \
         --slug france_capital \
-        --graph_file_dir /nlp/scr/siddharth/sparse-adaptation/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755/graphs \
+        --graph_file_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/circuit_tracer_transcoders/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260520_233833_15506755/graphs \
         --server \
         --port 8041 \
         --dtype bfloat16

@@ -8,7 +8,7 @@ each graph JSON. The frontend resolves scan to:
 
 Usage:
     python misc_scripts/prepare_graphs_for_hf.py \
-        --graph_dir /nlp/scr/nathu/sparse-adaptation/circuit_tracing_final \
+        --graph_dir $LARGE_ARTIFACTS_DIR/transcoder-adapters/circuit_tracing_final \
         --output_dir ./graph_files \
         --scan nathu0/transcoder-adapters-R1-Distill-Qwen-7B-l1w0.001-l0-1.4
 """

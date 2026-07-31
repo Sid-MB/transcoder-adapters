@@ -1,0 +1,8 @@
+# div_0069  (#2 divergent)
+
+USER: Write an article about the Applications of Methanaminium, 1-carboxy-N,N,N-trimethyl-, 2-hydroxy-1,2,3-propanetricarboxylate (1:1) 2000 words in chemical industry
+
+INSTRUCT rollout (first tokens, argmax-KL target): ## Methanaminium, 1
+
+TARGET TOKEN: ##  (index 65)
+WHY: argmax-KL response pos 0: base->'Write' vs instruct->'##'

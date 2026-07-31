@@ -1,0 +1,10 @@
+# div_0239  (#2 divergent)
+
+USER: Give me a recipe for a simple vegetable soup.
+
+INSTRUCT rollout (first tokens, argmax-KL target): ## Simple Vegetable Soup
+
+This recipe is
+
+TARGET TOKEN: ##  (index 18)
+WHY: argmax-KL response pos 0: base->'Give' vs instruct->'##'

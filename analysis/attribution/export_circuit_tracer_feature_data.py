@@ -35,10 +35,10 @@ Existing output behavior:
     that case earlier by skipping existing conversion directories.
 
 Example:
-    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_path /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160
+    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_path $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160
 
 Example with explicit shape:
-    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_path /nlp/scr/siddharth/sparse-adaptation/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --n_layers 26 --n_features 8192
+    uv run --extra viz python -m analysis.attribution.export_circuit_tracer_feature_data --feature_data_path $LARGE_ARTIFACTS_DIR/transcoder-adapters/feature_data/2026.TA.gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr20000_lr8e-04_bs4_sl14793860_20260519_171751_15493160 --n_layers 26 --n_features 8192
 """
 
 from __future__ import annotations

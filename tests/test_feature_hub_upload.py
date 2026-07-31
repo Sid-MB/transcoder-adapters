@@ -66,6 +66,27 @@ class FeatureHubUploadTest(unittest.TestCase):
         self.assertTrue(repo_a.endswith(f"_h{feature_collection_fingerprint(config_a)}"))
         self.assertNotIn("output_dir", config_a)
 
+    def test_repo_id_ignores_sharding_and_merge_flags(self):
+        # A collection produced as N shards + a merge is identical to a single-process
+        # run, so it must map to the SAME deterministic repo. Excluding these keys also
+        # keeps configs reserved before the sharding CLI existed (no such keys) equal.
+        single = self._args()  # no sharding keys at all (pre-sharding-CLI shape)
+        shard_worker = self._args(num_shards=64, shard_index=7)
+        merge_job = self._args(num_shards=1, shard_index=0, merge_shards="/d/shard_*.pkl")
+
+        cfg_single = feature_collection_config_from_args(single)
+        cfg_shard = feature_collection_config_from_args(shard_worker)
+        cfg_merge = feature_collection_config_from_args(merge_job)
+
+        self.assertEqual(cfg_single, cfg_shard)
+        self.assertEqual(cfg_single, cfg_merge)
+        self.assertEqual(
+            feature_collection_fingerprint(cfg_single),
+            feature_collection_fingerprint(cfg_merge),
+        )
+        for key in ("num_shards", "shard_index", "merge_shards"):
+            self.assertNotIn(key, cfg_merge)
+
     def test_repo_id_truncation_preserves_config_hash(self):
         args = self._args(model_path=f"org/{'very-long-model-name-' * 8}")
 

@@ -6,17 +6,17 @@ not from the config — since folder names contain run-specific info (lr, bs, sl
 job ID, timestamp) while the config may be generic across runs.
 
 Usage:
-    # Upload all checkpoints in a folder:
-    uv run python -m training.upload_models.upload_models_folder_to_hf /nlp/scr/siddharth/sparse-adaptation/checkpoints --hub_org siddharthmb
+    # Upload all checkpoints in a folder (pushes to your logged-in HF user; pass --hub_org to override):
+    uv run python -m training.upload_models.upload_models_folder_to_hf $LARGE_ARTIFACTS_DIR/transcoder-adapters/checkpoints
 
     # Upload a single checkpoint:
     python -m training.upload_models.upload_models_folder_to_hf \\
-        /nlp/scr/siddharth/sparse-adaptation/checkpoints/gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr10000_lr8e-04_bs4_sl14701501_2026-03-03_0039_14701501 \\
+        $LARGE_ARTIFACTS_DIR/transcoder-adapters/checkpoints/gemma2_2b_tc8192_decb_l1w0.001_tarbb_lb2.0_ln1_dr10000_lr8e-04_bs4_sl14701501_2026-03-03_0039_14701501 \\
         --config training/configs/gemma2_2b.yaml
 
     # Dry run (just print what would be uploaded):
     python -m training.upload_models.upload_models_folder_to_hf \\
-        /nlp/scr/siddharth/sparse-adaptation/checkpoints \\
+        $LARGE_ARTIFACTS_DIR/transcoder-adapters/checkpoints \\
         --config training/configs/gemma2_2b.yaml \\
         --dry_run
 """

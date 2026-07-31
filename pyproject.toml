@@ -16,6 +16,7 @@ dependencies = [
     "wandb>=0.26.1",
     "accelerate>=1.13.0",
     "datasets>=4.8.5",
+    "sentencepiece>=0.2.1",
 ]
 
 [project.optional-dependencies]
@@ -27,13 +28,17 @@ viz = [
     # circuit-tracer currently requires huggingface-hub<1.0,
     # while Gemma4 support in transformers main requires huggingface-hub>=1.5.
     "circuit-tracer",
+    "neuronpedia>=1.2.0",
 ]
 vllm = [
     "vllm>=0.20.0",
 ]
+dev = [
+    "pytest>=8",
+]
 
 all = [
-    "transcoder-adapters[analysis,vllm]",
+    "transcoder-adapters[analysis,vllm,viz]",
 ]
 
 [tool.uv.sources]
