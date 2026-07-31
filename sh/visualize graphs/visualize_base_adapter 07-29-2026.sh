@@ -55,4 +55,28 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --grap
 #   huge adapter model:      https://huggingface.co/siddharthmb/2026.TA.gemma2_2b_huge_tc16384_decb_l1w0.0003_norm_sch_tarbb_lb2.0_ln1.0_dr500000_lr2e-04_bs8_sl
 #   huge adapter collection: https://huggingface.co/siddharthmb/2026.TA.features_2026.TA.gemma2_2b_huge_tc16384_decb_l1w0.0003_norm_sch_tarbb_lb2_hff15229f5fe1
 #   base collection (dtk5):  https://huggingface.co/siddharthmb/2026.TA.features_gemma-2-2b_gemmascope_width_16k_average_l0_76_ms100000_ml1024_tk1_hf83e96d574d2
-# uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/overlay_huge/graph --port 8048
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/overlay_huge/graph --port 8048
+
+# ── #6 · FIXED huge-adapter overlay (supersedes #5) — instruct completions ───────────────────
+# #5 above was built with run_combined_attribution, which runs ONE model on the base backbone: its
+# forward collapses to base, so its completion/logit nodes are the BASE model's (e.g. "Answer"/"\n" —
+# base echoing/continuing the prompt), NOT the instruct-bridging huge adapter's. This #6 is the
+# corrected rebuild with run_base_adapter_comparison (runs the REAL adapter model + overlays a
+# separate base run), so the adapter side shows instruction-tuned completions: on the one-word-capital
+# prompt, base→"Answer" p=0.55 vs adapter→"Paris" p=0.99. Same 40 comprehensive prompts, huge
+# 16384-feature adapter, ms100000 base features. Rebuilt on a RunPod B200 (run_base_adapter_comparison).
+#   graphs on HF:       https://huggingface.co/datasets/siddharthmb/2026.TA.overlay_huge_graphs
+#   huge adapter model: https://huggingface.co/siddharthmb/2026.TA.gemma2_2b_huge_tc16384_decb_l1w0.0003_norm_sch_tarbb_lb2.0_ln1.0_dr500000_lr2e-04_bs8_sl
+#   adapter training wandb: https://wandb.ai/siddharth-stanford/sparse-adaptation/runs/c7vfz8o0
+#   the fix write-up:   my_notes/07-09-26/07-15-26 hybrid graph instruct-completions bug.md
+# Serve straight from HF (downloaded + cached on first run; no local copy needed):
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir siddharthmb/2026.TA.overlay_huge_graphs:overlay --port 8049
+# compact set:  ...:overlay_compact
+
+# Refusals on the smaller adapter
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/tc8192_strict_refusal/overlay --port 8050
+
+# Refusals on larger correct one
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/overlay_huge_strict_refusal/overlay --port 8051
