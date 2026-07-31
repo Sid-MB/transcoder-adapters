@@ -1,17 +1,18 @@
 """
-Wrapper around Qwen2ForCausalLMWithTranscoderRelP for attribution.
+Wrapper around RelP-aware transcoder models for attribution.
 
 Provides the interface expected by the attribution loop (cfg, tokenizer,
-setup_attribution, forward, unembed.W_U) while using the RelP model
-for linearized backward passes.
+setup_attribution, forward, unembed.W_U) while using architecture-specific
+RelP model backends for linearized backward passes.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
-from transformers import AutoTokenizer
 
 from helpers.log import logger
 
@@ -41,7 +42,7 @@ class UnembedWrapper:
 
 class RelPReplacementModel(nn.Module):
     """
-    Wrapper around Qwen2ForCausalLMWithTranscoderRelP for attribution.
+    Wrapper around an architecture-specific RelP transcoder model for attribution.
 
     This provides the minimal interface needed by the attribution loop:
     - cfg, tokenizer, scan
@@ -81,10 +82,11 @@ class RelPReplacementModel(nn.Module):
             device_map: Device map for multi-GPU. Use "auto" to split layers across GPUs.
             dtype: Model dtype (default: bfloat16)
         """
-        from models.qwen2_with_transcoder_relp import Qwen2ForCausalLMWithTranscoderRelP
+        from models.auto import load_tokenizer
+        from models.relp_auto import AutoModelForCausalLMWithTranscoderRelP
 
         # Load model to CPU first, then dispatch
-        model = Qwen2ForCausalLMWithTranscoderRelP.from_pretrained(checkpoint_path)
+        model = AutoModelForCausalLMWithTranscoderRelP.from_pretrained(checkpoint_path)
         model = model.to(dtype=dtype)
 
         if device_map is not None:
@@ -92,10 +94,11 @@ class RelPReplacementModel(nn.Module):
             from accelerate import infer_auto_device_map, dispatch_model
 
             if device_map == "auto":
+                no_split = [model.relp_decoder_layer_cls.__name__]
                 device_map = infer_auto_device_map(
                     model,
                     max_memory={i: "70GiB" for i in range(torch.cuda.device_count())},
-                    no_split_module_classes=["Qwen2DecoderLayerRelP"],
+                    no_split_module_classes=no_split,
                 )
                 logger.info(f"Auto device_map: {device_map}")
 
@@ -110,7 +113,7 @@ class RelPReplacementModel(nn.Module):
 
         model.eval()
 
-        tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+        tokenizer = load_tokenizer(checkpoint_path)
 
         return cls(model, tokenizer)
 

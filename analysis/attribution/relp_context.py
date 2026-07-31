@@ -65,50 +65,8 @@ class RelPAttributionContext:
 
         Returns the final hidden states (before lm_head).
         """
-        model = self.model.model  # The underlying Qwen2ForCausalLMWithTranscoderRelP
-
-        # IMPORTANT: Set stop_grad BEFORE forward so features become leaf nodes
-        model.set_stop_grad_at({"transcoder_features"})
-
-        # Expand tokens to batch
-        input_ids = self.tokens.unsqueeze(0).expand(batch_size, -1)
-
-        # Get embeddings
-        hidden_states = model.model.embed_tokens(input_ids)
-        hidden_states.retain_grad()  # Need this to capture embedding gradients
-        self._resid_cache['embed'] = hidden_states
-
-        # Setup position embeddings
-        seq_len = hidden_states.shape[1]
-        position_ids = torch.arange(seq_len, device=hidden_states.device).unsqueeze(0)
-        position_embeddings = model.model.rotary_emb(hidden_states, position_ids)
-
-        # Build causal mask
-        causal_mask = torch.triu(
-            torch.full((seq_len, seq_len), float('-inf'),
-                      device=hidden_states.device, dtype=hidden_states.dtype),
-            diagonal=1
-        ).unsqueeze(0).unsqueeze(0)
-
-        # Forward through layers, caching residuals
-        for layer_idx, layer in enumerate(model.model.layers):
-            # Cache residual before this layer (for gradient injection)
-            hidden_states.retain_grad()  # Need this to capture gradients at each layer
-            self._resid_cache[layer_idx] = hidden_states
-
-            # Run layer
-            hidden_states = layer(
-                hidden_states,
-                attention_mask=causal_mask,
-                position_embeddings=position_embeddings,
-            )
-
-        # Final norm
-        hidden_states = model.model.norm(hidden_states)
-        hidden_states.retain_grad()
-        self._resid_cache[self.n_layers] = hidden_states
-
-        return hidden_states
+        model = self.model.model  # The underlying architecture-specific RelP model
+        return model.run_backbone_with_cache(self.tokens, batch_size, self._resid_cache)
 
     def compute_batch(
         self,

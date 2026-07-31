@@ -41,8 +41,8 @@ def load_tokenizer(
     try:
         logger.info(f"Loading tokenizer from checkpoint: {model_path}")
         return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    except (OSError, AttributeError, KeyError):
-        pass
+    except (OSError, AttributeError, KeyError, TypeError) as exc:
+        logger.warning(f"Could not load tokenizer from checkpoint ({exc}); trying base tokenizer fallback")
 
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     model_type: str = getattr(config, "model_type", "")
