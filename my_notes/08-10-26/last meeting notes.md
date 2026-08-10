@@ -1,0 +1,18 @@
+
+- is it trying to refuse or not
+- base model has a stopping problem?
+- do evals with the same template so there’s no confusion
+- rerun that eval with the hybrid model with the base model + attention for the other one
+    - picture: bar chart of refusal vs. non-refsula:
+        - base model - hybrid model - tracnsoder adapter - full gemma model
+            - ideally, transcoder adapter very close to full transcoder model and trace prompts that are in that very nearby range
+    - Picking the tokens: 
+        - Either the first “I” or the “cannot”
+        - anthropic had some refusal circuits
+            - anthropic does “I” because claude is trained to respond with “I apologize” for refusals so looking back at the “I” is a good way to do it. So probably “I” and “Cannot” would be good.
+            - do less graphs with potential decisions
+        - One experiment: 
+            - Pick two or three you want to build graphs for. The refusals are probably in the “I” or the “cannot”. Presumably if the graph has to do with refusal, you’ll be able to see harmful circuits (this is what Anthropic did in their circuits paper)
+            - Cut the continuation at the “I” (the instruct model) and continue with the base model. This is evidence that it is not the “I” that is loading it
+                - for the first ten tokens, see what happens if you prefill those tokens and then continue with the base model and see if it flips into refusal 
+            - build a graph for the first ten tokens

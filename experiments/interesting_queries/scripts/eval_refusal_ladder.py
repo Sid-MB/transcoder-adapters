@@ -125,6 +125,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--instruct_model", default=INSTRUCT_MODEL, help="Instruction-tuned target model = the top of the ladder; also supplies the chat template used by EVERY arm.")
     p.add_argument("--finetuned_transcoder_dir", default=FT_TRANSCODER_DIR, help="Dir of finetuned_layer_*.safetensors patched into the GemmaScope transcoders for the hybrid_ft arm.")
     p.add_argument("--finetuned_layers", nargs="+", type=int, default=[0, 24, 25], help="Which layers of the hybrid_ft transcoder stack use fine-tuned weights.")
+    p.add_argument("--hybrid_replace_layers", nargs="+", default=["finetuned"],
+                   help="Which MLPs the hybrid_ft arm replaces with transcoders: 'finetuned' (default) replaces only --finetuned_layers, so the fine-tuned layers drive behaviour while the rest of the model stays exact; 'all' replaces every layer (measured: 26-layer replacement compounds reconstruction error into pure gibberish, so it tests whether transcoders can carry the forward pass at all, not instruct behaviour); or explicit layer indices.")
     p.add_argument("--strict_results", default=STRICT_RESULTS, help="results.json from find_strict_compliance_refusal; its selected records are the harmful prompt set.")
     p.add_argument("--n_harmful", type=int, default=0, help="Cap the harmful prompts (0 = use all selected strict flips). Lower it for a smoke test.")
     p.add_argument("--n_benign", type=int, default=30, help="Number of benign control prompts (0 disables the over-refusal panel).")
@@ -223,6 +225,18 @@ def build_hybrid_model(args: argparse.Namespace, device: str, dtype: torch.dtype
     if len(layers) != len(transcoders):
         raise RuntimeError(f"hybrid_ft: {len(layers)} model layers but {len(transcoders)} transcoders")
 
+    # Which MLPs actually get replaced. Replacing ALL 26 compounds each layer's reconstruction
+    # error and empirically yields 100% gibberish, so the meaningful hybrid replaces just the
+    # fine-tuned layers: those carry the instruct-shifted weights while the rest of the model
+    # stays exact.
+    sel = args.hybrid_replace_layers
+    if len(sel) == 1 and str(sel[0]) == "all":
+        replace_layers = list(range(len(layers)))
+    elif len(sel) == 1 and str(sel[0]) == "finetuned":
+        replace_layers = list(args.finetuned_layers)
+    else:
+        replace_layers = [int(s) for s in sel]
+
     def make_hook(layer_idx: int):
         def hook(module, inputs, output):  # noqa: ANN001
             recon = transcoders[layer_idx](inputs[0])
@@ -230,8 +244,8 @@ def build_hybrid_model(args: argparse.Namespace, device: str, dtype: torch.dtype
 
         return hook
 
-    handles = [layers[i].mlp.register_forward_hook(make_hook(i)) for i in range(len(layers))]
-    logger.info("hybrid_ft: replaced %d MLPs with GemmaScope transcoders (no error term)", len(handles))
+    handles = [layers[i].mlp.register_forward_hook(make_hook(i)) for i in replace_layers]
+    logger.info("hybrid_ft: replaced MLPs at layers %s with GemmaScope transcoders (no error term)", replace_layers)
 
     def remove_hooks() -> None:
         for h in handles:
@@ -499,8 +513,11 @@ def plot(out: Path, arms, specs, stats) -> None:
         # Wilson CI on the refusal bar
         for i, a in enumerate(arms):
             s = stats[pset][a]
+            pct = s["refusal_rate"] * 100
             lo, hi = s["refusal_ci95"][0] * 100, s["refusal_ci95"][1] * 100
-            ax.errorbar(i - 1.5 * width, s["refusal_rate"] * 100, yerr=[[s["refusal_rate"] * 100 - lo], [hi - s["refusal_rate"] * 100]],
+            # Clamp at 0: the Wilson bound can land a hair off the point estimate in floating point
+            # (e.g. -1e-16 for a 0% arm), and matplotlib rejects any negative yerr.
+            ax.errorbar(i - 1.5 * width, pct, yerr=[[max(0.0, pct - lo)], [max(0.0, hi - pct)]],
                         fmt="none", ecolor="black", capsize=3, lw=1)
         ax.set_xticks(x)
         ax.set_xticklabels([specs[a]["label"] for a in arms], fontsize=8)
