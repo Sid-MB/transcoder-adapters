@@ -137,6 +137,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Model dtype; bfloat16 matches training/attribution.")
     p.add_argument("--output_dir", default=None, help="Where results.json / summary.md / chart / transcripts go (default: experiments/interesting_queries/results/refusal_ladder).")
     p.add_argument("--skip_judge", action="store_true", help="Generate + save transcripts but skip judging (useful to eyeball completions before spending judge compute).")
+    p.add_argument("--report_only", action="store_true", help="Skip all generation/judging: re-render summary.md, per_prompt_labels.md and the chart from an existing results.json in --output_dir. Use after changing the reporting code (no GPU needed).")
     return p.parse_args()
 
 
@@ -409,12 +410,72 @@ def write_outputs(args: argparse.Namespace, out: Path, prompts, specs, responses
         d = (stats["harmful"]["adapter_huge"]["refusal_rate"] - stats["harmful"]["base_plus_attn"]["refusal_rate"]) * 100
         lines += [f"**Transcoder contribution** (adapter_huge − base_plus_attn on harmful): **{d:+.0f} pp** — "
                   "the part of refusal behaviour attributable to the trained transcoder rather than to instruct attention alone.", ""]
-    lines += ["Transcripts: [`transcripts/`](transcripts) (every model's full response per prompt). Chart: `refusal_ladder.png`.", ""]
+    lines += ["Per-prompt labels for every arm: [`per_prompt_labels.md`](per_prompt_labels.md). "
+              "Transcripts: [`transcripts/`](transcripts) (every model's full response per prompt). Chart: `refusal_ladder.png`.", ""]
     (out / "summary.md").write_text("\n".join(lines) + "\n")
+
+    write_per_prompt_labels(out, arms, records, stats)
 
     if verdicts:
         plot(out, arms, specs, stats)
     return payload
+
+
+ABBREV = {"REFUSAL": "REF", "COMPLIANCE": "COMP", "INCONCLUSIVE": "INC", "GIBBERISH": "GIB"}
+
+
+def write_per_prompt_labels(out: Path, arms, records, stats) -> None:
+    """Exhaustive per-prompt breakdown: the full label matrix + prompt ids grouped by outcome.
+
+    ``summary.md`` only has aggregate rates; this answers "which prompts, exactly, are in each
+    category for each model" -- needed both to audit the judge and to pick prompts to circuit-trace.
+    """
+    lines = ["# Per-prompt outcome labels", "",
+             "`REF` = REFUSAL · `COMP` = COMPLIANCE · `INC` = INCONCLUSIVE · `GIB` = GIBBERISH. "
+             "Every arm saw the identical chat-templated prompt; labels are the judge's.", ""]
+
+    for pset in ("harmful", "benign"):
+        subset = [r for r in records if r["set"] == pset]
+        if not subset:
+            continue
+        lines += [f"## {pset.title()} prompts (n={len(subset)}) — full matrix", "",
+                  "| id | category | request | " + " | ".join(f"`{a}`" for a in arms) + " |",
+                  "|---|---|---|" + "---|" * len(arms)]
+        for r in subset:
+            req = r["request"].replace("|", "\\|")
+            req = (req[:70] + "…") if len(req) > 70 else req
+            cells = " | ".join(ABBREV.get(r["responses"][a].get("label", ""), "?") for a in arms)
+            lines.append(f"| [`{r['id']}`](transcripts/{r['id']}.md) | {r['category']} | {req} | {cells} |")
+        lines.append("")
+
+        # Grouped: for each arm, exactly which prompt ids landed in each outcome.
+        lines += [f"### {pset.title()}: prompt ids by outcome, per arm", ""]
+        for a in arms:
+            lines.append(f"**`{a}`**")
+            for outcome in OUTCOMES:
+                ids = [r["id"] for r in subset if r["responses"][a].get("label") == outcome]
+                lines.append(f"- {outcome} ({len(ids)}): " + (", ".join(f"`{i}`" for i in ids) if ids else "_none_"))
+            lines.append("")
+
+    # Where the adapter and instruct agree/disagree -- the gate for which prompts are worth tracing,
+    # and (the disagreements) the failure modes worth reporting rather than hiding.
+    adapters = [a for a in arms if a.startswith("adapter")]
+    if "instruct" in arms and adapters:
+        lines += ["## Adapter vs instruct agreement (harmful) — the 'nearby range' for circuit tracing", ""]
+        harmful = [r for r in records if r["set"] == "harmful"]
+        for a in adapters:
+            agree = [r["id"] for r in harmful if r["responses"][a].get("label") == r["responses"]["instruct"].get("label")]
+            both_ref = [r["id"] for r in harmful if r["responses"][a].get("label") == "REFUSAL" == r["responses"]["instruct"].get("label")]
+            disagree = [(r["id"], r["responses"][a].get("label"), r["responses"]["instruct"].get("label")) for r in harmful
+                        if r["responses"][a].get("label") != r["responses"]["instruct"].get("label")]
+            pct = 100 * len(agree) / max(1, len(harmful))
+            lines += [f"**`{a}`** — label agreement with instruct: **{len(agree)}/{len(harmful)} ({pct:.0f}%)**", "",
+                      f"- both REFUSAL ({len(both_ref)}) — trace these: " + (", ".join(f"`{i}`" for i in both_ref) if both_ref else "_none_"),
+                      f"- disagreements ({len(disagree)}) — failure modes: " +
+                      (", ".join(f"`{i}` ({x}≠{y})" for i, x, y in disagree) if disagree else "_none_"), ""]
+
+    (out / "per_prompt_labels.md").write_text("\n".join(lines) + "\n")
+    logger.info("wrote %s", out / "per_prompt_labels.md")
 
 
 def plot(out: Path, arms, specs, stats) -> None:
@@ -462,6 +523,22 @@ def main() -> None:
     out = Path(args.output_dir or "experiments/interesting_queries/results/refusal_ladder")
 
     logger.info("Invocation: eval_refusal_ladder.py %s", " ".join(f"--{k} {v}" for k, v in vars(args).items()))
+
+    if args.report_only:
+        # Re-render every report from an existing run's results.json (no models, no GPU).
+        prior = json.loads((out / "results.json").read_text())
+        recs = prior["records"]
+        arms = list(recs[0]["responses"].keys())
+        prompts = [{k: r[k] for k in ("id", "set", "category", "request")} for r in recs]
+        specs = {a: {"label": a.replace("_", "\n", 1), "path": prior["configuration"]["arms"].get(a, {}).get("path", "")} for a in arms}
+        responses = {a: [r["responses"][a]["text"] for r in recs] for a in arms}
+        verdicts = {a: [{k: r["responses"][a].get(k) for k in ("label", "confidence", "rationale")} for r in recs] for a in arms}
+        if verdicts[arms[0]][0]["label"] is None:
+            verdicts = None
+        write_outputs(args, out, prompts, specs, responses, verdicts)
+        logger.info("Re-rendered reports in %s", out)
+        return
+
     prompts = load_prompts(args)
     specs = build_arm_specs(args)
     logger.info("Ladder: %s", " -> ".join(specs))
