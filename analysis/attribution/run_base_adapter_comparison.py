@@ -373,6 +373,48 @@ def _save_raw_graph(graph: Any, output_dir: Path, slug: str) -> Path:
     return raw_graph_path
 
 
+def _adapter_top_logit_token_id(adapter_graph_path: Path) -> int | None:
+    """Vocab id of the adapter graph's highest-probability logit node (the adapter's actual next token).
+
+    Logit node ids are ``{layer}_{vocab_idx}_{ctx_idx}``.
+    """
+    if not adapter_graph_path.exists():
+        return None
+    payload = json.loads(adapter_graph_path.read_text())
+    logit_nodes = [n for n in payload.get("nodes", []) if n.get("feature_type") == "logit"]
+    if not logit_nodes:
+        return None
+    top = max(logit_nodes, key=lambda n: n.get("token_prob") or 0.0)
+    try:
+        return int(str(top["node_id"]).split("_")[1])
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
+def _salient_token_ids(logits: Any, max_n_logits: int, desired_logit_prob: float = 0.95) -> list[int]:
+    """Mirror circuit-tracer's default target selection: top logits until cumulative prob >= threshold."""
+    import torch
+
+    top_probs, top_ids = torch.softmax(logits.float(), dim=-1).topk(max_n_logits)
+    cutoff = int(torch.searchsorted(top_probs.cumsum(0), desired_logit_prob).item()) + 1
+    return top_ids[: min(cutoff, max_n_logits)].tolist()
+
+
+def _base_last_token_logits(model: Any, backend: str, prompt_tokens: Any) -> Any:
+    """Last-position logits of the base ReplacementModel on the attribution prompt (either backend)."""
+    import torch
+
+    tokens = model.ensure_tokenized(prompt_tokens)
+    if backend == "transformerlens":
+        with torch.no_grad():
+            return model(tokens.unsqueeze(0))[0, -1].detach().float().cpu()
+    from nnsight import save
+
+    with model.trace(tokens):
+        logits = save(model.output.logits)
+    return logits[0, -1].detach().float().cpu()
+
+
 def run_base_attribution(
     *,
     base_model: str,
@@ -393,8 +435,17 @@ def run_base_attribution(
     prompt_tokenizer_model: str | None,
     finetuned_transcoder_dir: str | None = None,
     finetuned_layers: list[int] | None = None,
+    adapter_graph_dir: Path | None = None,
 ) -> dict[str, str]:
-    """Run circuit-tracer attribution for the base model/GemmaScope side."""
+    """Run circuit-tracer attribution for the base model/GemmaScope side.
+
+    When ``adapter_graph_dir`` is given, each prompt's attribution targets are the base
+    model's own salient top logits UNION the adapter graph's top predicted token for the
+    same slug. On chat-format prompts the base model's top logits are prompt-echo tokens,
+    so without the union the base graph explains echoing rather than anything comparable
+    to the adapter's behavior; the union adds a "why does base NOT predict the adapter's
+    token" circuit on the identical forward pass.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     prompt_paths = _list_prompt_files(prompts)
     if not prompt_paths:
@@ -462,11 +513,33 @@ def run_base_attribution(
         logger.info(f"  Target token held out by loader: {prompt_tokenizer.decode([target_token])!r}")
         logger.info(f"  Last 60 chars: ...{prompt_text[-60:]!r}")
 
+        attribution_targets = None
+        if adapter_graph_dir is not None:
+            adapter_token_id = _adapter_top_logit_token_id(adapter_graph_dir / f"{slug}.json")
+            if adapter_token_id is None:
+                logger.warning(
+                    f"  No adapter graph/logit nodes for {slug} in {adapter_graph_dir}; "
+                    "falling back to default top-logit targets"
+                )
+            else:
+                logits = _base_last_token_logits(model, backend, prompt_tokens)
+                target_ids = _salient_token_ids(logits, max_n_logits)
+                if adapter_token_id not in target_ids:
+                    target_ids.append(adapter_token_id)
+                attribution_targets = torch.tensor(target_ids)
+                adapter_token_prob = torch.softmax(logits, dim=-1)[adapter_token_id].item()
+                logger.info(
+                    f"  Attribution targets: {[prompt_tokenizer.decode([t]) for t in target_ids]!r} "
+                    f"(union with adapter top token {prompt_tokenizer.decode([adapter_token_id])!r}, "
+                    f"base p={adapter_token_prob:.5f})"
+                )
+
         graph = None
         try:
             graph = attribute(
                 prompt=prompt_tokens,
                 model=model,
+                attribution_targets=attribution_targets,
                 max_n_logits=max_n_logits,
                 batch_size=batch_size,
                 max_feature_nodes=max_feature_nodes,
@@ -1116,6 +1189,21 @@ def build_parser() -> argparse.ArgumentParser:
             "both. 'raw' preserves file text; 'auto' picks chat for Gemma2 with marked files."
         ),
     )
+    parser.add_argument(
+        "--base_attribution_targets",
+        choices=["union_adapter_top", "top_logits"],
+        default="union_adapter_top",
+        help=(
+            "Which logits the BASE run attributes toward. 'union_adapter_top' (default): the base "
+            "model's own salient top logits plus the adapter model's top predicted token (read from "
+            "the adapter graph built earlier in the run) -- on chat prompts base's top logits are "
+            "prompt-echo tokens, so the union adds the 'why does base not predict the adapter's "
+            "token (e.g. the refusal opener)' circuit on the identical forward pass. 'top_logits': "
+            "circuit-tracer's default salient-top-logit targets only, matching graphs built before "
+            "this flag existed. NOTE: base graphs already on disk are skipped, so switching modes "
+            "for a rebuilt run requires clearing/archiving the base/ and overlay/ dirs first."
+        ),
+    )
     parser.add_argument("--max_n_logits", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_feature_nodes", type=int, default=10000)
@@ -1292,6 +1380,9 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
         prompt_tokenizer_model=args.prompt_tokenizer_model,
         finetuned_transcoder_dir=args.finetuned_transcoder_dir,
         finetuned_layers=args.finetuned_layers,
+        adapter_graph_dir=(
+            adapter_graph_dir if args.base_attribution_targets == "union_adapter_top" else None
+        ),
     )
     overlay_paths = write_overlay_graphs(
         base_graph_dir=base_graph_dir,
@@ -1344,6 +1435,7 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
         "prompts": str(args.prompts),
         "run_name": args.run_name,
         "prompt_format": args.prompt_format,
+        "base_attribution_targets": args.base_attribution_targets,
         "output_dir": str(output_dir),
         "base_graph_dir": str(base_graph_dir),
         "adapter_graph_dir": str(adapter_graph_dir),
