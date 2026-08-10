@@ -1104,7 +1104,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--feature_input_hook", default="ln2.hook_normalized")
     parser.add_argument("--feature_output_hook", default="hook_mlp_out")
     parser.add_argument("--activation", default="relu", choices=["relu"])
-    parser.add_argument("--prompt_format", choices=["auto", "raw", "chat"], default="auto")
+    parser.add_argument(
+        "--prompt_format",
+        choices=["auto", "raw", "chat", "plain"],
+        default="auto",
+        help=(
+            "How to render marked prompt files for BOTH sides of the comparison. 'chat' applies "
+            "the tokenizer chat template -- in-distribution for the adapter (trained on lmsys via "
+            "apply_chat_template) but out-of-distribution for --base_model, which degenerates into "
+            "echoing/looping. 'plain' renders neutral 'User: ...\\nAssistant:' dialogue, legible to "
+            "both. 'raw' preserves file text; 'auto' picks chat for Gemma2 with marked files."
+        ),
+    )
     parser.add_argument("--max_n_logits", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_feature_nodes", type=int, default=10000)

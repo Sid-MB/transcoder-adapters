@@ -50,7 +50,19 @@ DEEPSEEK_USER_TOKEN = "<｜User｜>"
 DEEPSEEK_ASSISTANT_TOKEN = "<｜Assistant｜>"
 QWEN_IM_START = "<|im_start|>"
 QWEN_IM_END = "<|im_end|>"
-PromptFormat = Literal["auto", "raw", "chat"]
+PromptFormat = Literal["auto", "raw", "chat", "plain"]
+
+# Neutral plaintext dialogue template, used by prompt_format="plain". Unlike the tokenizer
+# chat template (<start_of_turn>user ... <start_of_turn>model), which base gemma-2-2b never
+# saw in that role and treats as out-of-distribution (it degenerates into echoing/looping),
+# this "User:/Assistant:" form is a common pretraining pattern -- so a base model and an
+# instruct-bridged adapter can be compared on ONE prompt that is legible to both. See
+# my_notes/08-10-26/last meeting notes.md ("do evals with the same template so there's no
+# confusion"). Note the adapter was trained on the gemma chat template
+# (training/dataset/gemma2/lmsys_chat.py), so "plain" is off-distribution for IT -- which is
+# exactly the trade this format exists to let us measure.
+PLAIN_USER_PREFIX = "User: "
+PLAIN_ASSISTANT_PREFIX = "Assistant:"
 
 def get_output_dir(*, run_name: str, checkpoint_name: str) -> Path:
     specific_run_description = f"{run_name}_{checkpoint_name}"
@@ -77,12 +89,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt_format",
         type=str,
-        choices=["auto", "raw", "chat"],
+        choices=["auto", "raw", "chat", "plain"],
         default="auto",
         help=(
             "How to tokenize prompt files. Prompt loaders ignore terminal newlines. "
             "'raw' otherwise preserves file text; "
             "'chat' parses marked prompt files and applies the tokenizer chat template; "
+            "'plain' parses the same marked files but renders neutral plaintext dialogue "
+            "('User: ...\\nAssistant:') -- use this when comparing a BASE model against an "
+            "instruct-bridged adapter, since base models treat <start_of_turn> markers as "
+            "out-of-distribution and degenerate into echoing/looping; "
             "'auto' uses chat formatting for Gemma2 checkpoints with marked prompt files."
         ),
     )
@@ -649,22 +665,50 @@ def _should_chat_format_prompt(
 ) -> bool:
     if prompt_format == "raw":
         return False
-    if prompt_format == "chat":
+    if prompt_format in ("chat", "plain"):
         return True
     return model_type == "gemma2" and _parse_chat_prompt_text(text) is not None
+
+
+def _load_plain_formatted_prompt(
+    user_content: str,
+    assistant_content: str,
+    tokenizer,
+) -> tuple[list[int], int, str]:
+    """Render a parsed (user, assistant) pair as neutral plaintext dialogue.
+
+    Tokenizes the whole "User: ...\\nAssistant: <assistant_content>" string in one pass and
+    splits off the last token as the attribution target. Doing it in one pass (rather than
+    concatenating separately-encoded pieces, as the chat path must) keeps the whitespace
+    honest: after "Assistant:" the token the model would really emit is space-prefixed
+    (" I"), not the bare "I" that follows "<start_of_turn>model\\n" under the chat template.
+    Splitting a jointly-encoded sequence gets that right for free.
+    """
+    prefix = f"{PLAIN_USER_PREFIX}{user_content}\n{PLAIN_ASSISTANT_PREFIX}"
+    full_text = f"{prefix} {assistant_content.lstrip()}"
+    full_tokens = tokenizer.encode(full_text, add_special_tokens=True)
+    if len(full_tokens) < 2:
+        raise ValueError("Plain-formatted prompt must include a target token")
+    prompt_tokens = list(full_tokens[:-1])
+    target_token = full_tokens[-1]
+    return prompt_tokens, target_token, tokenizer.decode(prompt_tokens)
 
 
 def _load_chat_formatted_prompt(
     text: str,
     tokenizer,
+    prompt_format: PromptFormat = "chat",
 ) -> tuple[list[int], int, str]:
     parsed = _parse_chat_prompt_text(text)
     if parsed is None:
         raise ValueError(
-            "Prompt format 'chat' requires DeepSeek/Qwen-style user and assistant markers"
+            f"Prompt format {prompt_format!r} requires DeepSeek/Qwen-style user and assistant markers"
         )
 
     user_content, assistant_content = parsed
+    if prompt_format == "plain":
+        return _load_plain_formatted_prompt(user_content, assistant_content, tokenizer)
+
     assistant_ids = tokenizer.encode(assistant_content, add_special_tokens=False)
     if not assistant_ids:
         raise ValueError("Assistant prompt content must include a target token")
@@ -700,7 +744,7 @@ def load_prompt_file(
     """
     text = _read_prompt_text(path)
     if _should_chat_format_prompt(text, prompt_format, model_type):
-        return _load_chat_formatted_prompt(text, tokenizer)
+        return _load_chat_formatted_prompt(text, tokenizer, prompt_format=prompt_format)
     if prompt_format == "auto":
         logger.warning(
             "Prompt format auto did not detect chat markers in %s; falling back to raw tokenization",
