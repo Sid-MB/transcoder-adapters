@@ -27,35 +27,7 @@
 
 set -euo pipefail
 
-# ── #1 · Headline / default (full-corpus, standard budget 4096 / 5 logits / 32 err) ──────────
-# 12 `interesting_small` prompts. Cleanest + fastest to load — the default for browsing or a demo.
-uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/graph_combined_dtk20 --port 8044
-
-# ── #2 · Agree/diverge experiment (28 purpose-built prompts) ─────────────────────────────────
-# 14 agree (factual, base does the work) + 14 diverge (behavioral), each dropdown entry labeled
-# [agree]/[diverge]. Use to explore where the adapter fires on content tokens. Different prompt
-# set — NOT comparable to the others.
-# uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/agree_diverge_dtk20/all --port 8045
-
-# ── #3 · Denser (attr_big, 2× budget 8192 / 10 / 64) — THE EVERYDAY BEST FOR ANALYZING A CIRCUIT ─
-# Same 12 prompts as #1, deeper circuits, still readable.
-# uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/attribution_big_dtk20 --port 8046
-
-# ── #4 · Densest (attr_2x, 4× budget 16384 / 20 / 128) ──────────────────────────────────────
-# Same 12 prompts, most complete but heavy/cluttered — for deep single-prompt dives; thin it with
-# the pruning slider.
-# uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/attribution_2x_dtk20 --port 8047
-
-# ── #5 · NEW: base vs the HUGE adapter (§7) — 40 comprehensive prompts ───────────────────────
-# The freshly-trained 16384-feature `gemma2_2b_huge` adapter (2× capacity; B200 warm-start,
-# final eval KL 0.142 / 86.35% top-1). The only overlay against the *huge* adapter (all others
-# are the deployed tc8192). Node budgets vary per prompt (32 at 32768, 1 at 12288, 7 at 8192 —
-# the assistant-prefix prompts' mid-response tracing needs ~79 GB regardless of node count);
-# each graph's banner shows its actual composition.
-#   huge adapter model:      https://huggingface.co/siddharthmb/2026.TA.gemma2_2b_huge_tc16384_decb_l1w0.0003_norm_sch_tarbb_lb2.0_ln1.0_dr500000_lr2e-04_bs8_sl
-#   huge adapter collection: https://huggingface.co/siddharthmb/2026.TA.features_2026.TA.gemma2_2b_huge_tc16384_decb_l1w0.0003_norm_sch_tarbb_lb2_hff15229f5fe1
-#   base collection (dtk5):  https://huggingface.co/siddharthmb/2026.TA.features_gemma-2-2b_gemmascope_width_16k_average_l0_76_ms100000_ml1024_tk1_hf83e96d574d2
-uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/overlay_huge/graph --port 8048
+# [Some runs moved here](./archive/07-29-26 old.md)
 
 # ── #6 · FIXED huge-adapter overlay (supersedes #5) — instruct completions ───────────────────
 # #5 above was built with run_combined_attribution, which runs ONE model on the base backbone: its
@@ -73,6 +45,7 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --grap
 uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir siddharthmb/2026.TA.overlay_huge_graphs:overlay --port 8049
 # compact set:  ...:overlay_compact
 
+# NOTE: BASE MODEL IS GIBBERISH HERE DUE TO SPECIAL TOKENS
 # Refusals on the smaller adapter
 uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
   --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/tc8192_strict_refusal/overlay --port 8050
@@ -80,3 +53,23 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
 # Refusals on larger correct one
 uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
   --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/overlay_huge_strict_refusal/overlay --port 8051
+
+# ── #7 · FIRST-TEN-REFUSAL-TOKENS overlays (token-selection-for-tracing study) ────────────────
+# Instead of tracing only position 0 ("I"), this builds a base-vs-adapter overlay at EACH of the
+# first 10 positions of the instruct refusal (I / cannot / and / will / not / provide / ... ) for 3
+# strict-flip prompts (harm_125 meth, harm_139 DDoS, harm_116 pipe bomb) = 30 graphs. Same tc8192
+# config as #2. Use the graph dropdown to step "I -> cannot -> provide -> ..." and watch where the
+# adapter's refusal/harmful features come in. Companion prefill-flip eval (does transplanting the
+# instruct refusal opening make BASE refuse? no) + full write-up:
+#   my_notes/08-10-26/refusal_token_tracing/refusal_token_tracing.pdf
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/tc8192_refusal_first10/overlay --port 8052
+
+# ── #7 · Refusal-token circuits (08-10-26) — where does refusal commit, "I" or "cannot"? ──────
+# 3 prompts where the huge adapter AND instruct both refuse (base does not), each traced at TWO
+# positions: __tok_I (first response token "I") and __tok_cannot (prefix "I", target " cannot").
+# Built with run_base_adapter_comparison (job 16717643). Each graph shows a "Refusal ladder" panel
+# with every model's judged verdict for that prompt -- harm_006 is the sharpest case: with the
+# transcoder zeroed the model WRITES the phishing text (COMPLIANCE), with it the model REFUSES.
+#   writeup + bar chart: my_notes/08-10-26/refusal_ladder.md
+# uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/refusal_tokens/overlay --port 8052
