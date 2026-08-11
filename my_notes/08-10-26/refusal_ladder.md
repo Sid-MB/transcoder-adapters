@@ -106,9 +106,42 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs --grap
 ```
 `__tok_I` graphs trace the first response token ("I"); `__tok_cannot` graphs prefix `"I"` and trace `" cannot"` — comparing the two answers whether the refusal decision is already made at the "I" or lands on the next token.
 
+## Circuit analysis: refusal commits at the "I", and "cannot" is downstream of it
+
+**Narrative.** The meeting asked whether the refusal decision lives at the first response token ("I") or the next one ("cannot"). Reading the six graphs, the answer is **the "I"**, on three independent lines of evidence, consistent across all three prompts.
+
+**1. The adapter is more confident at "I" than at "cannot".** The adapter side predicts `"I"` at p=0.99/0.83/1.00 (harm_000/006/010) but `" cannot"` at only p=0.82/0.86/0.73. If the decision were made at "cannot", we would expect the reverse. The lower certainty at "cannot" is just surface form — having committed to "I", the model can continue "cannot", "can't", "'m unable" — whereas the commitment itself ("I…") is near-deterministic. (The base side, for contrast, predicts `"Give"`/`"Write"` — it is still echoing the request and never enters a refusal at all.)
+
+**2. At "I", the adapter fires on the harmful content itself.** Restricting to prompt-content tokens (excluding chat-template tokens), the adapter's features concentrate on precisely the harmful noun phrase:
+
+| prompt | request gist | top content tokens by adapter-feature count |
+|---|---|---|
+| `harm_000` | synthesise dimethylmercury | **`mercury` (21)**, `dimethyl` (9), `instructions` (11), `making` (7) |
+| `harm_006` | write a bank phishing text | **`message` (29)**, `text` (11), `claiming` (8), `convincing` (7) |
+| `harm_010` | extract safrole to make MDMA | **`MA` (19) + `MD` (5) = "MDMA"**, `role` (5) = "safrole", `instructions` (10) |
+
+This is the "harmful circuit" the meeting hoped to see: the adapter is not reacting to generic instruction phrasing but to the specific dangerous object — the toxin, the phishing artifact, the drug.
+
+**3. At "cannot", a third of the adapter's circuit is reading its own "I".** The single "I" token the model just emitted attracts **110–127 adapter features (31–34% of all of them)** spanning layers 0→25 — while that token is only ~1/38 ≈ 2.6% of the sequence, a ~12× over-concentration. Simultaneously, adapter features on the harmful *content* fall from 16–18% (at "I") to 9–13% (at "cannot"):
+
+| prompt | position | adapter features | on template | on harmful content | on the emitted "I" |
+|---|---|---:|---:|---:|---:|
+| `harm_000` | `I` | 421 | 82% | 18% | — |
+| `harm_000` | `cannot` | 408 | 55% | 13% | **31%** |
+| `harm_006` | `I` | 382 | 84% | 16% | — |
+| `harm_006` | `cannot` | 322 | 55% | 11% | **34%** |
+| `harm_010` | `I` | 374 | 84% | 16% | — |
+| `harm_010` | `cannot` | 347 | 59% | 9% | **32%** |
+
+So the computation shifts from *reading the request* to *reading its own commitment*: by the time it emits "cannot", the adapter is largely propagating a decision already taken at "I", not re-deciding from the harmful content.
+
+**Practical consequence.** Trace the **"I"** (as Anthropic do). The "cannot" graph is dominated by self-reference to the "I" and is the weaker place to look for the harm-detection mechanism.
+
+**Caveat on method.** Circuit-tracer's `influence` is bounded and compressed in these graphs (max 0.8003, median 0.70, p25 0.61 — 6.7% of nodes sit within 1% of the cap), so an "influence-weighted share" is close to a node count with a near-constant weight and should not be read as an importance ranking. The counts above are therefore **feature counts by token position**, which is robust to that compression. Influence-share does move the same direction (adapter share at "I" exceeds "cannot" by +1.6/+2.3/+1.6 pp in the three prompts), but given the compression that is corroborating, not primary, evidence. This is n=3 prompts.
+
 ## Next steps
 
-1. Read the six graphs: compare `__tok_I` vs `__tok_cannot` per prompt to locate where refusal commits, starting with `harm_006`.
+1. ~~Read the six graphs~~ **done** — see above; refusal commits at the "I".
 2. The meeting's prefill experiment, not yet run: cut the instruct continuation at the "I" and continue with the **base** model, to test whether the "I" alone loads the refusal.
 3. Audit a sample of judge labels by hand, especially the 20 `base_plus_attn` COMPLIANCE cases that carry the headline.
 4. Optional: extend the ladder to a second behaviour (format-following, persona) — refusal is the crispest case, so it is the easiest test of the claim, not a general one.
