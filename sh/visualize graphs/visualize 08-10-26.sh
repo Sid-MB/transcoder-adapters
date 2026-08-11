@@ -79,6 +79,19 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
 uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
   --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/tc8192_strict_refusal_plain/overlay --port 8052
 
+# ── #3 · FIRST-TEN-REFUSAL-TOKENS overlays — where along the opening does refusal commit? ──────────
+# [refusal-token-tracing] (session fd1f0d19). Extends the commented refusal-token probe below (which
+# traced 2 positions, "I" and " cannot", on 3 prompts) to ALL TEN opening positions: a base-vs-adapter
+# overlay at each of I / cannot / and / will / not / provide / instructions / for / how / <harm-word>,
+# for harm_125 (meth), harm_139 (DDoS), harm_116 (pipe bomb) = 30 graphs. Same deployed-tc8192 config
+# as #2; chat template (adapter side in-distribution & refusing — the focus; base side is the expected
+# special-token gibberish, so read the ADAPTER side). Step the dropdown "I -> cannot -> provide -> ..."
+# to see where the adapter's refusal/harmful features enter. Companion prefill-flip eval (transplanting
+# the instruct refusal opening onto BASE does NOT make it refuse) + full write-up + figures:
+#   my_notes/08-10-26/refusal_token_tracing/refusal_token_tracing.pdf
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/tc8192_refusal_first10/overlay --port 8054
+
 # ── POST-BUILD (already applied; re-run only after a rebuild) ──────────────────────────────────────
 # Re-classify + re-star the compliance (jailbreak) prompts in each dropdown (idempotent, auto-detects
 # the set from adapter continuations -- do NOT hardcode slugs, they differ by adapter/template):

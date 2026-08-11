@@ -92,9 +92,9 @@ The base-vs-adapter overlay tooling traces the \emph{last} token of each prompt 
 All 30 overlays built successfully and were verified to trace exactly the intended tokens; the adapter's target logit at each position matches the refusal opening (Table~\ref{tab:targets}). The graphs are the deliverable and are read \emph{interactively} (the feature descriptions --- ``fires on X\% of tokens'', top-token specificity, activating examples --- are joined in by the viewer from the feature scans, not baked into the graph JSON). Serve with:
 \begin{cbox}
 \code{uv run --extra viz python -m analysis.attribution.serve\_comparison\_graphs \textbackslash}\\
-\code{\ \ --graph\_file\_dir /nlp/scr/siddharth/.../tc8192\_refusal\_first10/overlay --port 8052}
+\code{\ \ --graph\_file\_dir /nlp/scr/siddharth/.../tc8192\_refusal\_first10/overlay --port 8054}
 \end{cbox}
-Use the graph dropdown to step ``I~$\to$~cannot~$\to$~provide~$\to$~\ldots'' and watch, on the adapter side, where refusal/harmful-concept features enter --- the whole point of tracing more than the single opening token.
+This is entry \#3 of \code{sh/visualize graphs/visualize 08-10-26.sh} (port 8054, chosen free). Note the \code{chat} template makes the \emph{base} side of each overlay the expected special-token gibberish (a circuit for echoing, not refusal --- see the template-sensitivity probe cited in that script), so read the \emph{adapter} side, which is in-distribution and does the refusing. Use the graph dropdown to step ``I~$\to$~cannot~$\to$~provide~$\to$~\ldots'' and watch where the adapter's refusal/harmful-concept features enter --- the whole point of tracing more than the single opening token. A parallel workstream (session 1fee7826, \href{run:../refusal_ladder.md}{\code{refusal\_ladder.md}}) traced the same question at just two positions (``I'' vs ``\,cannot'') on a different prompt set (\code{base\_adapter\_comparisons/refusal\_tokens/}); this run is the ten-position extension.
 
 \begin{table}[h]
 \centering\small
