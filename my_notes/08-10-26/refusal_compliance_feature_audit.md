@@ -38,6 +38,14 @@ On the native chat distribution the adapter *confidently* jailbreaks on harm_031
 
 **Candidate refusal-specific features** (≥5/6 refuse, 0/4 comply; more trustworthy — refuse prompts are content-diverse): L13 f329252, L16 f1023148, L18 f37398257, L19 f79285508, L20 f39859035, L24 f40774940 (all 6/6), plus L13 f59236156, L16 f13605919, L17 f56919097, L23 f6313657, L24 f94167201.
 
+## High-res confirmation (12288 nodes, native chat) — job 16723869
+Re-ran the identical topic-controlled diff on the 12288-node graphs (`comply_vs_refuse_chat_hires/adapter/`, ~145–148 adapter features/graph at the decision position). The **resolution-robust survivors** (candidate in BOTH the 2048 and 12288 sets → not truncation artifacts) are the trustworthy core:
+
+- **Refusal-specific (strongest — all 6/6 refuse at both resolutions, 0 comply): L13 f329252, L16 f1023148, L16 f13605919, L19 f79285508.** Plus L13 f59236156, L17 f56919097, L24 f94167201 (survive but ≤5/6).
+- **Compliance-specific (standout — 4/4 comply at both resolutions, 0 refuse): L21 f1457756.** Plus L16 f101737963, L16 f111893303, L19 f103471285, L24 f12814428 (survive at 3/4).
+
+Read: the **refusal** signature is solid — four features fire at the decision token of every content-diverse refusal and no jailbreak, at both node budgets. The **compliance** signature is thinner (one rock-solid feature, L21 f1457756; the rest at 3/4), limited by there being only ~2 confident chat jailbreaks in the set.
+
 ## Caveats still open (do before claiming these ARE the refusal/comply circuit)
 1. **Resolution:** 2048-node graphs may truncate features. The hi-res (12288) rerun confirms/expands the set.
 2. **Small N** (4 comply / 6 refuse). The comply side especially is confidence-limited (only 2 truly confident chat jailbreaks exist in this set).
