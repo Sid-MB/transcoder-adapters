@@ -92,6 +92,29 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
 uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
   --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/tc8192_refusal_first10/overlay --port 8054
 
+# ── #4 · CLEAN COMPLY-vs-REFUSE CONTRAST — the main result ─────────────────────────────────────────
+# Native CHAT template, HUGE (tc16384) adapter, 12288 feature nodes (hi-res). 10 prompts: 4 confident
+# jailbreaks (★ starred: harm_031/034 Crimea/Holodomor disinfo, harm_094 drug-persuasion, harm_187
+# cyber) vs 6 diverse confident refusals. Both sides of the contrast are in-distribution and confident,
+# so this is the TRUSTWORTHY comply-vs-refuse split -- the one used to locate the adapter's
+# refusal/compliance decision features. Finding: my_notes/08-10-26/refusal_compliance_feature_audit.md
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/comply_vs_refuse_chat_hires/overlay --port 8057
+
+# ── #5/#6 · TEMPLATE-FLIP prompts (harm_035/177/188) at 12288 nodes — OOD/faithfulness contrast ────
+# ⚠ NOT A CLEAN RESULT. These are the 3 prompts whose comply/refuse label flips between the chat and
+# plain templates (see the #1 header note), served once per template so the flip can be inspected node
+# by node. The flip is CONFOUNDED: harm_035 under chat is a 50/50 tie (not a decision), and the plain
+# "compliances" come out of a whitespace-led high-entropy OOD regime rather than a real comply circuit.
+# The adapter is also just tracking the genuine gemma-2-2b-it, which has the identical template
+# sensitivity -- so the flip is faithfulness to the instruct model, not an adapter artifact. Read the
+# ADAPTER side under chat (#5, native/in-distribution); plain (#6) is the degraded contrast.
+# Audit: my_notes/08-10-26/refusal_compliance_feature_audit.md
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/flip_huge_chat_hires/overlay --port 8055
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/flip_huge_plain_hires/overlay --port 8056
+
 # ── POST-BUILD (already applied; re-run only after a rebuild) ──────────────────────────────────────
 # Re-classify + re-star the compliance (jailbreak) prompts in each dropdown (idempotent, auto-detects
 # the set from adapter continuations -- do NOT hardcode slugs, they differ by adapter/template):
