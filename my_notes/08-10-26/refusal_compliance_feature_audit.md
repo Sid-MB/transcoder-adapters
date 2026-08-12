@@ -46,11 +46,21 @@ Re-ran the identical topic-controlled diff on the 12288-node graphs (`comply_vs_
 
 Read: the **refusal** signature is solid — four features fire at the decision token of every content-diverse refusal and no jailbreak, at both node budgets. The **compliance** signature is thinner (one rock-solid feature, L21 f1457756; the rest at 3/4), limited by there being only ~2 confident chat jailbreaks in the set.
 
+## Semantic check — the "4 refusal features" are really 1 (see [feature_semantics.md](feature_semantics.md))
+Pulling each candidate's stored activation examples + top logits (tool: `analysis/features/inspect_features.py`) sharply revises the above. Of the four "strongest" refusal features, **only L13 f329252 is a genuine refusal detector** (fires on the first token of "I'm sorry, but I cannot…" after harmful requests, cross-lingual — the Anthropic-style refusal feature). The other three passed the 6/6 diff for the wrong reason:
+- **L16 f1023148** is a drug-synthesis **harm-topic** feature — its own top examples are meth-synthesis *compliances* as well as refusals, i.e. decision-agnostic. It rode the diff because every refusal prompt is harmful.
+- **L16 f13605919** (get-rich-quick how-tos) and **L19 f79285508** (polysemantic NSFW-roleplay/list-enumeration) are incidental/topic.
+- Weaker candidate **L24 f94167201** is a *second* genuine refusal detector but Russian-language-specific.
+- Compliance **L21 f1457756** is coherent but is an **answer-onset / "begin long-form content"** feature (top logits are BOTH ` I` and `##`), i.e. "the prompt was routed as a writing task" — a plausible *cause* of the jailbreaks (all long-form generation requests) but not a safety-override switch.
+
+Lesson for the diff method: "present in all refusals, no jailbreak" over a harmful-only prompt set selects **harmful-request-content** features, not refusal-**decision** features. Fix (future): require candidate features to be *absent on harmful prompts that were complied with*, and add a max-activation-frequency filter (~2e-3) to drop incidental high-frequency features. Also: `top_logits` are junk for mid-layer (L13–L19) features in this adapter — judge those from examples only.
+
 ## Caveats still open (do before claiming these ARE the refusal/comply circuit)
-1. **Resolution:** 2048-node graphs may truncate features. The hi-res (12288) rerun confirms/expands the set.
-2. **Small N** (4 comply / 6 refuse). The comply side especially is confidence-limited (only 2 truly confident chat jailbreaks exist in this set).
-3. **Set-membership ≠ causal.** These are correlational (present/absent). A causal test — ablate the candidate compliance features on a jailbreak prompt and check whether the adapter flips to refusal (and vice-versa) — is the needed confirmation.
-4. **Feature semantics unchecked:** pull each candidate's activation examples / description to see if "refusal" features look like harm/refusal detectors (as Anthropic found) vs. something incidental.
+1. **Resolution:** RESOLVED — 12288 rerun confirms the survivors are not truncation artifacts.
+2. **Small N** (4 comply / 6 refuse). The comply side especially is confidence-limited (only ~2 truly confident chat jailbreaks exist in this set).
+3. **Set-membership ≠ causal.** Correlational. Causal ablation IN PROGRESS — narrowed by the semantic check to target **L13 f329252** first (predict: ablating it flips harm_000 refusal→comply; ablating the topic/incidental three does little; random-feature control does nothing).
+4. **Feature semantics:** RESOLVED — see [feature_semantics.md](feature_semantics.md); only L13 f329252 (+ ru-specific L24 f94167201) are real refusal detectors.
 
 ## Next
-Hi-res confirmation (16723369) → re-run the topic-controlled diff at 12288 → for the surviving features, inspect activation examples and run an ablation causal test on a held-out jailbreak prompt.
+Causal ablation (narrowed to L13 f329252, with L24 as a ru-control and L21 watched for answer-onset degradation vs a true flip) → if L13 carries the effect, that + its semantics = the adapter's refusal decision feature. Then optionally re-run the diff with the tightened criterion (absent-on-complied-harm + frequency filter) to clean the compliance side.
+
