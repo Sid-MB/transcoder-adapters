@@ -115,9 +115,34 @@ uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
 uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
   --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/flip_huge_plain_hires/overlay --port 8056
 
+# ── #7 · UNION-TARGET base rebuilds — CHAT template, base attributes toward the refusal opener ─────
+# [base-target-union] (session e8d59b4a). The complement to the plain rebuild above: instead of changing
+# the PROMPT to make the base side legible, this keeps the native CHAT template (the base COMPLETION is
+# still special-token gibberish) but changes WHICH LOGIT the base side is attributed toward. Old base
+# graphs attributed to the base model's own top-k logits = prompt-echo tokens ("Give"/"Create"), so the
+# base circuit explained echoing. These use --base_attribution_targets union_adapter_top (default since
+# commit bf7c657): base's salient top logits UNION the adapter's top token, read from the adapter graph.
+# So every base graph now carries the adapter's refusal-opener node (e.g. harm_116: base Output "I"
+# p=0.010 alongside the echo logits) -- a "why does base NOT say the refusal opener" circuit, position-
+# aligned to the adapter's refusal circuit on the identical forward pass. Base p(adapter-top) is small
+# (median ~0.005, max 0.092), so read these as a low-probability "why-not" contrast, NOT as base refusing.
+# Both sides' ADAPTER graphs/continuations are byte-identical to the 07-29 chat runs (ports 8050/8051):
+# union chat reproduces the huge-CHAT jailbreak set exactly (★ harm_031/034/035/094/187).
+# Built on jagupard: jobs 16748895 (tc8192, 18 overlays) + 16748896 (huge, 63 overlays), COMPLETED 08-12-26.
+#   write-up: my_notes/08-10-26/base_attribution_target_union.md
+# WHEN TO USE WHICH: plain (#1/#2) = "can base parse & does it refuse?" (base completion coherent);
+# union-chat (#7) = "in the native template the adapter is trained on, what drives the refusal token vs
+# base's non-refusal?" (adapter side fully in-distribution). Stackable in principle (plain + union) but
+# not built -- plain's base p(I)~0.045 would make a plain-union "why-not" node slightly more informative.
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/tc8192_strict_refusal_union/overlay --port 8058
+uv run --extra viz python -m analysis.attribution.serve_comparison_graphs \
+  --graph_file_dir /nlp/scr/siddharth/transcoder-adapters/base_adapter_comparisons/overlay_huge_strict_refusal_union/overlay --port 8059
+
 # ── POST-BUILD (already applied; re-run only after a rebuild) ──────────────────────────────────────
 # Re-classify + re-star the compliance (jailbreak) prompts in each dropdown (idempotent, auto-detects
 # the set from adapter continuations -- do NOT hardcode slugs, they differ by adapter/template):
 #   uv run python -m analysis.evals.classify_adapter_compliance \
 #     --graph_dir <dir>/overlay --star --also_star_dir <dir>/overlay_compact
-#   where <dir> is overlay_huge_strict_refusal_plain or tc8192_strict_refusal_plain.
+#   where <dir> is overlay_huge_strict_refusal_plain, tc8192_strict_refusal_plain, or the union dirs
+#   overlay_huge_strict_refusal_union / tc8192_strict_refusal_union (already starred).
