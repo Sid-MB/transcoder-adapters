@@ -142,7 +142,7 @@ So the computation shifts from *reading the request* to *reading its own commitm
 ## Next steps
 
 1. ~~Read the six graphs~~ **done** — see above; refusal commits at the "I".
-2. The meeting's prefill experiment, not yet run: cut the instruct continuation at the "I" and continue with the **base** model, to test whether the "I" alone loads the refusal.
+2. ~~The meeting's prefill experiment~~ **done — see [`refusal_prefill_n52.md`](refusal_prefill_n52.md).** Transplanting the instruct model's refusal opening onto base does **not** make it refuse: prefilling "I" moves base's own continuation from 4% → **6%** (+2 pp), and even the full 10-token opening reaches only **67%** vs instruct's **100%**. So the "I" does not carry the refusal — the decision lives in the adapter's *activations* at that position, not in the token identity, which is why tracing features there is the informative thing to do. (It also showed that judging the full turn instead of the model's own continuation inflates transfer by 31–60 pp.)
 3. Audit a sample of judge labels by hand, especially the 20 `base_plus_attn` COMPLIANCE cases that carry the headline.
 4. Optional: extend the ladder to a second behaviour (format-following, persona) — refusal is the crispest case, so it is the easiest test of the claim, not a general one.
 
