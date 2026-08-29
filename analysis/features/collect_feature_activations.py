@@ -729,6 +729,8 @@ def main():
     )
     parser.add_argument("--tokenizer", type=str, default=None,
                         help="Explicit tokenizer path (default: resolved from model_type)")
+    parser.add_argument("--data_format", type=str, default="deepseek",
+                        help="Dataset format (deepseek or qwen)")
     parser.add_argument("--max_length", type=int, default=10000,
                         help="Max sequence length (longer sequences truncated)")
 
@@ -785,7 +787,7 @@ def main():
     loaded_sources: list[tuple[Any, list[dict] | None]] = []
     for domain_label, path in val_data_sources:
         logger.info(f"  {path!r} (domain={domain_label!r})")
-        dataset, examples_meta = load_val_data(path, tokenizer, args.max_length, domain=domain_label)
+        dataset, examples_meta = load_val_data(path, tokenizer, args.max_length, domain=domain_label, format=args.data_format)
         loaded_sources.append((dataset, examples_meta))
 
     total_samples = sum(
