@@ -675,6 +675,8 @@ def main():
                         help="Output directory (default: PRODUCTS_DIR/feature_data/<model>_<timestamp>)")
 
     # Optional args
+    parser.add_argument("--tokenizer", type=str, default=None,
+                        help="Tokenizer name/path (default: load from model_path)")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Max samples to process per data source (default: all)")
     parser.add_argument("--shuffle", action="store_true",
@@ -699,36 +701,8 @@ def main():
                         help="Context tokens before activating token")
     parser.add_argument("--context_after", type=int, default=20,
                         help="Context tokens after activating token")
-    parser.add_argument("--batch_size", type=int, default=40,
-                        help=(
-                            "Max sequences per forward pass. GPU memory budget is auto-computed; "
-                            "this caps CPU-side work (per-token bookkeeping) per batch. "
-                            "Lower if the CPU bottleneck stalls the GPU on short sequences."
-                        ))
-    parser.add_argument(
-        "--shuffle_batches",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "After length-sorting and packing into batches (padding-efficient), randomly reorder "
-            "**which batch runs first** using torch.randperm with --shuffle_batches_seed. "
-            "Total compute is identical; only iteration order changes, so per-step progress/time "
-            "estimates (e.g. tqdm) are less skewed by many cheap short batches at the start. "
-            "Default: on. Use --no-shuffle_batches to run batches in strict length order (shortest "
-            "batches first)."
-        ),
-    )
-    parser.add_argument(
-        "--shuffle_batches_seed",
-        type=int,
-        default=DEFAULT_BATCH_SHUFFLE_SEED,
-        help=(
-            "Seed for --shuffle_batches (ignored with --no-shuffle_batches). "
-            f"Default: {DEFAULT_BATCH_SHUFFLE_SEED}."
-        ),
-    )
-    parser.add_argument("--tokenizer", type=str, default=None,
-                        help="Explicit tokenizer path (default: resolved from model_type)")
+    parser.add_argument("--data_format", type=str, default="deepseek",
+                        help="Dataset format (deepseek or qwen)")
     parser.add_argument("--max_length", type=int, default=10000,
                         help="Max sequence length (longer sequences truncated)")
 
@@ -753,7 +727,10 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
 
-    tokenizer = load_tokenizer(args.model_path, tokenizer_path=args.tokenizer)
+    # Load tokenizer
+    tokenizer_path = args.tokenizer or args.model_path
+    print(f"Loading tokenizer: {tokenizer_path}")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
     # Load model
     logger.info(f"Loading model: {args.model_path}")
@@ -770,27 +747,15 @@ def main():
     model_type = model.config.model_type
     logger.info(f"Model: {n_layers} layers, {n_features} features per layer, arch={model_type}")
 
-    # Detect special tokens for this architecture/tokenizer
-    special_tokens = detect_special_tokens(tokenizer, model_type=model_type)
-    has_thinking = special_tokens.think_start is not None and special_tokens.think_end is not None
-    logger.info(f"Detected special tokens: {special_tokens}")
-    if not has_thinking:
-        logger.info("Note: No <think> tags detected — thinking region analysis will be skipped")
-
-    # Parse and load all val_data sources
-    val_data_sources: list[tuple[str | None, str]] = [
-        _parse_val_data_entry(entry) for entry in args.val_data
-    ]
-    logger.info(f"Loading {len(val_data_sources)} data source(s):")
-    loaded_sources: list[tuple[Any, list[dict] | None]] = []
-    for domain_label, path in val_data_sources:
-        logger.info(f"  {path!r} (domain={domain_label!r})")
-        dataset, examples_meta = load_val_data(path, tokenizer, args.max_length, domain=domain_label)
-        loaded_sources.append((dataset, examples_meta))
-
-    total_samples = sum(
-        min(args.max_samples, len(ds)) if args.max_samples else len(ds)
-        for ds, _ in loaded_sources
+    # Load dataset
+    print(f"Loading validation data: {args.val_data}")
+    dataset = OpenThoughtsDataset(
+        data_path=args.val_data,
+        tokenizer=tokenizer,
+        max_length=args.max_length,
+        format=args.data_format,
+        truncate=True,
+        loss_on_prompt=False,
     )
 
     if args.max_samples is not None:
